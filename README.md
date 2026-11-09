@@ -20,6 +20,7 @@ The package installs from a git tag: npm clones it, installs its dev dependencie
 | `pomade-kit/protocol` | Host API v0 in code: messages, `ProjectRef`, `FileEntry`, `FileChange`, error codes, `Manifest` + `parseManifest`, `HOST_API_VERSION`, message guards, workspace path rules, `readFrontmatter` | browser and Node |
 | `pomade-kit/sdk` | `connect()` and the typed client | browser (any `Transport` elsewhere) |
 | `pomade-kit/fake-host` | the Host API in memory, for standalone runs and tests | browser and Node |
+| `pomade-kit/frontmatter` | field-only frontmatter writes: `setField`, `removeField`, and the block core Pomade's editor uses | browser and Node |
 | `pomade-kit/node` | `resolveWorkspace()` for commands | Node |
 
 ## Connect to Pomade
@@ -103,6 +104,35 @@ runs unchanged, as inside Pomade. Working setup: `e2e/harness/` and `e2e/hello.s
 
 **`dev:fake`:** serve such a harness page with a fixture workspace from the app's own Vite dev
 server, with `?app=` pointing at the app's page — a standalone app with live, scriptable data.
+
+## Write one frontmatter field
+
+```ts
+import { setField, removeField } from "pomade-kit/frontmatter";
+
+const r = setField(fileText, "status", "done");   // FieldValue: string | number | boolean | null | string[]
+if (r.ok) save(r.text);                           // r.changed: false when the bytes are identical
+else showError(r.reason);                         // "unreadable-frontmatter" | "unsupported-key" | "invalid-value"
+removeField(fileText, "parked");
+```
+
+Only the field's own lines change; every other byte — other keys, their quoting, comments,
+blank lines, key order, the body and its line endings — stays identical. A missing key is
+appended at the end of the block (a file without frontmatter gets a new block on top). A string
+is written plain when it reads back as the same string, otherwise double-quoted (`"true"`,
+`"3"`); dates stay plain (`2026-11-09`). A block that is not a valid YAML mapping, or a first
+`---` line that never closes, is refused — never rewritten.
+
+Exceptions on the edited key itself (Pomade's editor has the same ones): a quoted value is
+re-emitted plain when safe; a list edit rewrites all of the list's item lines (comments between
+items are lost); an emptied block list becomes `key: []`; removing the last key drops the whole
+block, its standalone comments and the blank lines after it. A block with mixed line endings is
+written back with the block's CRLF.
+
+The block core (`parseFrontmatter`, `setScalarValue`, `setBooleanValue`, `setListValue`,
+`addProperty`, `removeProperty`, `moveKey`, `getKeyLines`, `setComplexKeyLines`, `validateYaml`,
+`emitScalar`, `splitFrontmatter`) is Pomade's properties-panel logic with identical behavior and
+signatures; it works on the LF-normalized block that `splitFrontmatter` returns.
 
 ## Commands run with Pomade closed
 

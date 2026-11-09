@@ -13,6 +13,7 @@
     "src/protocol/**/*.ts",
     "src/sdk/**/*.ts",
     "src/fake-host/**/*.ts",
+    "src/frontmatter/**/*.ts",
     "examples/hello/src/**/*.ts"
   ],
   "exclude": [
