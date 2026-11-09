@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": [],
+    "paths": {
+      "pomade-kit/*": [
+        "./src/*/index.ts"
+      ]
+    }
+  },
+  "include": [
+    "src/protocol/**/*.ts",
+    "src/sdk/**/*.ts",
+    "src/fake-host/**/*.ts",
+    "examples/hello/src/**/*.ts"
+  ],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/test-helpers.ts"
+  ]
+}

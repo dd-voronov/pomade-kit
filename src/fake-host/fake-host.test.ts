@@ -1,0 +1,555 @@
+import { describe, expect, it, vi } from "vitest";
+import type { FileChange, HostToAppMessage, ProjectRef } from "../protocol/index.js";
+import { connect, type HostClient } from "../sdk/index.js";
+import { createFakeHost, FakeHost, WORKSPACE_SCOPE, type FakeHostOptions } from "./fake-host.js";
+
+const PROJECTS = [
+  { id: "pomade", name: "Pomade", root: "Projects/Pomade" },
+  { id: "kit", name: "pomade-kit", root: "Projects/pomade-kit/" },
+];
+
+const FILES = {
+  "Projects/Pomade/docs/roadmap/E-001-a.md": "---\nid: E-001\nstatus: done\ncreated: 2026-11-09\n---\n\n# A\n",
+  "Projects/Pomade/docs/roadmap/T-002-b.md": "---\nid: [broken\n---\n",
+  "Projects/Pomade/docs/roadmap/notes.md": "no frontmatter\n",
+  "Projects/Pomade/docs/roadmap/data.json": "---\na: 1\n---\n",
+  "Projects/Pomade/docs/roadmap/done/E-000-old.markdown": "---\nid: E-000\n---\n",
+  "Projects/Pomade/docs/roadmap/.git/HEAD": "ref",
+  "Projects/Pomade/docs/roadmap/node_modules/x/index.md": "---\na: 1\n---\n",
+  "Projects/Pomade/README.md": "é",
+};
+
+let clock = 1000;
+function fake(options: FakeHostOptions = {}): FakeHost {
+  clock = 1000;
+  return createFakeHost({ files: FILES, projects: PROJECTS, now: () => clock, ...options });
+}
+
+/** A frame driven with raw protocol messages; host replies land in `got` synchronously. */
+function raw(host: FakeHost) {
+  const got: HostToAppMessage[] = [];
+  const frame = host.attach((m) => got.push(m));
+  let id = 0;
+  const send = (m: unknown) => frame.receive(m);
+  const hello = (hostApi = 0) => send({ channel: "pomade", type: "hello", hostApi });
+  const call = (method: string, params?: unknown) => {
+    const callId = String(++id);
+    send({ channel: "pomade", type: "call", id: callId, method, params });
+    const reply = [...got].reverse().find((m) => m.type === "result" && m.id === callId);
+    if (!reply || reply.type !== "result") throw new Error(`no result for ${method}`);
+    return reply;
+  };
+  const errorOf = (method: string, params?: unknown) => {
+    const r = call(method, params);
+    return r.ok ? null : r.error.code;
+  };
+  const events = () => got.filter((m) => m.type === "event");
+  return { got, frame, send, hello, call, errorOf, events };
+}
+
+async function client(host: FakeHost): Promise<HostClient> {
+  const r = await connect({ transport: host.createTransport(), keySource: null });
+  if (r.status !== "connected") throw new Error(`not connected: ${r.status}`);
+  return r.host;
+}
+
+/** Wait until the in-memory transport has delivered everything queued. */
+const flush = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+describe("handshake", () => {
+  it("welcome carries version, app id (from the manifest), surface and the active project", () => {
+    const host = fake({ activeProject: "pomade", pomadeVersion: "0.3.0", manifest: { id: "pomade-planner", name: "P", version: "0.1.0", hostApi: 0, capabilities: [] } });
+    const f = raw(host);
+    f.hello();
+    expect(f.got).toEqual([
+      {
+        channel: "pomade",
+        type: "welcome",
+        hostApi: 0,
+        pomadeVersion: "0.3.0",
+        appId: "pomade-planner",
+        surface: "tab",
+        project: { id: "pomade", kind: "project", name: "Pomade", root: "Projects/Pomade" },
+      },
+    ]);
+  });
+
+  it("an app speaking a newer Host API → reject needs-newer-pomade", () => {
+    const f = raw(fake());
+    f.hello(1);
+    expect(f.got).toEqual([{ channel: "pomade", type: "reject", reason: "needs-newer-pomade", hostApi: 0 }]);
+  });
+
+  it("an app speaking an older Host API → reject app-too-old", () => {
+    const f = raw(fake({ hostApi: 1 }));
+    f.hello(0);
+    expect(f.got).toEqual([{ channel: "pomade", type: "reject", reason: "app-too-old", hostApi: 1 }]);
+  });
+
+  it("the SDK sees each outcome as its typed result", async () => {
+    expect((await connect({ transport: fake().transport, keySource: null })).status).toBe("connected");
+    expect(await connect({ transport: fake({ hostApi: 1 }).transport, keySource: null })).toEqual({
+      status: "rejected",
+      reason: "app-too-old",
+      hostApi: 1,
+    });
+  });
+
+  it("calls before welcome, or after a reject, are not-ready", () => {
+    const f = raw(fake());
+    expect(f.errorOf("host.info")).toBe("not-ready");
+    f.hello(7);
+    expect(f.errorOf("host.info")).toBe("not-ready");
+    f.hello(0);
+    expect(f.errorOf("host.info")).toBeNull();
+  });
+
+  it("a new hello (frame reload) drops the frame's watches", () => {
+    const host = fake();
+    const f = raw(host);
+    f.hello();
+    f.call("files.watch", { path: "", recursive: true });
+    f.hello();
+    host.writeFile("x.md", "");
+    expect(f.events()).toEqual([]);
+  });
+
+  it("ignores foreign and malformed messages", () => {
+    const f = raw(fake());
+    f.send({ channel: "other", type: "hello", hostApi: 0 });
+    f.send({ channel: "pomade", type: "hello", hostApi: "0" });
+    f.send({ channel: "pomade", type: "call", id: 1, method: "host.info" });
+    f.send({ channel: "pomade", type: "welcome" });
+    f.send("hello");
+    f.send(null);
+    expect(f.got).toEqual([]);
+  });
+
+  it("records forwarded keys", () => {
+    const host = fake();
+    const f = raw(host);
+    const key = { channel: "pomade", type: "key", key: "w", code: "KeyW", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false };
+    f.send(key);
+    expect(host.keys).toEqual([key]);
+    expect(f.got).toEqual([]);
+  });
+
+  it("a detached frame gets nothing and is no longer answered", () => {
+    const host = fake();
+    const f = raw(host);
+    f.hello();
+    f.call("files.watch", { path: "" , recursive: true });
+    f.frame.detach();
+    const before = f.got.length;
+    host.writeFile("x.md", "");
+    host.setActiveProject("kit");
+    f.hello();
+    expect(f.got).toHaveLength(before);
+  });
+});
+
+describe("calls — errors", () => {
+  function welcomed(options?: FakeHostOptions) {
+    const f = raw(fake(options));
+    f.hello();
+    return f;
+  }
+
+  it("unknown-method", () => {
+    const f = welcomed();
+    expect(f.errorOf("files.write", { path: "x" })).toBe("unknown-method");
+    expect(f.errorOf("toString")).toBe("unknown-method");
+    expect(f.errorOf("constructor")).toBe("unknown-method");
+  });
+
+  it("capability-denied for methods outside the manifest; host.info needs none", () => {
+    const projectOnly = welcomed({ manifest: { id: "a1", name: "A", version: "1.0.0", hostApi: 0, capabilities: ["project.read"] } });
+    expect(projectOnly.errorOf("host.info")).toBeNull();
+    expect(projectOnly.errorOf("project.getActive")).toBeNull();
+    for (const m of ["files.readFolder", "files.watch", "files.unwatch"]) {
+      expect(projectOnly.errorOf(m, { path: "", watchId: "w1" })).toBe("capability-denied");
+    }
+    const none = welcomed({ manifest: { id: "a1", name: "A", version: "1.0.0", hostApi: 0, capabilities: [] } });
+    expect(none.errorOf("project.getActive")).toBe("capability-denied");
+    const filesOnly = welcomed({ manifest: { id: "a1", name: "A", version: "1.0.0", hostApi: 0, capabilities: ["files.read"] } });
+    expect(filesOnly.errorOf("project.getActive")).toBe("capability-denied");
+    expect(filesOnly.errorOf("files.readFolder", { path: "" })).toBeNull();
+  });
+
+  it("capability is checked before params", () => {
+    const f = welcomed({ manifest: { id: "a1", name: "A", version: "1.0.0", hostApi: 0, capabilities: [] } });
+    expect(f.errorOf("files.readFolder", 5)).toBe("capability-denied");
+  });
+
+  it.each<[string, unknown]>([
+    ["files.readFolder", undefined],
+    ["files.readFolder", 5],
+    ["files.readFolder", null],
+    ["files.readFolder", ["docs"]],
+    ["files.readFolder", {}],
+    ["files.readFolder", { path: 1 }],
+    ["files.readFolder", { path: "", recursive: "yes" }],
+    ["files.readFolder", { path: "", frontmatter: 1 }],
+    ["files.watch", {}],
+    ["files.watch", { path: "", recursive: null }],
+    ["files.unwatch", {}],
+    ["files.unwatch", { watchId: 3 }],
+    ["host.info", "x"],
+    ["project.getActive", []],
+  ])("invalid-params: %s %j", (method, params) => {
+    expect(welcomed().errorOf(method, params)).toBe("invalid-params");
+  });
+
+  it("parameterless methods accept {} or no params", () => {
+    const f = welcomed();
+    expect(f.errorOf("host.info")).toBeNull();
+    expect(f.errorOf("host.info", {})).toBeNull();
+    expect(f.errorOf("project.getActive", { extra: 1 })).toBeNull();
+  });
+
+  it.each(["/", "/etc", "..", "../x", "Projects/../../x"])("outside-workspace: %j", (path) => {
+    const f = welcomed();
+    expect(f.errorOf("files.readFolder", { path })).toBe("outside-workspace");
+    expect(f.errorOf("files.watch", { path })).toBe("outside-workspace");
+  });
+
+  it("not-found for a missing path", () => {
+    const f = welcomed();
+    expect(f.errorOf("files.readFolder", { path: "nope" })).toBe("not-found");
+    expect(f.errorOf("files.watch", { path: "Projects/nope" })).toBe("not-found");
+  });
+
+  it("io-error when reading a file as a folder", () => {
+    const f = welcomed();
+    const r = f.call("files.readFolder", { path: "Projects/Pomade/README.md" });
+    expect(r).toMatchObject({ ok: false, error: { code: "io-error" } });
+    expect(!r.ok && r.error.message).toMatch(/ENOTDIR/);
+  });
+
+  it("unwatch of an unknown id succeeds", () => {
+    expect(welcomed().call("files.unwatch", { watchId: "nope" })).toMatchObject({ ok: true, value: {} });
+  });
+
+  it("every error carries a message", () => {
+    const r = welcomed().call("files.readFolder", { path: "nope" });
+    expect(!r.ok && r.error.message.length).toBeGreaterThan(0);
+  });
+});
+
+describe("host.info and project.getActive", () => {
+  it("host.info", async () => {
+    const host = await client(fake({ pomadeVersion: "0.3.0" }));
+    expect(await host.info()).toEqual({ pomadeVersion: "0.3.0", hostApi: 0, appId: "fake-app", surface: "tab" });
+  });
+
+  it("the Workspace scope when no project is active", async () => {
+    const host = await client(fake());
+    expect(await host.project.getActive()).toEqual({ id: "__workspace__", kind: "workspace", name: "Workspace", root: "" });
+    expect(host.welcome.project).toEqual(WORKSPACE_SCOPE);
+  });
+
+  it("the active project, with its root normalized", async () => {
+    const host = await client(fake({ activeProject: "kit" }));
+    expect(await host.project.getActive()).toEqual({ id: "kit", kind: "project", name: "pomade-kit", root: "Projects/pomade-kit" });
+  });
+});
+
+describe("files.readFolder", () => {
+  it("lists direct children, sorted by path, with kind, size (UTF-8 bytes) and mtime", async () => {
+    const host = await client(fake());
+    const { entries } = await host.files.readFolder({ path: "Projects/Pomade" });
+    expect(entries).toEqual([
+      { path: "Projects/Pomade/README.md", name: "README.md", kind: "file", size: 2, mtimeMs: 1000 },
+      { path: "Projects/Pomade/docs", name: "docs", kind: "dir", size: 0, mtimeMs: 1000 },
+    ]);
+  });
+
+  it("lists the workspace root for path ''", async () => {
+    const host = await client(fake());
+    expect((await host.files.readFolder({ path: "" })).entries.map((e) => e.path)).toEqual(["Projects"]);
+  });
+
+  it("normalizes the requested path", async () => {
+    const host = await client(fake());
+    const a = await host.files.readFolder({ path: "./Projects//Pomade/docs/../" });
+    const b = await host.files.readFolder({ path: "Projects/Pomade" });
+    expect(a).toEqual(b);
+  });
+
+  it("recursive includes sub-folders and honors the ignore list", async () => {
+    const host = await client(fake());
+    const { entries } = await host.files.readFolder({ path: "Projects/Pomade/docs/roadmap", recursive: true });
+    expect(entries.map((e) => e.path)).toEqual([
+      "Projects/Pomade/docs/roadmap/E-001-a.md",
+      "Projects/Pomade/docs/roadmap/T-002-b.md",
+      "Projects/Pomade/docs/roadmap/data.json",
+      "Projects/Pomade/docs/roadmap/done",
+      "Projects/Pomade/docs/roadmap/done/E-000-old.markdown",
+      "Projects/Pomade/docs/roadmap/notes.md",
+    ]);
+  });
+
+  it("non-recursive also hides ignored names", async () => {
+    const host = await client(fake());
+    const { entries } = await host.files.readFolder({ path: "Projects/Pomade/docs/roadmap" });
+    expect(entries.map((e) => e.name)).toEqual(["E-001-a.md", "T-002-b.md", "data.json", "done", "notes.md"]);
+  });
+
+  it("a custom ignore list replaces the default", async () => {
+    const host = await client(fake({ ignore: ["done"] }));
+    const { entries } = await host.files.readFolder({ path: "Projects/Pomade/docs/roadmap", recursive: true });
+    const names = entries.map((e) => e.name);
+    expect(names).toContain(".git");
+    expect(names).toContain("index.md");
+    expect(names).not.toContain("done");
+    expect(names).not.toContain("E-000-old.markdown");
+  });
+
+  it("reading inside an ignored folder lists it", async () => {
+    const host = await client(fake());
+    const { entries } = await host.files.readFolder({ path: "Projects/Pomade/docs/roadmap/.git" });
+    expect(entries.map((e) => e.name)).toEqual(["HEAD"]);
+  });
+
+  it("frontmatter: only when asked, only for Markdown files", async () => {
+    const host = await client(fake());
+    const plain = await host.files.readFolder({ path: "Projects/Pomade/docs/roadmap", recursive: true });
+    expect(plain.entries.every((e) => !("frontmatter" in e) && !("frontmatterError" in e))).toBe(true);
+
+    const { entries } = await host.files.readFolder({ path: "Projects/Pomade/docs/roadmap", recursive: true, frontmatter: true });
+    const by = Object.fromEntries(entries.map((e) => [e.name, e]));
+    expect(by["E-001-a.md"]?.frontmatter).toEqual({ id: "E-001", status: "done", created: "2026-11-09" });
+    expect(by["T-002-b.md"]?.frontmatter).toBeUndefined();
+    expect(by["T-002-b.md"]?.frontmatterError).toEqual(expect.any(String));
+    expect(by["notes.md"]).toMatchObject({ frontmatter: null });
+    expect(by["E-000-old.markdown"]?.frontmatter).toEqual({ id: "E-000" });
+    expect(by["data.json"]).not.toHaveProperty("frontmatter");
+    expect(by["done"]).not.toHaveProperty("frontmatter");
+  });
+
+  it("results are copies: mutating them does not change the workspace", async () => {
+    const host = await client(fake());
+    const a = await host.files.readFolder({ path: "Projects/Pomade/docs/roadmap", frontmatter: true });
+    const entry = a.entries[0];
+    if (entry?.frontmatter) entry.frontmatter.id = "mutated";
+    const b = await host.files.readFolder({ path: "Projects/Pomade/docs/roadmap", frontmatter: true });
+    expect(b.entries[0]?.frontmatter).toMatchObject({ id: "E-001" });
+  });
+});
+
+describe("files.watch and test controls", () => {
+  async function watched(host: FakeHost, path: string, recursive: boolean) {
+    const client_ = await client(host);
+    const batches: FileChange[][] = [];
+    const watch = await client_.files.watch({ path, recursive }, (c) => batches.push(c));
+    return { client: client_, batches, watch };
+  }
+
+  it("writeFile: create (with new parent folders), then change", async () => {
+    const host = fake();
+    const w = await watched(host, "Projects/Pomade/docs", true);
+    host.writeFile("Projects/Pomade/docs/new/x.md", "a");
+    host.writeFile("Projects/Pomade/docs/new/x.md", "ab");
+    await flush();
+    expect(w.batches).toEqual([
+      [
+        { kind: "create", path: "Projects/Pomade/docs/new" },
+        { kind: "create", path: "Projects/Pomade/docs/new/x.md" },
+      ],
+      [{ kind: "change", path: "Projects/Pomade/docs/new/x.md" }],
+    ]);
+  });
+
+  it("deleteFile and rename", async () => {
+    const host = fake();
+    const w = await watched(host, "Projects/Pomade/docs/roadmap", true);
+    host.deleteFile("Projects/Pomade/docs/roadmap/notes.md");
+    host.rename("Projects/Pomade/docs/roadmap/E-001-a.md", "Projects/Pomade/docs/roadmap/done/E-001-a.md");
+    await flush();
+    expect(w.batches).toEqual([
+      [{ kind: "delete", path: "Projects/Pomade/docs/roadmap/notes.md" }],
+      [{ kind: "rename", path: "Projects/Pomade/docs/roadmap/done/E-001-a.md", oldPath: "Projects/Pomade/docs/roadmap/E-001-a.md" }],
+    ]);
+    const { entries } = await w.client.files.readFolder({ path: "Projects/Pomade/docs/roadmap/done", frontmatter: true });
+    expect(entries.map((e) => e.name)).toEqual(["E-000-old.markdown", "E-001-a.md"]);
+    expect(entries[1]?.frontmatter).toMatchObject({ id: "E-001" });
+  });
+
+  it("renaming a folder moves everything under it", async () => {
+    const host = fake();
+    const c = await client(host);
+    host.rename("Projects/Pomade/docs/roadmap/done", "Projects/Pomade/archive/done");
+    const { entries } = await c.files.readFolder({ path: "Projects/Pomade/archive", recursive: true });
+    expect(entries.map((e) => e.path)).toEqual(["Projects/Pomade/archive/done", "Projects/Pomade/archive/done/E-000-old.markdown"]);
+    await expect(c.files.readFolder({ path: "Projects/Pomade/docs/roadmap/done" })).rejects.toMatchObject({ code: "not-found" });
+  });
+
+  it("a non-recursive watch sees direct children only", async () => {
+    const host = fake();
+    const w = await watched(host, "Projects/Pomade/docs/roadmap", false);
+    host.writeFile("Projects/Pomade/docs/roadmap/done/E-009.md", "");
+    host.writeFile("Projects/Pomade/docs/roadmap/E-009.md", "");
+    await flush();
+    expect(w.batches).toEqual([[{ kind: "create", path: "Projects/Pomade/docs/roadmap/E-009.md" }]]);
+  });
+
+  it("changes under ignored folders are not reported", async () => {
+    const host = fake();
+    const w = await watched(host, "Projects/Pomade", true);
+    host.writeFile("Projects/Pomade/docs/roadmap/.git/index", "");
+    host.writeFile("Projects/Pomade/node_modules/y/z.js", "");
+    await flush();
+    expect(w.batches).toEqual([]);
+  });
+
+  it("changes outside the watched path are not reported", async () => {
+    const host = fake();
+    const w = await watched(host, "Projects/Pomade/docs", true);
+    host.writeFile("Projects/Pomade/docs2/a.md", "");
+    host.writeFile("Projects/Pomade/README.md", "x");
+    await flush();
+    expect(w.batches).toEqual([]);
+  });
+
+  it("a rename across the watch boundary is reported both ways", async () => {
+    const host = fake();
+    const w = await watched(host, "Projects/Pomade/docs/roadmap/done", false);
+    host.rename("Projects/Pomade/docs/roadmap/notes.md", "Projects/Pomade/docs/roadmap/done/notes.md");
+    host.rename("Projects/Pomade/docs/roadmap/done/E-000-old.markdown", "Projects/Pomade/E-000-old.markdown");
+    await flush();
+    expect(w.batches.map((b) => b.map((c) => c.kind))).toEqual([["rename"], ["rename"]]);
+  });
+
+  it("a watch on a file sees that file", async () => {
+    const host = fake();
+    const w = await watched(host, "Projects/Pomade/README.md", false);
+    host.writeFile("Projects/Pomade/README.md", "new");
+    host.writeFile("Projects/Pomade/README2.md", "new");
+    await flush();
+    expect(w.batches).toEqual([[{ kind: "change", path: "Projects/Pomade/README.md" }]]);
+  });
+
+  it("a watch on the root sees everything not ignored", async () => {
+    const host = fake();
+    const w = await watched(host, "", true);
+    host.writeFile("top.md", "");
+    host.writeFile("Projects/Pomade/deep/er/x.md", "");
+    await flush();
+    expect(w.batches.flat().map((c) => c.path)).toEqual(["top.md", "Projects/Pomade/deep", "Projects/Pomade/deep/er", "Projects/Pomade/deep/er/x.md"]);
+  });
+
+  it("close() stops events; other watches on the same path keep theirs", async () => {
+    const host = fake();
+    const closed = await watched(host, "Projects", true);
+    const kept: FileChange[][] = [];
+    await closed.client.files.watch({ path: "Projects", recursive: true }, (x) => kept.push(x));
+    await closed.watch.close();
+    host.writeFile("Projects/x.md", "");
+    await flush();
+    expect(closed.batches).toEqual([]);
+    expect(kept).toEqual([[{ kind: "create", path: "Projects/x.md" }]]);
+  });
+
+  it("batch() delivers one files.changed per watch", async () => {
+    const host = fake();
+    const w = await watched(host, "Projects/Pomade/docs/roadmap", true);
+    host.batch(() => {
+      host.writeFile("Projects/Pomade/docs/roadmap/a.md", "");
+      host.batch(() => host.deleteFile("Projects/Pomade/docs/roadmap/notes.md"));
+      host.writeFile("Elsewhere/b.md", "");
+    });
+    await flush();
+    expect(w.batches).toEqual([
+      [
+        { kind: "create", path: "Projects/Pomade/docs/roadmap/a.md" },
+        { kind: "delete", path: "Projects/Pomade/docs/roadmap/notes.md" },
+      ],
+    ]);
+  });
+
+  it("frames do not share watches", async () => {
+    const host = fake();
+    const a = await watched(host, "Projects", true);
+    const b = await client(host);
+    const bGot = vi.fn();
+    await b.files.watch({ path: "Projects/Pomade/docs", recursive: true }, bGot);
+    host.writeFile("Projects/x.md", "");
+    await flush();
+    expect(a.batches).toHaveLength(1);
+    expect(bGot).not.toHaveBeenCalled();
+  });
+
+  it("watch ids are unique across frames", async () => {
+    const host = fake();
+    const a = await client(host);
+    const b = await client(host);
+    const ids = [(await a.files.watch({ path: "" }, vi.fn())).watchId, (await b.files.watch({ path: "" }, vi.fn())).watchId];
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it("mtime follows the clock; a folder's mtime moves when its entries change", async () => {
+    const host = fake();
+    const c = await client(host);
+    clock = 5000;
+    host.writeFile("Projects/Pomade/new.md", "x");
+    const { entries } = await c.files.readFolder({ path: "Projects/Pomade" });
+    expect(entries.find((e) => e.name === "new.md")?.mtimeMs).toBe(5000);
+    const parent = await c.files.readFolder({ path: "Projects" });
+    expect(parent.entries[0]).toMatchObject({ name: "Pomade", mtimeMs: 5000 });
+  });
+});
+
+describe("setActiveProject", () => {
+  it("emits project.changed to every welcomed frame and updates getActive", async () => {
+    const host = fake();
+    const a = await client(host);
+    const b = await client(host);
+    const unwelcomed = raw(host);
+    const seenA: ProjectRef[] = [];
+    const seenB: ProjectRef[] = [];
+    a.project.onChange((p) => seenA.push(p));
+    b.project.onChange((p) => seenB.push(p));
+    host.setActiveProject("pomade");
+    host.setActiveProject("pomade");
+    host.setActiveProject(null);
+    await flush();
+    const pomade = { id: "pomade", kind: "project", name: "Pomade", root: "Projects/Pomade" };
+    expect(seenA).toEqual([pomade, WORKSPACE_SCOPE]);
+    expect(seenB).toEqual(seenA);
+    expect(unwelcomed.got).toEqual([]);
+    expect(host.activeProject).toEqual(WORKSPACE_SCOPE);
+    host.setActiveProject("kit");
+    expect(await a.project.getActive()).toMatchObject({ id: "kit" });
+  });
+
+  it("an unknown project id throws", () => {
+    expect(() => fake().setActiveProject("nope")).toThrow(/no project/);
+  });
+});
+
+describe("construction and control errors", () => {
+  it("rejects an invalid manifest and an unknown active project", () => {
+    expect(() => createFakeHost({ manifest: { id: "X" } })).toThrow(/invalid manifest.*"id"/);
+    expect(() => createFakeHost({ activeProject: "nope" })).toThrow(/no project/);
+  });
+
+  it("rejects invalid control paths and impossible operations", () => {
+    const host = fake();
+    expect(() => host.writeFile("../x", "")).toThrow(/invalid workspace path/);
+    expect(() => host.writeFile("", "")).toThrow(/invalid workspace path/);
+    expect(() => host.writeFile("Projects/Pomade", "")).toThrow(/is a folder/);
+    expect(() => host.writeFile("Projects/Pomade/README.md/x", "")).toThrow(/is a file/);
+    expect(() => host.deleteFile("Projects/nope.md")).toThrow(/no file/);
+    expect(() => host.deleteFile("Projects/Pomade")).toThrow(/no file/);
+    expect(() => host.rename("Projects/nope", "x")).toThrow(/nothing at/);
+    expect(() => host.rename("Projects/Pomade/README.md", "Projects/Pomade/docs")).toThrow(/already exists/);
+    expect(() => host.rename("Projects/Pomade", "Projects/Pomade/sub")).toThrow(/into itself/);
+    expect(() => createFakeHost({ projects: [{ id: "x", name: "X", root: "../out" }] })).toThrow(/invalid workspace path/);
+  });
+
+  it("the default transport is one frame", () => {
+    const host = fake();
+    expect(host.transport).toBe(host.transport);
+    expect(host.createTransport()).not.toBe(host.transport);
+  });
+});
