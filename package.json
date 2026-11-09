@@ -29,6 +29,10 @@
       "types": "./dist/frontmatter/index.d.ts",
       "default": "./dist/frontmatter/index.js"
     },
+    "./schedule": {
+      "types": "./dist/schedule/index.d.ts",
+      "default": "./dist/schedule/index.js"
+    },
     "./node": {
       "types": "./dist/node/index.d.ts",
       "default": "./dist/node/index.js"

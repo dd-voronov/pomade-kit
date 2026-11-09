@@ -21,6 +21,7 @@ The package installs from a git tag: npm clones it, installs its dev dependencie
 | `pomade-kit/sdk` | `connect()` and the typed client | browser (any `Transport` elsewhere) |
 | `pomade-kit/fake-host` | the Host API in memory, for standalone runs and tests | browser and Node |
 | `pomade-kit/frontmatter` | field-only frontmatter writes: `setField`, `removeField`, and the block core Pomade's editor uses | browser and Node |
+| `pomade-kit/schedule` | the schedule format: `parseSchedule` with readable errors, the occurrence engine, `describeSchedule`, `formatSchedule` | browser and Node |
 | `pomade-kit/node` | `resolveWorkspace()` for commands | Node |
 
 ## Connect to Pomade
@@ -133,6 +134,129 @@ The block core (`parseFrontmatter`, `setScalarValue`, `setBooleanValue`, `setLis
 `addProperty`, `removeProperty`, `moveKey`, `getKeyLines`, `setComplexKeyLines`, `validateYaml`,
 `emitScalar`, `splitFrontmatter`) is Pomade's properties-panel logic with identical behavior and
 signatures; it works on the LF-normalized block that `splitFrontmatter` returns.
+
+## Schedules
+
+One recurrence format for every piece of the family: Runner jobs write it under `schedule:`,
+Planner recurring items under `repeat:`. It is a YAML mapping with **one shape key** and optional
+**modifiers**. No cron syntax. Times are `H:MM`, 24-hour, on the Mac's local clock; dates are
+`YYYY-MM-DD`.
+
+```yaml
+schedule:
+  once: 2026-11-20 23:00                         # one run; a Planner item writes the date only
+```
+```yaml
+schedule:
+  every: { minutes: 30, from: 9:00, to: 19:00 }  # or { hours: 2 }; from/to optional
+  only: weekdays                                 # weekdays (Mon–Fri) | weekends (Sat–Sun)
+```
+```yaml
+schedule:
+  daily: { at: [13:00, 20:00] }                  # one time or a list
+```
+```yaml
+schedule:
+  weekly: { days: [mon, tue, wed, thu, fri], at: 7:00 }
+```
+```yaml
+schedule:
+  monthly: { days: [1, 15, last, first mon], at: 9:00 }   # numbers 1–31, last, "<nth> <weekday>"
+```
+```yaml
+schedule:
+  monthly: { days: [5], months: [jan, apr, jul, oct], at: 9:00 }   # quarterly; one month = yearly
+```
+```yaml
+schedule:
+  always: true                                   # services
+```
+```yaml
+repeat:                                          # a Planner recurring item: whole days, no `at`
+  monthly: { days: [5] }
+  start: 2026-01-01                              # first date with occurrences (inclusive)
+  end: 2026-12-31                                # last date with occurrences (inclusive)
+  lead-days: 3                                   # shows up 3 days early
+```
+```yaml
+repeat:
+  after-completion: { months: 3 }                # or { days: N } / { weeks: N }
+```
+
+| Key | Values |
+|---|---|
+| `once` | `YYYY-MM-DD H:MM`, or `YYYY-MM-DD` in a day schedule |
+| `every` | `minutes: 1–1440` or `hours: 1–24`; `from`, `to` (a window inside one day, both ends inclusive) |
+| `daily` | `at`: a time or a list |
+| `weekly` | `days`: `mon` … `sun` (full names too); `at` |
+| `monthly` | `days`: `1`–`31`, `last`, `first`/`second`/`third`/`fourth`/`fifth`/`last` + weekday; `months`: `jan` … `dec` or `1`–`12`; `at` |
+| `after-completion` | exactly one of `days`, `weeks`, `months` |
+| `always` | `true` |
+| `only` | `weekdays` · `weekends` — with `every` and `daily` |
+| `start`, `end` | dates, inclusive — not with `once`, `always` |
+| `lead-days` | whole days ≥ 0 — not with `always` |
+
+Full day names, `1st`…`5th` and capitalised names are accepted; `formatSchedule` writes the
+canonical form above.
+
+**Meaning, where it could be read two ways:**
+- **Day 29–31 in a shorter month** happens on that month's last day (`days: [31]` = Jan 31, Feb
+  28 or 29, Mar 31, Apr 30 …). Two days that land on the same date are one occurrence. A **fifth
+  weekday** happens only in months that have one.
+- **`every`** is a grid of wall-clock times that restarts each day at `from` (default 0:00) and
+  stops at `to` (default 23:59): `every: { hours: 5 }` = 0:00, 5:00, 10:00, 15:00, 20:00.
+- **A time skipped by spring-forward** happens as many minutes later as the change skipped: a
+  02:30 daily run on Madrid's 02:00 → 03:00 day runs at 03:30, once. Interval times that land on
+  the same instant merge.
+- **A time repeated by fall-back** happens once, on its first pass: a 01:30 run on New York's
+  02:00 → 01:00 day runs at 01:30 EDT and not again at 01:30 EST. An interval leaves the repeated
+  hour empty.
+- **`after-completion`** has no fixed dates: the next date is the completion date plus the period
+  (months keep the day, clamped like above), never before `start`.
+- **A day schedule** (no `at`) in the time functions happens at local 0:00.
+
+**Resolution.** `parseSchedule(value, { resolution })` checks what the consumer accepts:
+`"day"` (Planner: no `every`, `always` or `at`), `"time"` (Runner: `at` required, `once` needs a
+time, no `after-completion` or `lead-days`), or omitted (anything).
+
+```ts
+import {
+  parseSchedule, formatScheduleError, formatSchedule, describeSchedule,
+  nextOccurrence, previousOccurrence, occurrencesBetween, nextDate, datesBetween, leadStart,
+} from "pomade-kit/schedule";
+
+const r = parseSchedule(frontmatter.schedule, { resolution: "time" });
+if (!r.ok) return r.errors.map((e) => formatScheduleError("schedule", e));
+// → 'schedule.weekly.days[1]: "fry" is not a weekday — use mon, tue, wed, thu, fri, sat or sun'
+const s = r.schedule;
+
+describeSchedule(s);                          // "every 30 min on weekdays, 9:00–19:00"
+
+// Runner — instants; time is always a parameter, never read inside.
+nextOccurrence(s, now);                       // first occurrence > now, or null
+occurrencesBetween(s, lastAlive, now);        // missed runs in (lastAlive, now], earliest first, ≤ 1000
+previousOccurrence(s, now);                   // the latest occurrence < now
+
+// Planner — whole days, as YYYY-MM-DD, relative to the planner day.
+nextDate(s, today, { inclusive: true });      // first date ≥ today (strictly after without inclusive)
+nextDate(afterCompletion, doneOn);            // doneOn + the period
+datesBetween(s, doOn, today);                 // dates in (doOn, today] — "missed N×" = 1 + length
+leadStart(s, doOn);                           // doOn − lead-days: in Today from this date
+
+setComplexKeyLines(block, "repeat", formatSchedule("repeat", s));   // write it back
+```
+
+`after-completion` and `always` have no fixed times: the time functions return null / `[]`, and
+`datesBetween` returns `[]`. Date helpers used by the engine are exported too (`addDays`,
+`addMonths`, `daysBetween`, `localDateOf`, `toInstant`, …).
+
+**Why JS `Date` local time and no time-zone library:** schedules follow the Mac's clock, and the
+`Date` local-time APIs are exactly that clock — in Node and in the browser, with no zone database
+to ship or keep current. ECMAScript defines how they resolve skipped and repeated wall times (the
+rules above), so the DST behavior is specified, not engine-dependent. Calendar arithmetic runs on
+UTC day numbers, so it never meets a DST shift. Tests pin a zone through `process.env.TZ`
+(`src/schedule/test-helpers.ts`), which Node applies on assignment; the matrix covers
+Europe/Madrid and America/New_York across both changes.
 
 ## Commands run with Pomade closed
 
