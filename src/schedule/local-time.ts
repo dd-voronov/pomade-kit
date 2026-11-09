@@ -16,6 +16,34 @@ export type Weekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 /** Monday first, as the week reads in the UI. */
 export const WEEKDAYS: readonly Weekday[] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 
+const WEEKDAY_NAMES: Record<string, Weekday> = {
+  mon: "mon", monday: "mon",
+  tue: "tue", tues: "tue", tuesday: "tue",
+  wed: "wed", wednesday: "wed",
+  thu: "thu", thur: "thu", thurs: "thu", thursday: "thu",
+  fri: "fri", friday: "fri",
+  sat: "sat", saturday: "sat",
+  sun: "sun", sunday: "sun",
+};
+
+export const MONTH_ABBR = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"] as const;
+const MONTH_FULL = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+
+/** `nov`, `november`, `sept` → 1–12; null when not a month name. */
+export function monthOfName(name: string): number | null {
+  const n = name.toLowerCase();
+  if (n === "sept") return 9;
+  const i = MONTH_ABBR.indexOf(n as (typeof MONTH_ABBR)[number]);
+  if (i >= 0) return i + 1;
+  const j = MONTH_FULL.indexOf(n);
+  return j >= 0 ? j + 1 : null;
+}
+
+/** `fri`, `Friday`, `thurs` → `fri`; null when not a weekday name. */
+export function weekdayOfName(name: string): Weekday | null {
+  return WEEKDAY_NAMES[name.toLowerCase()] ?? null;
+}
+
 export const MIDNIGHT: Time = { hour: 0, minute: 0 };
 
 const DAY_MS = 86_400_000;

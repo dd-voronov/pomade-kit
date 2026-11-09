@@ -1,7 +1,18 @@
 // The schedule format: a YAML mapping agents write under a frontmatter key (`schedule:` in
 // Runner jobs, `repeat:` in Planner items). One shape key says when; modifiers narrow it.
 
-import { formatTime, isLocalDate, parseTime, WEEKDAYS, type LocalDate, type Time, type Weekday } from "./local-time.js";
+import {
+  formatTime,
+  isLocalDate,
+  MONTH_ABBR,
+  monthOfName,
+  parseTime,
+  weekdayOfName,
+  WEEKDAYS,
+  type LocalDate,
+  type Time,
+  type Weekday,
+} from "./local-time.js";
 
 export type Nth = 1 | 2 | 3 | 4 | 5 | "last";
 
@@ -56,34 +67,6 @@ export type ScheduleParseResult = { ok: true; schedule: Schedule } | { ok: false
 export const SHAPE_KEYS: readonly RuleKind[] = ["once", "every", "daily", "weekly", "monthly", "after-completion", "always"];
 const MODIFIER_KEYS = ["only", "start", "end", "lead-days"] as const;
 const ALL_KEYS: readonly string[] = [...SHAPE_KEYS, ...MODIFIER_KEYS];
-
-const WEEKDAY_NAMES: Record<string, Weekday> = {
-  mon: "mon", monday: "mon",
-  tue: "tue", tues: "tue", tuesday: "tue",
-  wed: "wed", wednesday: "wed",
-  thu: "thu", thur: "thu", thurs: "thu", thursday: "thu",
-  fri: "fri", friday: "fri",
-  sat: "sat", saturday: "sat",
-  sun: "sun", sunday: "sun",
-};
-
-export const MONTH_ABBR = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"] as const;
-const MONTH_FULL = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
-
-/** `nov`, `november`, `sept` → 1–12; null when not a month name. */
-export function monthOfName(name: string): number | null {
-  const n = name.toLowerCase();
-  if (n === "sept") return 9;
-  const i = MONTH_ABBR.indexOf(n as (typeof MONTH_ABBR)[number]);
-  if (i >= 0) return i + 1;
-  const j = MONTH_FULL.indexOf(n);
-  return j >= 0 ? j + 1 : null;
-}
-
-/** `fri`, `Friday`, `thurs` → `fri`; null when not a weekday name. */
-export function weekdayOfName(name: string): Weekday | null {
-  return WEEKDAY_NAMES[name.toLowerCase()] ?? null;
-}
 
 const NTH_WORDS: Record<string, Nth> = {
   first: 1, "1st": 1, second: 2, "2nd": 2, third: 3, "3rd": 3, fourth: 4, "4th": 4, fifth: 5, "5th": 5, last: "last",

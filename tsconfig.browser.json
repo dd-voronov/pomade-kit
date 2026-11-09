@@ -15,6 +15,7 @@
     "src/fake-host/**/*.ts",
     "src/frontmatter/**/*.ts",
     "src/schedule/**/*.ts",
+    "src/dates/**/*.ts",
     "examples/hello/src/**/*.ts"
   ],
   "exclude": [

@@ -33,6 +33,10 @@
       "types": "./dist/schedule/index.d.ts",
       "default": "./dist/schedule/index.js"
     },
+    "./dates": {
+      "types": "./dist/dates/index.d.ts",
+      "default": "./dist/dates/index.js"
+    },
     "./node": {
       "types": "./dist/node/index.d.ts",
       "default": "./dist/node/index.js"

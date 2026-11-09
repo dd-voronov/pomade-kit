@@ -22,6 +22,7 @@ The package installs from a git tag: npm clones it, installs its dev dependencie
 | `pomade-kit/fake-host` | the Host API in memory, for standalone runs and tests | browser and Node |
 | `pomade-kit/frontmatter` | field-only frontmatter writes: `setField`, `removeField`, and the block core Pomade's editor uses | browser and Node |
 | `pomade-kit/schedule` | the schedule format: `parseSchedule` with readable errors, the occurrence engine, `describeSchedule`, `formatSchedule` | browser and Node |
+| `pomade-kit/dates` | date phrases: `parseDatePhrase` (`fri`, `tomorrow`, `+3d`, `nov 20`, `tonight 23:00`, `in 2 hours`) and `currentDay` with a day boundary | browser and Node |
 | `pomade-kit/node` | `resolveWorkspace()` for commands | Node |
 
 ## Connect to Pomade
@@ -257,6 +258,47 @@ rules above), so the DST behavior is specified, not engine-dependent. Calendar a
 UTC day numbers, so it never meets a DST shift. Tests pin a zone through `process.env.TZ`
 (`src/schedule/test-helpers.ts`), which Node applies on assignment; the matrix covers
 Europe/Madrid and America/New_York across both changes.
+
+## Date phrases
+
+Short typed phrases become dates the same way everywhere — the Planner's quick add, Pomade's
+editor, Runner's "Run at…".
+
+```ts
+import { parseDatePhrase, currentDay } from "pomade-kit/dates";
+
+const r = parseDatePhrase(input, { now: new Date(), dayBoundary: { hour: 3, minute: 0 } });
+switch (r.kind) {
+  case "date":       r.date; break;                  // "2026-11-13" — a whole day
+  case "date-time":  r.at; r.date; r.time; break;    // a moment: the instant, its local date and time
+  case "invalid":    r.message; break;               // "Nov has no day 31" — looks like a date, isn't one
+  case "not-a-date": break;                          // treat the text as text
+}
+currentDay(now, { hour: 3, minute: 0 });             // the Planner day: at 01:30 still yesterday
+```
+
+| Phrase | Result (now = Mon 2026-11-09 14:00) |
+|---|---|
+| `today` · `tomorrow` · `yesterday` · `tonight` | 2026-11-09 · 2026-11-10 · 2026-11-08 · 2026-11-09 |
+| `fri`, `friday` (any weekday name) | 2026-11-13 — the next one after today, 1–7 days ahead (`mon` → 2026-11-16) |
+| `nov 20`, `20 nov`, `november 20th` | 2026-11-20 — the first on or after today (`nov 8` → 2027-11-08, `feb 29` → 2028-02-29) |
+| `nov 20 2027`, `nov 20, 2027`, `2026-11-20` | that date |
+| `+3d` or `in 3 days` · `+2w` or `in 2 weeks` · `+1mo` | 2026-11-12 · 2026-11-23 · 2026-12-09 (months clamp to short months) |
+| `+2h` · `+30min` · `in 2 hours` · `in 90 minutes` | `now` plus that much elapsed time |
+| `tonight 23:00` · `tonight 1:00` | 2026-11-09 23:00 · 2026-11-10 1:00 (before 12:00 = the next morning) |
+| `tomorrow 9:00`, `fri at 9pm`, `nov 20 9:30` | that day at that time |
+| `23:00`, `at 7am` (a time alone) | its next occurrence after `now` |
+
+- **Day boundary.** Day phrases count from the reference day: the calendar date, or with
+  `dayBoundary` the Planner's day — at 01:30 with a 03:00 boundary, `today` is still yesterday's
+  date and `tomorrow` is today's. Elapsed-time phrases (`+2h`) and a time alone ignore it.
+- **Times** are `H:MM` 24-hour or `9pm` / `9:30am`; they follow the schedule module's DST rules (a
+  skipped time moves forward by the gap, a repeated one is its first pass). `date` and `time` in
+  the result are where `at` actually falls.
+- **Invalid** means the text reads as a date but names none: `nov 31`, `feb 29 2027`,
+  `2026-02-30`, `tomorrow 25:00`, `13pm`, `+99999d`.
+- Case and extra spaces are ignored. Anything else — `buy milk`, `next fri`, `fri 20` — is
+  `not-a-date`.
 
 ## Commands run with Pomade closed
 
