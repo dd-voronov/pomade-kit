@@ -3,6 +3,8 @@
 
 import { CHORD_FORMAT, formatChord, parseChord } from "./shortcuts.js";
 import { parseManifestEvents, type ManifestEvents } from "./events.js";
+import { PLATFORM_CLIENT_ID } from "./socket.js";
+import { API_METHOD_MAX_LENGTH, API_METHOD_RE } from "./broker.js";
 import {
   CAPABILITIES,
   SHORTCUT_ACTIONS,
@@ -45,6 +47,43 @@ export interface Manifest {
   skills?: AppSkill[];
   /** The events the app publishes and subscribes to (pomade:E-031); absent when the manifest declares none. */
   events?: ManifestEvents;
+  /** The app's background process (pomade:E-028); absent when it has none. */
+  backend?: AppBackend;
+  /** The methods the app offers other apps through Pomade's broker (pomade:E-028); absent when none. */
+  api?: string[];
+  /** The apps whose APIs it calls (pomade:E-028, PLATFORM rule 4); absent when none. */
+  calls?: string[];
+  /** Command-line entries Pomade puts on PATH (pomade:E-028); absent when none. */
+  commands?: AppCommand[];
+}
+
+/** One command an app ships (manifest `commands[]`, HOST-API §1). */
+export interface AppCommand {
+  /** What the user types: the app id, or `<app id>-<word>` (`COMMAND_NAME_RE`). */
+  name: string;
+  /** The Node entry inside the build (`.js`, `.mjs` or `.cjs`). */
+  entry: string;
+  /** What it does, for people (install summary); "" when not given. */
+  title: string;
+}
+
+export const COMMAND_NAME_RE = /^[a-z][a-z0-9-]{0,63}$/;
+/** Pomade's own commands: no app may ship one with these names. */
+export const RESERVED_COMMANDS: readonly string[] = ["pomade", "pomade-git"];
+
+/** When an app's backend runs (HOST-API §1 `backend`): while Pomade runs, or always — a login
+ *  item that survives Pomade quitting. */
+export type BackendMode = "with-pomade" | "always-on";
+
+export const BACKEND_MODES: readonly BackendMode[] = ["with-pomade", "always-on"];
+
+/** An app's backend (manifest `backend`, HOST-API §1). */
+export interface AppBackend {
+  /** The Node entry inside the build (`.js`, `.mjs` or `.cjs`). */
+  entry: string;
+  mode: BackendMode;
+  /** `always-on` only: an app update restarts the running backend (default: it keeps running). */
+  restartOnUpdate: boolean;
 }
 
 /** One agent skill an app ships (manifest `skills[]`, HOST-API §1). */
@@ -81,6 +120,10 @@ const KNOWN_KEYS = new Set([
   "shortcuts",
   "skills",
   "events",
+  "backend",
+  "api",
+  "calls",
+  "commands",
 ]);
 
 /** One invalid field. */
@@ -136,6 +179,7 @@ export function parseManifest(value: unknown): ManifestParseResult {
   };
 
   if (typeof m.id !== "string" || !APP_ID_RE.test(m.id)) fail("id", `must match ${APP_ID_RE.source}`, m.id);
+  else if (m.id === PLATFORM_CLIENT_ID) fail("id", "is reserved for Pomade itself", m.id);
   if (typeof m.name !== "string" || m.name.trim() === "") fail("name", "must be a non-empty string", m.name);
   if (typeof m.version !== "string" || !SEMVER_RE.test(m.version)) fail("version", "must be a semver string", m.version);
   if (typeof m.hostApi !== "number" || !Number.isInteger(m.hostApi) || m.hostApi < 0) {
@@ -172,6 +216,10 @@ export function parseManifest(value: unknown): ManifestParseResult {
   const shortcuts = m.shortcuts === undefined ? undefined : parseShortcuts(m.shortcuts, errors);
   const skills = m.skills === undefined ? undefined : parseSkills(m.skills, errors);
   const events = m.events === undefined ? undefined : parseManifestEvents(m.events, errors);
+  const backend = m.backend === undefined ? undefined : parseBackend(m.backend, errors);
+  const api = m.api === undefined ? undefined : parseApi(m.api, errors);
+  const calls = m.calls === undefined ? undefined : parseCalls(m.calls, m.id, errors);
+  const commands = m.commands === undefined ? undefined : parseCommands(m.commands, m.id, errors);
 
   if (errors.length > 0) return { ok: false, errors, ...errors[0]! };
 
@@ -190,6 +238,10 @@ export function parseManifest(value: unknown): ManifestParseResult {
   if (shortcuts !== undefined) manifest.shortcuts = shortcuts;
   if (skills !== undefined) manifest.skills = skills;
   if (events !== undefined) manifest.events = events;
+  if (backend !== undefined) manifest.backend = backend;
+  if (api !== undefined) manifest.api = api;
+  if (calls !== undefined) manifest.calls = calls;
+  if (commands !== undefined) manifest.commands = commands;
   const unsupportedKeys = Object.keys(m).filter((k) => !KNOWN_KEYS.has(k));
   return { ok: true, manifest, unsupportedKeys };
 }
@@ -373,6 +425,116 @@ function parseSkills(raw: unknown, errors: ManifestError[]): AppSkill[] {
     out.push({ name, path: item });
   });
   return out;
+}
+
+/** `api` (HOST-API §1): the method names the app serves; each matches `API_METHOD_RE`, unique. */
+function parseApi(raw: unknown, errors: ManifestError[]): string[] {
+  if (!Array.isArray(raw)) {
+    errors.push({ field: "api", message: `"api" must be an array of method names ${received(raw)}` });
+    return [];
+  }
+  const out: string[] = [];
+  (raw as unknown[]).forEach((item, i) => {
+    const at = `api[${i}]`;
+    if (typeof item !== "string" || item.length > API_METHOD_MAX_LENGTH || !API_METHOD_RE.test(item)) {
+      errors.push({ field: at, message: `"${at}" must be a method name matching ${API_METHOD_RE.source} ${received(item)}` });
+    } else if (out.includes(item)) {
+      errors.push({ field: at, message: `"${at}" repeats the method ${JSON.stringify(item)}` });
+    } else {
+      out.push(item);
+    }
+  });
+  return out;
+}
+
+/** `calls` (HOST-API §1): the ids of the apps whose APIs this app calls — not itself, unique. */
+function parseCalls(raw: unknown, ownId: unknown, errors: ManifestError[]): string[] {
+  if (!Array.isArray(raw)) {
+    errors.push({ field: "calls", message: `"calls" must be an array of app ids ${received(raw)}` });
+    return [];
+  }
+  const out: string[] = [];
+  (raw as unknown[]).forEach((item, i) => {
+    const at = `calls[${i}]`;
+    if (typeof item !== "string" || !APP_ID_RE.test(item) || item === PLATFORM_CLIENT_ID) {
+      errors.push({ field: at, message: `"${at}" must be an app id ${received(item)}` });
+    } else if (item === ownId) {
+      errors.push({ field: at, message: `"${at}" names the app itself; an app always reaches its own API` });
+    } else if (out.includes(item)) {
+      errors.push({ field: at, message: `"${at}" repeats the app ${JSON.stringify(item)}` });
+    } else {
+      out.push(item);
+    }
+  });
+  return out;
+}
+
+/** A Node entry file inside the build. */
+const NODE_ENTRY_RE = /\.(m|c)?js$/;
+
+/** `commands` (HOST-API §1): `{ name, entry, title? }` each. A name is the app id or starts with
+ *  `<app id>-` — an app never shadows a system command or another app's — and is not one of
+ *  Pomade's own; unique. */
+function parseCommands(raw: unknown, ownId: unknown, errors: ManifestError[]): AppCommand[] {
+  if (!Array.isArray(raw)) {
+    errors.push({ field: "commands", message: `"commands" must be an array of commands ${received(raw)}` });
+    return [];
+  }
+  const out: AppCommand[] = [];
+  (raw as unknown[]).forEach((item, i) => {
+    const at = `commands[${i}]`;
+    if (!isObject(item)) {
+      errors.push({ field: at, message: `"${at}" must be an object ${received(item)}` });
+      return;
+    }
+    const before = errors.length;
+    const fail = (key: string, rule: string, value: unknown): void => {
+      errors.push({ field: `${at}.${key}`, message: `"${at}.${key}" ${rule} ${received(value)}` });
+    };
+    const name = item.name;
+    if (typeof name !== "string" || !COMMAND_NAME_RE.test(name)) {
+      fail("name", `must match ${COMMAND_NAME_RE.source}`, name);
+    } else if (typeof ownId === "string" && name !== ownId && !name.startsWith(`${ownId}-`)) {
+      fail("name", `must be the app id or start with "${ownId}-"`, name);
+    } else if (RESERVED_COMMANDS.includes(name)) {
+      fail("name", "is one of Pomade's own commands", name);
+    } else if (out.some((c) => c.name === name)) {
+      errors.push({ field: `${at}.name`, message: `"${at}.name" repeats the command ${JSON.stringify(name)}` });
+    }
+    if (typeof item.entry !== "string" || !isInnerPath(item.entry) || !NODE_ENTRY_RE.test(item.entry)) {
+      fail("entry", "must be a .js, .mjs or .cjs file inside the build folder", item.entry);
+    }
+    if (item.title !== undefined && typeof item.title !== "string") fail("title", "must be a string", item.title);
+    if (errors.length > before) return;
+    out.push({ name: name as string, entry: item.entry as string, title: ((item.title as string | undefined) ?? "").trim() });
+  });
+  return out;
+}
+
+/** `backend` (HOST-API §1): `{ entry, mode, restartOnUpdate? }`. */
+function parseBackend(raw: unknown, errors: ManifestError[]): AppBackend | undefined {
+  if (!isObject(raw)) {
+    errors.push({ field: "backend", message: `"backend" must be an object ${received(raw)}` });
+    return undefined;
+  }
+  const before = errors.length;
+  const fail = (key: string, rule: string, value: unknown): void => {
+    errors.push({ field: `backend.${key}`, message: `"backend.${key}" ${rule} ${received(value)}` });
+  };
+  if (typeof raw.entry !== "string" || !isInnerPath(raw.entry) || !NODE_ENTRY_RE.test(raw.entry)) {
+    fail("entry", "must be a .js, .mjs or .cjs file inside the build folder", raw.entry);
+  }
+  if (typeof raw.mode !== "string" || !BACKEND_MODES.includes(raw.mode as BackendMode)) {
+    fail("mode", `must be one of ${BACKEND_MODES.join(", ")}`, raw.mode);
+  }
+  if (raw.restartOnUpdate !== undefined) {
+    if (typeof raw.restartOnUpdate !== "boolean") fail("restartOnUpdate", "must be a boolean", raw.restartOnUpdate);
+    else if (raw.mode !== "always-on") {
+      errors.push({ field: "backend.restartOnUpdate", message: '"backend.restartOnUpdate" is only for mode "always-on"' });
+    }
+  }
+  if (errors.length > before) return undefined;
+  return { entry: raw.entry as string, mode: raw.mode as BackendMode, restartOnUpdate: raw.restartOnUpdate === true };
 }
 
 function isPanelIcon(icon: { action: unknown }): boolean {

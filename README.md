@@ -24,7 +24,7 @@ The package installs from a git tag: npm clones it, installs its dev dependencie
 | `pomade-kit/schedule` | the schedule format: `parseSchedule` with readable errors, the occurrence engine, `describeSchedule`, `formatSchedule` | browser and Node |
 | `pomade-kit/dates` | date phrases: `parseDatePhrase` (`fri`, `tomorrow`, `+3d`, `nov 20`, `tonight 23:00`, `in 2 hours`) and `currentDay` with a day boundary | browser and Node |
 | `pomade-kit/scanners` | terminal output readers: `MarkerScanner` (Pomade's shell markers), `AttentionScanner` (bell, notifications), `AgentStateScanner` (claude/codex working, idle, waiting at a permission or trust prompt) | browser and Node |
-| `pomade-kit/node` | `resolveWorkspace()` for commands; `postNotice()` — a notice from a backend or command, with Pomade open or closed | Node |
+| `pomade-kit/node` | the Host API over Pomade's socket for backends and commands (`connectSocket`, `stayConnected`, `launchPomade`), `resolveWorkspace()`; `postNotice()` — a notice from a backend or command, with Pomade open or closed | Node |
 
 ## Connect to Pomade
 
@@ -40,7 +40,7 @@ else if (result.status === "rejected") {
   const host = result.host;
   host.welcome.project;                         // the project the frame was opened in
   const { surface, icon, route } = host.welcome; // what the frame was opened for — render `route`
-  await host.info();                            // { pomadeVersion, hostApi, appId, surface, icon?, route }
+  await host.info();                            // { pomadeVersion, hostApi, appId, surface, icon?, route, skills }
   await host.project.getActive();               // ProjectRef; the Workspace scope when none
   const off = host.project.onChange((project) => { /* switch */ });
 
@@ -296,15 +296,18 @@ Pomade coalesces a burst from one app into one toast ("4 more from Runner"), and
 an app's notices (they still land in the list). `checkNotice` (`pomade-kit/protocol`) is the rule
 every host applies.
 
-**From a backend or a command** — with Pomade open or closed — post through the queue:
+**From a backend or a command** — with Pomade open or closed:
 
 ```ts
 import { postNotice } from "pomade-kit/node";
-await postNotice({ title: "Commit & push failed", body: "Knowledge: conflict" }, { source: "pomade-git" });
+const r = await postNotice({ title: "Commit & push failed", body: "Knowledge: conflict" }, { source: "pomade-git" });
+r.delivered;                                    // "pomade" (shown now) | "queue" (r.path: the queued file)
 ```
 
-It writes one JSON file into `<userData>/notices/queue/` (a dot-file renamed into place); Pomade
-drains the folder at launch and watches it while running. `source` is the app's id (or the
+With Pomade running it sends `notices.post` over the socket — over `options.host` (a connected
+client) or a short connection made with the identity in the environment (`POMADE_APP_ID`, …). With
+Pomade closed, or no identity configured, it writes one JSON file into `<userData>/notices/queue/`
+(a dot-file renamed into place); Pomade drains the folder at launch and watches it while running. `source` is the app's id (or the
 platform command's name); the target is the dev Pomade unless `stable: true`, and
 `POMADE_USER_DATA` overrides both (`pomadeUserData()`). The file format is `QueuedNotice`
 (`parseQueuedNotice`, `NOTICE_QUEUE_DIR`, `queuedNoticeFileName` in `pomade-kit/protocol`).
@@ -429,7 +432,12 @@ overlay is `fake.createTransport({ surface: "overlay", shortcut: "quick-add", on
 ```
 
 The skill's master copy lives in the app repo, versioned with the format it describes, and ships
-in the build. Pomade links it nowhere: `pomade apps install` checks each folder holds a `SKILL.md`
+in the build. `host.info()` answers `skills: [{ name, path }]` — each folder's absolute path in the
+installed (or dev-linked) build, `path: null` for a dev-server link; the fake host answers
+`<appFolder>/<path>` (`appFolder` option, default `/fake/apps/<id>`). The reference pattern
+(`examples/hello`): say once, in a first-run notice the user dismisses for good (remember it with
+`host.state`), "This app ships a skill for agents: <name>, at <path>. To give it to an agent, copy or
+link that folder into the agent's skills folder." — and keep the same in the app's About view. Pomade links it nowhere: `pomade apps install` checks each folder holds a `SKILL.md`
 and reports where it is in the installed build, so the user can copy or link it into an agent's
 skills folder (HOST-API §2). Validation reports every invalid entry as `"skills[i]"`.
 
@@ -439,6 +447,32 @@ its icon shows, welcomed on `surface: "panel"`. It needs a strip icon with actio
 `both` (the first one is the launch panel: `launchPanelIcon(manifest)`); otherwise, and for a
 non-boolean value, the field is invalid. The fake host has no launch: open that panel frame with
 `fake.createTransport({ surface: "panel", icon })`.
+
+`backend` declares the app's background process — a Node program in the build that Pomade runs
+with its own runtime and that talks to it over the socket ("Backends and commands" below):
+
+```jsonc
+"backend": { "entry": "backend/main.js", "mode": "with-pomade" }
+```
+
+`entry` is a `.js`, `.mjs` or `.cjs` file inside the build; `mode` is `"with-pomade"` (runs while
+Pomade runs, restarted after a crash) or `"always-on"` (a login item that keeps running when Pomade
+quits); `restartOnUpdate: true` (always-on only) lets an update restart the running backend.
+Bundle the backend into its entry — an installed build has no `node_modules`. Invalid keys are
+reported as `"backend.mode"` etc. The id `pomade` is reserved for Pomade itself.
+
+`commands` declares command-line entries Pomade puts on `PATH` (its command folder, `~/.pomade/bin`
+for the stable Pomade):
+
+```jsonc
+"commands": [{ "name": "pomade-planner", "entry": "cli/main.js", "title": "Today's items as JSON" }]
+```
+
+`name` is the app id or starts with `<app id>-` (so an app never shadows a system command or
+another app's), never `pomade` / `pomade-git` (`RESERVED_COMMANDS`); `entry` is a bundled Node file
+in the build; `title` is optional. The command runs with Pomade's runtime, with or without Pomade
+running: it reaches its app's API through `connectSocket()` and finds the workspace with
+`resolveWorkspace()`.
 
 ## Write one frontmatter field
 
@@ -690,18 +724,104 @@ pty.onExit(() => agent.dispose());
   (`src/scanners/fixtures/`, provenance in each file) replay in the unit suite with their
   recorded timing.
 
-## Commands run with Pomade closed
+## Calling other apps — the broker
 
-```ts
-import { resolveWorkspace } from "pomade-kit/node";
-const root = resolveWorkspace();   // absolute POMADE_WORKSPACE, or null
+An app offers methods to other apps by naming them in its manifest's `api`, and declares the apps it
+calls in `calls` (PLATFORM rule 4: no call cycles). Pomade carries each call to the app's serving
+client — its backend, else a frame — and back:
+
+```jsonc
+"api": ["jobsForRepo"],          // what this app serves
+"calls": ["pomade-agents"]       // whose APIs it calls
 ```
 
-Reading the workspace pointer Pomade records joins with `pomade:E-028`.
+```ts
+// Serve (in the backend, or a frame): one handler per method; return plain JSON.
+await host.api.serve({
+  jobsForRepo: async (params, { from }) => ({ jobs: await jobsFor((params as { repo: string }).repo) }),
+});
+
+// Call: reject with HostError — fall back on "app-absent" / "app-not-responding".
+try {
+  const last = await host.apps.call("pomade-agents", "sessions.last", { cwd }, { timeoutMs: 2000 });
+} catch (err) {
+  if (err instanceof HostError && (err.code === "app-absent" || err.code === "app-not-responding")) useFallback();
+  else throw err;
+}
+```
+
+- `api` method names match `API_METHOD_RE` (`today`, `jobsForRepo`, `sessions.list`); `calls` are app
+  ids, never the app itself — an app always reaches its own API (a frame calling its own backend).
+- `apps.call` errors: `capability-denied` (the app is not in `calls`), `app-absent` (not installed,
+  or nothing serves its API now), `unknown-method` (not in its `api`, or no handler),
+  `app-not-responding` (no answer within `timeoutMs`, 100–60000, default 5000; or the server went
+  away), `app-error` (the handler threw something other than `HostError`, or answered non-JSON), or
+  the `HostError` code the handler threw. `params` default to `{}`.
+- A handler gets `from`: the caller's app id, `"pomade"` for Pomade itself (rule 7 reads).
+- Fake host: `createFakeHost({ apps: { "pomade-agents": { "sessions.last": () => ({…}) }, "slow": "not-responding" } })`
+  scripts other apps; `fake.callApi(method, params, { from })` calls the app's own served API.
+
+## Backends and commands — the socket
+
+An app's backend and its commands talk to Pomade over a unix socket in Pomade's user data, with the
+same messages and the same typed client as a frame (`Pomade/docs/HOST-API.md` §3 "Socket").
+
+```ts
+import { connectSocket, launchPomade, stayConnected, resolveWorkspace } from "pomade-kit/node";
+
+// A command: one connection. Identity and socket come from the environment Pomade gives it
+// (POMADE_APP_ID, POMADE_APP_KEY_FILE, POMADE_CLIENT, POMADE_SOCKET / POMADE_HOME).
+const r = await connectSocket();                // never throws for a closed Pomade
+if (r.status === "not-running") {
+  // Pomade is closed: fall back (read your own files under resolveWorkspace())
+} else if (r.status === "rejected") {
+  r.reason;                                     // "unauthorized" | "needs-newer-pomade" | "app-too-old"
+} else {
+  const host = r.host;                          // the same HostClient as a frame's
+  host.welcome.surface;                         // "backend" | "command"
+  await host.files.readFolder({ path: "Projects/x/docs" });
+  host.close();
+}
+
+// A backend: stay connected across Pomade restarts (back-off 250 ms → 5 s).
+const keeper = stayConnected({}, {
+  onConnect(host) { /* register, watch, … */ },
+  onDisconnect() { /* Pomade quit or restarted */ },
+});
+keeper.stop();
+
+const root = resolveWorkspace();   // POMADE_WORKSPACE, else the pointer Pomade records; null if none
+
+// An always-on backend (or a command) that needs Pomade: start it the way it recorded, and wait.
+const up = await launchPomade({ readyTimeoutMs: 60000 });
+if (up.status === "connected") up.host;      // up.launched: this call started it
+```
+
+- `connectSocket()` resolves `connected`, `not-running` (nothing listens, or no answer in 5 s) or
+  `rejected`. It throws only when the identity is not configured — no app id, no key.
+- Options override the environment: `socketPath`, `appId`, `key` / `keyFile`, `role`
+  (`"backend"` | `"command"`, default `POMADE_CLIENT`, else `"command"`), `env`, `timeoutMs`.
+- Over the socket `files.pickFolder`, `git.watch` and `overlay.close` are `capability-denied`
+  (they need a frame); everything else is as for the app's frames, under its manifest.
+- `launchPomade()` connects when Pomade runs; otherwise it runs the launch Pomade recorded in
+  `host.json` (`open -a` for the installed app), without `ELECTRON_RUN_AS_NODE`, and retries the
+  socket until it answers (`readyTimeoutMs`, default 60 s): `connected` (`launched`, and `pid` for a
+  directly started dev build), `rejected`, or `failed`.
+- Pomade's own commands (`pomade-git`) connect as the platform client (`appId: "pomade"`, the
+  platform key) and may call `host.agents.liveIn(folder)` → `{ live, agents: [{ agentId, cwd }] }`
+  — agents running in Pomade's terminals at or below an absolute folder; for an app it is
+  `capability-denied` (`PLATFORM_CAPABILITY`). They reach app APIs with `host.apps.call` like apps.
+- `host.onClose(cb)` runs when the client closes — `close()`, or Pomade went away.
+- `pomadeHome()` is the Pomade home a command belongs to (`POMADE_HOME`, else the stable Pomade's
+  `~/.pomade`); `readHostRecord()` reads what Pomade records there (`host.json`: its socket and
+  how to launch it).
+- The framing (`encodeLine`, `createLineDecoder`), the path limit (`socketPathProblem`, 103 bytes
+  on macOS), the environment names (`POMADE_ENV`) and the home layout (`HOME_FILES`) are in
+  `pomade-kit/protocol`, shared with Pomade.
 
 ## Example
 
-`examples/hello/` — the smallest app: lists the active project's `docs/roadmap/` frontmatter rows,
+`examples/hello/` — the smallest app: tells once (and in its About view) where its shipped skill is, lists the active project's `docs/roadmap/` frontmatter rows,
 shows the project's git repos, and follows project, file and git events. On the bus it shows the
 last platform event it heard (Pomade ready, a project renamed) and publishes `greeted` from a
 button that is enabled only while another app listens; "Notify me" posts a notice whose click opens

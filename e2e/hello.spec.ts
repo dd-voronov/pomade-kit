@@ -216,3 +216,24 @@ test("posts a notice whose click opens its own tab at the roadmap", async ({ pag
   await page.evaluate(() => window.fakeHost.clickNotice());
   expect(await page.evaluate(() => window.fakeHost.openedTabs)).toEqual([{ kind: "app", route: "roadmap", projectId: "alpha" }]);
 });
+
+test("says once where its shipped skill is, and always in About", async ({ page }) => {
+  const notice = app(page).getByTestId("skill-notice");
+  await expect(notice).toBeVisible();
+  await expect(app(page).getByTestId("skill-notice-text")).toHaveText(
+    "This app ships a skill for agents: hello-roadmap, at /fake/apps/hello/skills/hello-roadmap. To give it to an agent, copy or link that folder into the agent's skills folder.",
+  );
+  if (process.env.HELLO_SHOTS) await page.screenshot({ path: `${process.env.HELLO_SHOTS}/skill-notice.png` });
+  await app(page).getByTestId("skill-notice-dismiss").click();
+  await expect(notice).toBeHidden();
+  await expect.poll(() => page.evaluate(() => window.fakeHost.state.skillNoticeDismissed)).toBe(true);
+  await app(page).locator("body").evaluate(() => location.reload());
+  await expect(app(page).getByTestId("state")).toHaveText("Project: Alpha");
+  await expect(app(page).getByTestId("about-version")).not.toHaveText("");
+  await expect(notice).toBeHidden();
+  await app(page).getByTestId("about-toggle").click();
+  await expect(app(page).locator('[data-testid="about-skills"] li[data-skill="hello-roadmap"]')).toHaveText(
+    "hello-roadmap — /fake/apps/hello/skills/hello-roadmap",
+  );
+  if (process.env.HELLO_SHOTS) await page.screenshot({ path: `${process.env.HELLO_SHOTS}/about.png` });
+});

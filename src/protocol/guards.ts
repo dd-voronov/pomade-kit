@@ -3,13 +3,16 @@
 
 import {
   CHANNEL,
+  CLIENT_ROLES,
   ERROR_CODES,
   type ErrorCode,
+  type ErrorPayload,
   type HelloMessage,
   type HostToAppMessage,
   type KeyMessage,
   type ProjectRef,
   type FileChange,
+  type SocketClient,
   type Surface,
 } from "./types.js";
 import { isJsonValue } from "./state.js";
@@ -32,7 +35,17 @@ export function isErrorCode(v: unknown): v is ErrorCode {
 }
 
 export function isSurface(v: unknown): v is Surface {
-  return v === "tab" || v === "panel" || v === "overlay";
+  return v === "tab" || v === "panel" || v === "overlay" || v === "backend" || v === "command";
+}
+
+function isSocketClient(v: unknown): v is SocketClient {
+  return (
+    isObj(v) &&
+    typeof v.appId === "string" &&
+    typeof v.key === "string" &&
+    typeof v.role === "string" &&
+    (CLIENT_ROLES as readonly string[]).includes(v.role)
+  );
 }
 
 export function isProjectRef(v: unknown): v is ProjectRef {
@@ -60,21 +73,42 @@ export interface IncomingCall {
   params: unknown;
 }
 
-export type IncomingAppMessage = HelloMessage | IncomingCall | KeyMessage;
+/** A response as the host receives it: the value is unchecked. */
+export interface IncomingResponse {
+  channel: typeof CHANNEL;
+  type: "response";
+  id: string;
+  ok: boolean;
+  value?: unknown;
+  error?: ErrorPayload;
+}
+
+export type IncomingAppMessage = HelloMessage | IncomingCall | KeyMessage | IncomingResponse;
 
 /** Host side: parse an app → host message, or `null` to ignore it. */
 export function parseAppMessage(v: unknown): IncomingAppMessage | null {
   if (!isPomadeMessage(v)) return null;
   const m = v as unknown as Obj;
   switch (m.type) {
-    case "hello":
-      return typeof m.hostApi === "number" && Number.isInteger(m.hostApi)
-        ? { channel: CHANNEL, type: "hello", hostApi: m.hostApi }
-        : null;
+    case "hello": {
+      if (typeof m.hostApi !== "number" || !Number.isInteger(m.hostApi)) return null;
+      const hello: HelloMessage = { channel: CHANNEL, type: "hello", hostApi: m.hostApi };
+      // A malformed identity is dropped here; the socket host then refuses the hello as unauthorized.
+      if (isSocketClient(m.client)) hello.client = { appId: m.client.appId, key: m.client.key, role: m.client.role };
+      return hello;
+    }
     case "call":
       return typeof m.id === "string" && typeof m.method === "string"
         ? { channel: CHANNEL, type: "call", id: m.id, method: m.method, params: m.params }
         : null;
+    case "response": {
+      if (typeof m.id !== "string") return null;
+      if (m.ok === true) return { channel: CHANNEL, type: "response", id: m.id, ok: true, value: m.value };
+      if (m.ok === false && isObj(m.error) && isErrorCode(m.error.code) && typeof m.error.message === "string") {
+        return { channel: CHANNEL, type: "response", id: m.id, ok: false, error: { code: m.error.code, message: m.error.message } };
+      }
+      return null;
+    }
     case "key":
       return typeof m.key === "string" &&
         typeof m.code === "string" &&
@@ -123,8 +157,12 @@ export function parseHostMessage(v: unknown): HostToAppMessage | null {
             project: m.project,
           }
         : null;
+    case "request":
+      return typeof m.id === "string" && typeof m.from === "string" && typeof m.method === "string" && isJsonValue(m.params)
+        ? { channel: CHANNEL, type: "request", id: m.id, from: m.from, method: m.method, params: m.params }
+        : null;
     case "reject":
-      return (m.reason === "needs-newer-pomade" || m.reason === "app-too-old") &&
+      return (m.reason === "needs-newer-pomade" || m.reason === "app-too-old" || m.reason === "unauthorized") &&
         typeof m.hostApi === "number"
         ? { channel: CHANNEL, type: "reject", reason: m.reason, hostApi: m.hostApi }
         : null;

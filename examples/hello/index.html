@@ -11,10 +11,29 @@
       .error { color: #b00; }
       body.overlay { margin: 12px; }
       body.overlay input { box-sizing: border-box; width: 100%; font: inherit; padding: 6px 8px; }
+      .skill-notice { display: flex; gap: 12px; align-items: center; margin: 0 0 12px; padding: 8px 10px;
+        border: 1px solid #c9dde6; border-radius: 6px; background: #eef6fa; }
+      .skill-notice p { margin: 0; flex: 1; }
+      .about { margin: 8px 0 12px; padding: 8px 10px; border: 1px solid #e2e8ec; border-radius: 6px; background: #fafbfc; }
+      .about h2 { margin: 0 0 6px; font-size: 13px; }
+      .about ul { margin: 0; padding-left: 18px; }
+      code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+      [hidden] { display: none !important; }
     </style>
   </head>
   <body>
+    <div class="skill-notice" data-testid="skill-notice" hidden>
+      <p data-testid="skill-notice-text"></p>
+      <button type="button" data-testid="skill-notice-dismiss">Got it</button>
+    </div>
     <h1 data-testid="title">Hello</h1>
+    <button type="button" data-testid="about-toggle">About</button>
+    <section class="about" data-testid="about" hidden>
+      <h2>About Hello</h2>
+      <p data-testid="about-version"></p>
+      <p>Skills this app ships for agents — copy or link a folder into an agent's skills folder:</p>
+      <ul data-testid="about-skills"></ul>
+    </section>
     <p data-testid="state">Connecting…</p>
     <p data-testid="group"></p>
     <p data-testid="agents"></p>

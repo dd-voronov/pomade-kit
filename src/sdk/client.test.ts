@@ -330,3 +330,95 @@ describe("close", () => {
     expect(t.mock.sent).toHaveLength(sent);
   });
 });
+
+describe("onClose", () => {
+  it("runs once on close(); a listener added after close runs at once", () => {
+    const t = setup();
+    const a = vi.fn();
+    const b = vi.fn();
+    const off = t.host.onClose(b);
+    t.host.onClose(a);
+    off();
+    t.host.close();
+    t.host.close();
+    expect(a).toHaveBeenCalledTimes(1);
+    expect(b).not.toHaveBeenCalled();
+    const late = vi.fn();
+    t.host.onClose(late);
+    expect(late).toHaveBeenCalledTimes(1);
+  });
+
+  it("a channel that ends closes the client: pending calls reject, listeners run", async () => {
+    const mock = mockTransport();
+    let end: (() => void) | null = null;
+    const transport = { ...mock.transport, onEnd: (cb: () => void) => ((end = cb), () => (end = null)) };
+    const { hostApi, pomadeVersion, appId, route, project } = WELCOME;
+    const host = createClient(transport, { hostApi, pomadeVersion, appId, surface: "backend", route, project });
+    const closed = vi.fn();
+    host.onClose(closed);
+    const pending = host.info();
+    end!();
+    await expect(pending).rejects.toThrow(/client is closed/);
+    expect(closed).toHaveBeenCalledTimes(1);
+    expect(end).toBeNull();
+  });
+});
+
+describe("apps.call and api.serve", () => {
+  it("apps.call sends app, method, params and timeout; resolves the value", async () => {
+    const t = setup();
+    const p = t.host.apps.call("pomade-agents", "sessions.last", { cwd: "/x" }, { timeoutMs: 1000 });
+    expect(t.lastCall()).toMatchObject({ method: "apps.call", params: { app: "pomade-agents", method: "sessions.last", params: { cwd: "/x" }, timeoutMs: 1000 } });
+    t.ok(t.lastCall().id, { id: "s1" });
+    await expect(p).resolves.toEqual({ id: "s1" });
+    const bare = t.host.apps.call("a1", "m");
+    expect(t.lastCall().params).toEqual({ app: "a1", method: "m" });
+    t.fail(t.lastCall().id, "app-absent", "not running");
+    await expect(bare).rejects.toMatchObject({ code: "app-absent" });
+  });
+
+  it("serves requests with the registered handlers and answers by id", async () => {
+    const t = setup();
+    const served = t.host.api.serve({
+      today: (params, ctx) => ({ params, from: ctx.from }),
+      later: async () => {
+        await Promise.resolve();
+        return 7;
+      },
+      denied: () => {
+        throw new HostError("not-found", "nothing");
+      },
+      broken: () => {
+        throw new Error("kaput");
+      },
+    });
+    expect(t.lastCall()).toMatchObject({ method: "api.serve", params: {} });
+    t.ok(t.lastCall().id, { methods: ["today"] });
+    await expect(served).resolves.toEqual({ methods: ["today"] });
+    const req = (id: string, method: string) =>
+      t.mock.deliver({ channel: "pomade", type: "request", id, from: "pomade-runner", method, params: { a: 1 } });
+    req("q1", "today");
+    req("q2", "later");
+    req("q3", "denied");
+    req("q4", "broken");
+    req("q5", "missing");
+    await new Promise((r) => setTimeout(r, 0));
+    const responses = t.mock.sent.filter((m) => m.type === "response").sort((a, b) => (a.id < b.id ? -1 : 1));
+    expect(responses).toEqual([
+      { channel: "pomade", type: "response", id: "q1", ok: true, value: { params: { a: 1 }, from: "pomade-runner" } },
+      { channel: "pomade", type: "response", id: "q2", ok: true, value: 7 },
+      { channel: "pomade", type: "response", id: "q3", ok: false, error: { code: "not-found", message: "nothing" } },
+      { channel: "pomade", type: "response", id: "q4", ok: false, error: { code: "app-error", message: "kaput" } },
+      { channel: "pomade", type: "response", id: "q5", ok: false, error: { code: "unknown-method", message: 'No handler for "missing"' } },
+    ]);
+  });
+
+  it("a request before serve answers unknown-method", async () => {
+    const t = setup();
+    t.mock.deliver({ channel: "pomade", type: "request", id: "q1", from: "x1", method: "today", params: null });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(t.mock.sent.filter((m) => m.type === "response")).toEqual([
+      { channel: "pomade", type: "response", id: "q1", ok: false, error: { code: "unknown-method", message: 'No handler for "today"' } },
+    ]);
+  });
+});

@@ -22,8 +22,14 @@ export type Channel = typeof CHANNEL;
 /** How long an app waits for `welcome` before it treats itself as standalone (HOST-API §3). */
 export const HANDSHAKE_TIMEOUT_MS = 1500;
 
-/** Where a frame lives: a main-area tab, the side panel, or the overlay a shortcut opens. */
-export type Surface = "tab" | "panel" | "overlay";
+/** Where a client lives: a frame in a main-area tab, the side panel, or the overlay a shortcut
+ *  opens — or, over the local socket (pomade:E-028), the app's backend or one of its commands. */
+export type Surface = "tab" | "panel" | "overlay" | ClientRole;
+
+/** What an app's socket client is (HOST-API §3 "Socket"): its backend process or one of its commands. */
+export type ClientRole = "backend" | "command";
+
+export const CLIENT_ROLES: readonly ClientRole[] = ["backend", "command"];
 
 /** What a frame was opened for — carried by `welcome` and `host.info` (HOST-API §3). */
 export interface FrameTarget {
@@ -119,6 +125,9 @@ export const ERROR_CODES = [
   "already-exists",
   "unreadable-frontmatter",
   "unsupported-key",
+  "app-absent",
+  "app-not-responding",
+  "app-error",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -132,11 +141,20 @@ export type Capability = (typeof CAPABILITIES)[number];
 
 // ── Methods ─────────────────────────────────────────────────────────────────
 
-/** `host.info` — the `welcome` values. */
+/** `host.info` — the `welcome` values, and where the app's shipped skills are. */
 export interface HostInfo extends FrameTarget {
   pomadeVersion: string;
   hostApi: number;
   appId: string;
+  /** Each manifest `skills` folder: its name and the absolute path of the folder in the installed
+   *  (or dev-linked) build; `path: null` for a dev-server link (no local folder). `[]` when none. */
+  skills: SkillLocation[];
+}
+
+/** Where one shipped skill is (`host.info`). */
+export interface SkillLocation {
+  name: string;
+  path: string | null;
 }
 
 export interface ReadFolderParams {
@@ -371,6 +389,44 @@ export interface OpenAppParams {
   projectId?: string;
 }
 
+// ── Broker (pomade:E-028) ──────────────────────────────────────────────────
+
+/** `apps.call` — call a method another app (or this app's own backend) offers through Pomade. */
+export interface AppsCallParams {
+  /** The app whose API to call. */
+  app: string;
+  /** One of the methods its manifest's `api` declares. */
+  method: string;
+  /** Plain JSON; default `{}`. */
+  params?: JsonValue;
+  /** How long to wait for the answer: 100–60000 ms, default 5000; then `app-not-responding`. */
+  timeoutMs?: number;
+}
+
+/** `api.serve` — this client serves the app's API from now on. */
+export interface ApiServeResult {
+  /** The methods the manifest's `api` declares. */
+  methods: string[];
+}
+
+// ── Platform (pomade:E-028) ────────────────────────────────────────────────
+
+/** A method only Pomade's own commands may call (`PLATFORM_CLIENT_ID`); no manifest can declare it. */
+export const PLATFORM_CAPABILITY = "platform";
+export type MethodCapability = Capability | typeof PLATFORM_CAPABILITY | null;
+
+/** `agents.liveIn` — is an agent running in a Pomade terminal inside this folder? */
+export interface AgentsLiveInParams {
+  /** An absolute folder (a repo root). */
+  folder: string;
+}
+
+export interface AgentsLiveInResult {
+  live: boolean;
+  /** Each agent running with its working directory at or below `folder`. */
+  agents: { agentId: string; cwd: string }[];
+}
+
 /** Method name → params and result. Methods without params take `{}`. */
 export interface HostMethods {
   "host.info": { params: Record<string, never>; result: HostInfo };
@@ -408,13 +464,16 @@ export interface HostMethods {
   "events.unsubscribe": { params: SubscribeParams; result: Record<string, never> };
   "events.hasSubscribers": { params: HasSubscribersParams; result: HasSubscribersResult };
   "notices.post": { params: NoticeParams; result: Record<string, never> };
+  "apps.call": { params: AppsCallParams; result: JsonValue };
+  "api.serve": { params: Record<string, never>; result: ApiServeResult };
+  "agents.liveIn": { params: AgentsLiveInParams; result: AgentsLiveInResult };
 }
 export type MethodName = keyof HostMethods;
 export type MethodParams<M extends MethodName> = HostMethods[M]["params"];
 export type MethodResult<M extends MethodName> = HostMethods[M]["result"];
 
 /** The capability each method needs; `null` = no capability (HOST-API §4). */
-export const METHOD_CAPABILITY: Readonly<Record<MethodName, Capability | null>> = {
+export const METHOD_CAPABILITY: Readonly<Record<MethodName, MethodCapability>> = {
   "host.info": null,
   "project.getActive": "project.read",
   "files.readFolder": "files.read",
@@ -450,6 +509,9 @@ export const METHOD_CAPABILITY: Readonly<Record<MethodName, Capability | null>> 
   "events.unsubscribe": null,
   "events.hasSubscribers": null,
   "notices.post": null,
+  "apps.call": null,
+  "api.serve": null,
+  "agents.liveIn": PLATFORM_CAPABILITY,
 };
 
 export const METHOD_NAMES = Object.keys(METHOD_CAPABILITY) as MethodName[];
@@ -495,6 +557,17 @@ export interface HelloMessage {
   channel: Channel;
   type: "hello";
   hostApi: number;
+  /** Socket only: who is calling. A frame never sends it (Pomade knows a frame by the frame itself). */
+  client?: SocketClient;
+}
+
+/** The identity a socket client presents in `hello` (HOST-API §3 "Socket"). */
+export interface SocketClient {
+  /** The app's id, or `PLATFORM_CLIENT_ID` for one of Pomade's own commands. */
+  appId: string;
+  /** The app's key: the contents of the key file Pomade issued for it (`POMADE_APP_KEY_FILE`). */
+  key: string;
+  role: ClientRole;
 }
 
 export interface WelcomeMessage extends FrameTarget {
@@ -506,7 +579,8 @@ export interface WelcomeMessage extends FrameTarget {
   project: ProjectRef;
 }
 
-export type RejectReason = "needs-newer-pomade" | "app-too-old";
+/** `unauthorized` — socket only: the app id, key or role is not one Pomade issued (HOST-API §3 "Socket"). */
+export type RejectReason = "needs-newer-pomade" | "app-too-old" | "unauthorized";
 
 export interface RejectMessage {
   channel: Channel;
@@ -556,5 +630,22 @@ export interface KeyMessage {
   shiftKey: boolean;
 }
 
-export type AppToHostMessage = HelloMessage | CallMessage | KeyMessage;
-export type HostToAppMessage = WelcomeMessage | RejectMessage | ResultMessage | EventMessage;
+/** host → app: another app's call to an API method this client serves (`api.serve`). */
+export interface RequestMessage {
+  channel: Channel;
+  type: "request";
+  /** Unique per connection, chosen by Pomade; the response names it. */
+  id: string;
+  /** The calling app's id (`"pomade"` for the platform). */
+  from: string;
+  method: string;
+  params: JsonValue;
+}
+
+/** app → host: the answer to a `request`. */
+export type ResponseMessage =
+  | { channel: Channel; type: "response"; id: string; ok: true; value: JsonValue }
+  | { channel: Channel; type: "response"; id: string; ok: false; error: ErrorPayload };
+
+export type AppToHostMessage = HelloMessage | CallMessage | KeyMessage | ResponseMessage;
+export type HostToAppMessage = WelcomeMessage | RejectMessage | ResultMessage | EventMessage | RequestMessage;

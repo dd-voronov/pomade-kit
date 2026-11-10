@@ -1,13 +1,15 @@
-// pomade-kit/node — helpers for commands and backends running under Node.
+// pomade-kit/node — what an app's backend and commands use under Node: the Host API over Pomade's
+// local socket, reconnecting, and finding the workspace with Pomade closed.
 
-import { resolve } from "node:path";
-
-/**
- * The workspace root for a command running with Pomade closed: `POMADE_WORKSPACE`, as an
- * absolute path, or `null` when it is not set.
- */
-export function resolveWorkspace(env: Readonly<Record<string, string | undefined>> = process.env): string | null {
-  const value = env.POMADE_WORKSPACE;
-  return value ? resolve(value) : null;
-}
-export { pomadeUserData, postNotice, queueNotice, type PomadeTarget, type PostNoticeOptions } from "./notices.js";
+export { pomadeUserData, postNotice, queueNotice, type PomadeTarget, type PostNoticeOptions, type PostNoticeResult } from "./notices.js";
+export { pomadeHome, readHostRecord, resolveWorkspace, type Env } from "./home.js";
+export {
+  connectSocket,
+  socketTransport,
+  stayConnected,
+  type SocketConnectOptions,
+  type SocketConnectResult,
+  type StayConnectedHandlers,
+  type StayConnectedOptions,
+} from "./socket.js";
+export { launchPomade, type LaunchOptions, type LaunchResult } from "./launch.js";

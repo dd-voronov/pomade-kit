@@ -23,8 +23,8 @@ describe("parseManifest", () => {
   });
 
   it("lists unknown top-level keys as unsupported, still valid", () => {
-    const r = parseManifest({ ...valid, sidePanels: [], commands: {} });
-    expect(r).toMatchObject({ ok: true, unsupportedKeys: ["sidePanels", "commands"] });
+    const r = parseManifest({ ...valid, sidePanels: [], dashboard: {} });
+    expect(r).toMatchObject({ ok: true, unsupportedKeys: ["sidePanels", "dashboard"] });
     expect(r.ok && r.manifest).not.toHaveProperty("sidePanels");
   });
 
@@ -48,6 +48,7 @@ describe("parseManifest", () => {
     ["id", { id: "1abc" }],
     ["id", { id: "a_b" }],
     ["id", { id: "a" + "b".repeat(64) }],
+    ["id", { id: "pomade" }],
     ["name", { name: "" }],
     ["name", { name: "  " }],
     ["name", { name: 3 }],
@@ -458,5 +459,105 @@ describe("symlinkScopeCovers", () => {
   });
   it("no scopes cover nothing", () => {
     expect(symlinkScopeCovers([], "Agents/a/skills/x")).toBe(false);
+  });
+});
+
+describe("backend", () => {
+  it("accepts a with-pomade or always-on Node entry; restartOnUpdate defaults to false", () => {
+    for (const entry of ["backend/main.js", "server.mjs", "b/c.cjs"]) {
+      const r = parseManifest({ ...valid, backend: { entry, mode: "with-pomade" } });
+      expect(r.ok && r.manifest.backend).toEqual({ entry, mode: "with-pomade", restartOnUpdate: false });
+    }
+    const r = parseManifest({ ...valid, backend: { entry: "keeper.js", mode: "always-on", restartOnUpdate: true, extra: 1 } });
+    expect(r.ok && r.manifest.backend).toEqual({ entry: "keeper.js", mode: "always-on", restartOnUpdate: true });
+    expect(parseManifest(valid).ok && (parseManifest(valid) as { manifest: object }).manifest).not.toHaveProperty("backend");
+  });
+
+  it.each<[string, unknown]>([
+    ["backend", "main.js"],
+    ["backend", []],
+    ["backend.entry", { mode: "with-pomade" }],
+    ["backend.entry", { entry: "/abs/main.js", mode: "with-pomade" }],
+    ["backend.entry", { entry: "../main.js", mode: "with-pomade" }],
+    ["backend.entry", { entry: "main.ts", mode: "with-pomade" }],
+    ["backend.mode", { entry: "main.js" }],
+    ["backend.mode", { entry: "main.js", mode: "always" }],
+    ["backend.restartOnUpdate", { entry: "main.js", mode: "always-on", restartOnUpdate: "yes" }],
+    ["backend.restartOnUpdate", { entry: "main.js", mode: "with-pomade", restartOnUpdate: true }],
+  ])("%s is invalid: %j", (field, backend) => {
+    const r = parseManifest({ ...valid, backend });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.errors.map((e) => e.field)).toContain(field);
+  });
+
+  it("reports every invalid backend field", () => {
+    const r = parseManifest({ ...valid, backend: { entry: 3, mode: 4 } });
+    expect(!r.ok && r.errors.map((e) => e.message)).toEqual([
+      '"backend.entry" must be a .js, .mjs or .cjs file inside the build folder (got 3)',
+      '"backend.mode" must be one of with-pomade, always-on (got 4)',
+    ]);
+  });
+});
+
+describe("api and calls", () => {
+  it("keeps the declared methods and called apps", () => {
+    const r = parseManifest({ ...valid, api: ["today", "jobsForRepo", "sessions.list"], calls: ["pomade-agents", "pomade-runner"] });
+    expect(r.ok && r.manifest).toMatchObject({ api: ["today", "jobsForRepo", "sessions.list"], calls: ["pomade-agents", "pomade-runner"] });
+    expect(parseManifest({ ...valid, api: [], calls: [] }).ok).toBe(true);
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ["api", { api: "today" }],
+    ["api[0]", { api: ["Today"] }],
+    ["api[0]", { api: ["to day"] }],
+    ["api[0]", { api: ["a..b"] }],
+    ["api[0]", { api: [1] }],
+    ["api[0]", { api: ["a" + "b".repeat(64)] }],
+    ["api[1]", { api: ["today", "today"] }],
+    ["calls", { calls: "pomade-agents" }],
+    ["calls[0]", { calls: ["Pomade"] }],
+    ["calls[0]", { calls: ["pomade"] }],
+    ["calls[0]", { calls: ["pomade-planner"] }],
+    ["calls[1]", { calls: ["pomade-agents", "pomade-agents"] }],
+  ])("%s is invalid: %j", (field, patch) => {
+    const r = parseManifest({ ...valid, ...patch });
+    expect(!r.ok && r.errors.map((e) => e.field)).toContain(field);
+  });
+});
+
+describe("commands", () => {
+  it("named after the app; title defaults to empty", () => {
+    const r = parseManifest({
+      ...valid,
+      commands: [
+        { name: "pomade-planner", entry: "cli/main.js", title: " Today's items " },
+        { name: "pomade-planner-today", entry: "cli/today.mjs" },
+      ],
+    });
+    expect(r.ok && r.manifest.commands).toEqual([
+      { name: "pomade-planner", entry: "cli/main.js", title: "Today's items" },
+      { name: "pomade-planner-today", entry: "cli/today.mjs", title: "" },
+    ]);
+  });
+
+  it.each<[string, unknown]>([
+    ["commands", "x"],
+    ["commands[0]", ["x"]],
+    ["commands[0].name", [{ name: "ls", entry: "a.js" }]],
+    ["commands[0].name", [{ name: "pomade-plannerx", entry: "a.js" }]],
+    ["commands[0].name", [{ name: "Pomade-planner", entry: "a.js" }]],
+    ["commands[0].name", [{ entry: "a.js" }]],
+    ["commands[1].name", [{ name: "pomade-planner", entry: "a.js" }, { name: "pomade-planner", entry: "b.js" }]],
+    ["commands[0].entry", [{ name: "pomade-planner", entry: "a.sh" }]],
+    ["commands[0].entry", [{ name: "pomade-planner", entry: "../a.js" }]],
+    ["commands[0].title", [{ name: "pomade-planner", entry: "a.js", title: 1 }]],
+  ])("%s is invalid: %j", (field, commands) => {
+    const r = parseManifest({ ...valid, commands });
+    expect(!r.ok && r.errors.map((e) => e.field)).toContain(field);
+  });
+
+  it("Pomade's own command names are reserved", () => {
+    const r = parseManifest({ ...valid, id: "pomade-git", commands: [{ name: "pomade-git", entry: "a.js" }] });
+    expect(!r.ok && r.errors[0]?.message).toMatch(/one of Pomade's own commands/);
   });
 });

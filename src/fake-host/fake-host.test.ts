@@ -240,7 +240,15 @@ describe("calls — errors", () => {
 describe("host.info and project.getActive", () => {
   it("host.info", async () => {
     const host = await client(fake({ pomadeVersion: "0.3.0" }));
-    expect(await host.info()).toEqual({ pomadeVersion: "0.3.0", hostApi: 0, appId: "fake-app", surface: "tab", route: "" });
+    expect(await host.info()).toEqual({ pomadeVersion: "0.3.0", hostApi: 0, appId: "fake-app", surface: "tab", route: "", skills: [] });
+  });
+
+  it("host.info says where each shipped skill is", async () => {
+    const manifest = { id: "pomade-runner", name: "Runner", version: "0.1.0", hostApi: 0, capabilities: [], skills: ["skills/pomade-runner-jobs"] };
+    const byDefault = await client(fake({ manifest }));
+    expect((await byDefault.info()).skills).toEqual([{ name: "pomade-runner-jobs", path: "/fake/apps/pomade-runner/skills/pomade-runner-jobs" }]);
+    const placed = await client(fake({ manifest, appFolder: "/Users/me/apps/runner/" }));
+    expect((await placed.info()).skills).toEqual([{ name: "pomade-runner-jobs", path: "/Users/me/apps/runner/skills/pomade-runner-jobs" }]);
   });
 
   it("the Workspace scope when no project is active", async () => {
@@ -302,6 +310,20 @@ describe("surfaces, strip icons and routes", () => {
       ["panel", "board", "needs-you"],
       ["panel", "board", "needs-you"],
     ]);
+  });
+
+  it("a backend or command client: its role is the surface; frame-only methods are refused", async () => {
+    const host = fake();
+    for (const surface of ["backend", "command"] as const) {
+      const r = await connect({ transport: host.createTransport({ surface }), keySource: null });
+      if (r.status !== "connected") throw new Error(r.status);
+      expect(r.host.welcome).toMatchObject({ surface, route: "" });
+      await expect(r.host.info()).resolves.toMatchObject({ surface, route: "" });
+      for (const call of [() => r.host.files.pickFolder(), () => r.host.git.watch({}, () => undefined), () => r.host.overlay.close()]) {
+        await expect(call()).rejects.toMatchObject({ code: "capability-denied", message: expect.stringMatching(/needs an app frame/) });
+      }
+      await expect(r.host.files.readFolder({ path: "Projects/Pomade" })).resolves.toMatchObject({ entries: expect.any(Array) });
+    }
   });
 
   it("a manifest without strip: every icon opens the default view", async () => {

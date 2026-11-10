@@ -1,6 +1,6 @@
 // How the client reaches its host. The same client code runs over the parent window's
-// postMessage (inside Pomade, or a fake-host harness page) and over an in-memory channel
-// (the fake host in-process).
+// postMessage (inside Pomade, or a fake-host harness page), over the local socket (a backend or a
+// command, `pomade-kit/node`) and over an in-memory channel (the fake host in-process).
 
 import type { AppToHostMessage } from "../protocol/index.js";
 
@@ -9,6 +9,8 @@ export interface Transport {
   send(message: AppToHostMessage): void;
   /** Receive everything the host sends (unparsed); returns an unsubscribe function. */
   listen(onMessage: (data: unknown) => void): () => void;
+  /** A channel that can end on its own (the socket): `onEnd` runs once when it does. */
+  onEnd?(onEnd: () => void): () => void;
 }
 
 /** The parts of `window` the postMessage transport uses. */

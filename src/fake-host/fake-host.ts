@@ -16,6 +16,14 @@ import {
   isBusEventName,
   type NoticeParams,
   type BusMember,
+  APP_CALL_TIMEOUT_MS,
+  PLATFORM_CLIENT_ID,
+  brokerErrors,
+  isJsonValue,
+  parseAppCall,
+  type ErrorPayload,
+  FRAME_ONLY_METHODS,
+  isSocketSurface,
   HOST_API_VERSION,
   METHOD_CAPABILITY,
   WORKSPACE_PROJECT_ID,
@@ -41,6 +49,7 @@ import {
   type Surface,
 } from "../protocol/index.js";
 import { isPlainEscape } from "../sdk/keys.js";
+import { HostError, type ApiHandler } from "../sdk/client.js";
 import type { Transport } from "../sdk/transport.js";
 import {
   dispatchFileWrite,
@@ -104,6 +113,22 @@ export interface FakeHostOptions {
   state?: Record<string, JsonValue>;
   /** The workspace's repos as `git.getState` serves them (any order; served sorted by root). Default none. */
   git?: GitRepoState[];
+  /** Where the app's build is, for `host.info` skill paths. Default `/fake/apps/<id>`. */
+  appFolder?: string;
+  /** Other apps that are installed and running, by id: the API methods each serves (`apps.call`), or
+   *  `"not-responding"` for one that never answers. An app absent here is not installed. */
+  apps?: Record<string, FakeApi>;
+}
+
+/** Another app as `apps.call` reaches it in the fake host. */
+export type FakeApi = Record<string, ApiHandler> | "not-responding";
+
+/** `fake.callApi` options. */
+export interface CallApiOptions {
+  /** The calling app's id; default `"pomade"` (the platform). */
+  from?: string;
+  /** Default 5000 ms. */
+  timeoutMs?: number;
 }
 
 /** What a frame is opened for, as Pomade opens it from the new-tab menu or a strip icon. */
@@ -150,6 +175,8 @@ export interface FakePublishedEvent {
 }
 
 interface Frame {
+  /** Serves the app's API (`api.serve`). */
+  serving: boolean;
   post(message: HostToAppMessage): void;
   /** The frame's place on the event bus, from its welcome on. */
   bus: BusMember | null;
@@ -198,6 +225,10 @@ export class FakeHost {
   readonly published: FakePublishedEvent[] = [];
   /** Every notice the app posted (`notices.post`), normalized as Pomade keeps it, in order. */
   readonly notices: NoticeParams[] = [];
+  private readonly apps: Record<string, FakeApi>;
+  private readonly appFolder: string;
+  private nextRequestId = 1;
+  private readonly requests = new Map<string, { frame: Frame; settle(outcome: { ok: true; value: JsonValue } | { ok: false; error: ErrorPayload }): void }>();
 
   constructor(options: FakeHostOptions = {}) {
     const parsed = parseManifest(
@@ -230,6 +261,8 @@ export class FakeHost {
     }
     this.active = this.findScope(options.activeProject ?? null);
     this.gitRepos = scriptedRepos(options.git ?? []);
+    this.apps = { ...(options.apps ?? {}) };
+    this.appFolder = (options.appFolder ?? `/fake/apps/${parsed.manifest.id}`).replace(/\/+$/, "");
     this.data = {
       workspace: this.workspace,
       emit: (changes) => this.emit(changes),
@@ -264,7 +297,7 @@ export class FakeHost {
     const target =
       surface === "overlay" ? resolveOverlayTarget(this.shortcuts, open.shortcut) : resolveFrameTarget(this.strip, surface, open.icon);
     if (open.route !== undefined) target.route = open.route;
-    const frame: Frame = { post, target, onClose: open.onClose, welcomed: false, watches: new Map(), gitWatches: new Map(), bus: null };
+    const frame: Frame = { post, target, onClose: open.onClose, welcomed: false, serving: false, watches: new Map(), gitWatches: new Map(), bus: null };
     this.frames.add(frame);
     return {
       receive: (data) => {
@@ -272,6 +305,7 @@ export class FakeHost {
       },
       detach: () => {
         this.frames.delete(frame);
+        this.dropRequests(frame);
         frame.watches.clear();
         frame.gitWatches.clear();
         frame.bus?.close();
@@ -496,6 +530,15 @@ export class FakeHost {
       case "call":
         this.answer(frame, msg);
         return;
+      case "response": {
+        const pending = this.requests.get(msg.id);
+        if (!pending || pending.frame !== frame) return;
+        this.requests.delete(msg.id);
+        if (!msg.ok) pending.settle({ ok: false, error: msg.error ?? { code: "app-error", message: "malformed response" } });
+        else if (isJsonValue(msg.value)) pending.settle({ ok: true, value: msg.value });
+        else pending.settle({ ok: false, error: brokerErrors.notJson(this.manifest.id) });
+        return;
+      }
     }
   }
 
@@ -531,12 +574,87 @@ export class FakeHost {
   }
 
   private answer(frame: Frame, call: IncomingCall): void {
-    try {
-      const value = this.dispatch(frame, call);
-      frame.post({ channel: CHANNEL, type: "result", id: call.id, ok: true, value });
-    } catch (err) {
+    const fail = (err: unknown): void => {
       if (!(err instanceof CallError)) throw err;
       frame.post({ channel: CHANNEL, type: "result", id: call.id, ok: false, error: { code: err.code, message: err.message } });
+    };
+    try {
+      const value = this.dispatch(frame, call);
+      if (value instanceof Promise) {
+        value.then((v: unknown) => frame.post({ channel: CHANNEL, type: "result", id: call.id, ok: true, value: v }), fail);
+        return;
+      }
+      frame.post({ channel: CHANNEL, type: "result", id: call.id, ok: true, value });
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  // ── Broker ───────────────────────────────────────────────────────────────
+
+  /** Call the app's own API as another app would (`from`, default the platform) — the request
+   *  reaches the frame that serves it (`api.serve`). Rejects with the broker's errors: `app-absent`
+   *  when no frame serves, `app-not-responding` on timeout, or the frame's own error. */
+  callApi(method: string, params: JsonValue = {}, options: CallApiOptions = {}): Promise<JsonValue> {
+    return this.route(options.from ?? PLATFORM_CLIENT_ID, method, params, options.timeoutMs ?? APP_CALL_TIMEOUT_MS);
+  }
+
+  private route(from: string, method: string, params: JsonValue, timeoutMs: number): Promise<JsonValue> {
+    const id = this.manifest.id;
+    if (!(this.manifest.api ?? []).includes(method)) return Promise.reject(asCallError(brokerErrors.unknownMethod(id, method)));
+    const server = [...this.frames].reverse().find((f) => f.serving && f.welcomed);
+    if (!server) return Promise.reject(asCallError(brokerErrors.notRunning(id)));
+    const requestId = `q${this.nextRequestId++}`;
+    return new Promise<JsonValue>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.requests.delete(requestId);
+        reject(asCallError(brokerErrors.timeout(id, timeoutMs)));
+      }, timeoutMs);
+      this.requests.set(requestId, {
+        frame: server,
+        settle: (outcome) => {
+          clearTimeout(timer);
+          if (outcome.ok) resolve(outcome.value);
+          else reject(asCallError(outcome.error));
+        },
+      });
+      server.post({ channel: CHANNEL, type: "request", id: requestId, from, method, params: structuredClone(params) });
+    });
+  }
+
+  /** A frame that goes away fails the requests it was answering. */
+  private dropRequests(frame: Frame): void {
+    for (const [requestId, pending] of [...this.requests]) {
+      if (pending.frame !== frame) continue;
+      this.requests.delete(requestId);
+      pending.settle({ ok: false, error: brokerErrors.gone(this.manifest.id) });
+    }
+  }
+
+  /** `apps.call` from the app: its own API (served by a frame), or a scripted other app. */
+  private async callApp(params: Record<string, unknown>): Promise<JsonValue> {
+    const parsed = parseAppCall(params);
+    if (!parsed.ok) throw asCallError(parsed.error);
+    const { app, method, params: callParams, timeoutMs } = parsed.call;
+    const own = this.manifest.id;
+    if (app === own) return this.route(own, method, callParams, timeoutMs);
+    if (!(this.manifest.calls ?? []).includes(app)) throw asCallError(brokerErrors.notDeclared(own, app));
+    const target = this.apps[app];
+    if (target === undefined) throw asCallError(brokerErrors.notInstalled(app));
+    if (target === "not-responding") {
+      await new Promise((resolve) => setTimeout(resolve, timeoutMs));
+      throw asCallError(brokerErrors.timeout(app, timeoutMs));
+    }
+    const handler = Object.hasOwn(target, method) ? target[method] : undefined;
+    if (!handler) throw asCallError(brokerErrors.unknownMethod(app, method));
+    try {
+      const value = await handler(structuredClone(callParams), { from: own });
+      if (!isJsonValue(value)) throw asCallError(brokerErrors.notJson(app));
+      return structuredClone(value);
+    } catch (err) {
+      if (err instanceof CallError) throw err;
+      if (err instanceof HostError) throw new CallError(err.code, err.message);
+      throw new CallError("app-error", err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -544,14 +662,23 @@ export class FakeHost {
     if (!frame.welcomed) throw new CallError("not-ready", "call before welcome");
     const { method } = call;
     if (!isMethod(method)) throw new CallError("unknown-method", `no method ${JSON.stringify(method)} in Host API v${this.hostApi}`);
+    if (isSocketSurface(frame.target.surface) && FRAME_ONLY_METHODS.includes(method)) {
+      throw new CallError("capability-denied", `${method} needs an app frame; a backend or a command cannot call it`);
+    }
     const capability = METHOD_CAPABILITY[method];
-    if (capability && !this.manifest.capabilities.includes(capability)) {
+    if (capability && !(this.manifest.capabilities as readonly string[]).includes(capability)) {
       throw new CallError("capability-denied", `${method} needs the "${capability}" capability`);
     }
     const params = paramsObject(call.params);
     switch (method) {
       case "host.info":
-        return { pomadeVersion: this.pomadeVersion, hostApi: this.hostApi, appId: this.manifest.id, ...frame.target };
+        return {
+          pomadeVersion: this.pomadeVersion,
+          hostApi: this.hostApi,
+          appId: this.manifest.id,
+          ...frame.target,
+          skills: (this.manifest.skills ?? []).map((k) => ({ name: k.name, path: `${this.appFolder}/${k.path}` })),
+        };
       case "project.getActive":
         return { ...this.active };
       case "files.readFolder": {
@@ -679,6 +806,17 @@ export class FakeHost {
         if (!p.ok) throw new CallError(p.error.code, p.error.message);
         return { subscribed: this.bus.count(`${this.manifest.id}:${p.name}`) > 0 };
       }
+      case "apps.call":
+        return this.callApp(params);
+      case "agents.liveIn":
+        // An app is never the platform: the capability check above refused it.
+        throw new CallError("capability-denied", "agents.liveIn is for Pomade's own commands");
+      case "api.serve": {
+        const methods = this.manifest.api ?? [];
+        if (methods.length === 0) throw new CallError("capability-denied", 'The manifest declares no "api"');
+        frame.serving = true;
+        return { methods: [...methods] };
+      }
     }
   }
 
@@ -742,4 +880,8 @@ export class FakeHost {
 /** Create a fake host. */
 export function createFakeHost(options?: FakeHostOptions): FakeHost {
   return new FakeHost(options);
+}
+
+function asCallError(error: ErrorPayload): CallError {
+  return new CallError(error.code, error.message);
 }

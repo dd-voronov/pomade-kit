@@ -1,7 +1,7 @@
 // pomade-kit/sdk — what an app uses to talk to Pomade: `connect()` and the typed client.
 
 export { connect, type ConnectOptions, type ConnectResult } from "./connect.js";
-export { HostError, type FileWatch, type GitWatch, type HostClient, type Welcome } from "./client.js";
+export { HostError, type ApiHandler, type AppCallOptions, type FileWatch, type GitWatch, type HostClient, type Welcome } from "./client.js";
 export { postMessageTransport, type MessageWindow, type Transport } from "./transport.js";
 export {
   installKeyForwarder,
@@ -55,4 +55,9 @@ export type {
   GitRepoState,
   GitStateParams,
   GitStateResult,
+  AppsCallParams,
+  ApiServeResult,
+  AgentsLiveInParams,
+  AgentsLiveInResult,
+  SkillLocation,
 } from "../protocol/index.js";

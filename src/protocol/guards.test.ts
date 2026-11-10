@@ -59,6 +59,25 @@ describe("parseAppMessage", () => {
     expect(parseAppMessage({ channel: "pomade", type: "hello", hostApi: 0.5 })).toBeNull();
   });
 
+  it("hello over the socket carries the client's identity; a malformed one is dropped", () => {
+    const client = { appId: "pomade-agents", key: "k1", role: "backend" };
+    expect(parseAppMessage({ channel: "pomade", type: "hello", hostApi: 0, client: { ...client, extra: 1 } })).toEqual({
+      channel: "pomade",
+      type: "hello",
+      hostApi: 0,
+      client,
+    });
+    expect(parseAppMessage({ channel: "pomade", type: "hello", hostApi: 0, client: { ...client, role: "command" } })).toEqual({
+      channel: "pomade",
+      type: "hello",
+      hostApi: 0,
+      client: { ...client, role: "command" },
+    });
+    for (const bad of [{ ...client, role: "tab" }, { ...client, key: 1 }, { appId: "a", role: "backend" }, "x", null]) {
+      expect(parseAppMessage({ channel: "pomade", type: "hello", hostApi: 0, client: bad })).toEqual({ channel: "pomade", type: "hello", hostApi: 0 });
+    }
+  });
+
   it("call keeps any method name and unchecked params; drops extra fields", () => {
     expect(parseAppMessage({ channel: "pomade", type: "call", id: "1", method: "nope", params: 5, extra: true })).toEqual({
       channel: "pomade",
@@ -78,6 +97,27 @@ describe("parseAppMessage", () => {
     expect(parseAppMessage({ ...key, code: undefined })).toBeNull();
   });
 
+  it("response: ok with any value, or a well-formed error", () => {
+    expect(parseAppMessage({ channel: "pomade", type: "response", id: "r1", ok: true, value: { n: 1 } })).toEqual({
+      channel: "pomade",
+      type: "response",
+      id: "r1",
+      ok: true,
+      value: { n: 1 },
+    });
+    const error = { code: "app-error", message: "boom" };
+    expect(parseAppMessage({ channel: "pomade", type: "response", id: "r1", ok: false, error, x: 1 })).toEqual({
+      channel: "pomade",
+      type: "response",
+      id: "r1",
+      ok: false,
+      error,
+    });
+    expect(parseAppMessage({ channel: "pomade", type: "response", ok: true })).toBeNull();
+    expect(parseAppMessage({ channel: "pomade", type: "response", id: "r1", ok: false, error: { code: "nope", message: "" } })).toBeNull();
+    expect(parseAppMessage({ channel: "pomade", type: "response", id: "r1" })).toBeNull();
+  });
+
   it("ignores host messages, unknown types and foreign channels", () => {
     expect(parseAppMessage({ channel: "pomade", type: "welcome" })).toBeNull();
     expect(parseAppMessage({ channel: "pomade", type: "bogus" })).toBeNull();
@@ -95,6 +135,8 @@ describe("parseHostMessage", () => {
     expect(parseHostMessage(panel)).toEqual(panel);
     expect(parseHostMessage({ ...welcome, icon: "board", route: "board" })).toEqual({ ...welcome, icon: "board", route: "board" });
     expect(parseHostMessage({ ...welcome, extra: 1 })).toEqual(welcome);
+    expect(parseHostMessage({ ...welcome, surface: "backend" })).toEqual({ ...welcome, surface: "backend" });
+    expect(parseHostMessage({ ...welcome, surface: "command" })).toEqual({ ...welcome, surface: "command" });
     expect(parseHostMessage({ ...welcome, surface: "popup" })).toBeNull();
     expect(parseHostMessage({ ...welcome, surface: undefined })).toBeNull();
     expect(parseHostMessage({ ...welcome, route: undefined })).toBeNull();
@@ -107,8 +149,8 @@ describe("parseHostMessage", () => {
     expect(parseHostMessage({ ...welcome, hostApi: "0" })).toBeNull();
   });
 
-  it("reject, both reasons", () => {
-    for (const reason of ["needs-newer-pomade", "app-too-old"]) {
+  it("reject, every reason", () => {
+    for (const reason of ["needs-newer-pomade", "app-too-old", "unauthorized"]) {
       expect(parseHostMessage({ channel: "pomade", type: "reject", reason, hostApi: 1 })).toEqual({ channel: "pomade", type: "reject", reason, hostApi: 1 });
     }
     expect(parseHostMessage({ channel: "pomade", type: "reject", reason: "nope", hostApi: 1 })).toBeNull();
@@ -182,6 +224,14 @@ describe("parseHostMessage", () => {
     expect(parseHostMessage({ channel: "pomade", type: "event", name: "state.changed", payload: { key: "k", value: new Date(0) } })).toBeNull();
   });
 
+  it("request carries the caller, the method and JSON params", () => {
+    const req = { channel: "pomade", type: "request", id: "q1", from: "pomade-runner", method: "sessions.last", params: { cwd: "/x" } };
+    expect(parseHostMessage({ ...req, extra: 1 })).toEqual(req);
+    expect(parseHostMessage({ ...req, params: undefined })).toBeNull();
+    expect(parseHostMessage({ ...req, from: 1 })).toBeNull();
+    expect(parseHostMessage({ ...req, method: undefined })).toBeNull();
+  });
+
   it("ignores app messages and foreign data", () => {
     expect(parseHostMessage({ channel: "pomade", type: "hello", hostApi: 0 })).toBeNull();
     expect(parseHostMessage({ channel: "vite", type: "welcome" })).toBeNull();
@@ -227,6 +277,9 @@ describe("METHOD_CAPABILITY", () => {
       "events.unsubscribe": null,
       "events.hasSubscribers": null,
       "notices.post": null,
+      "apps.call": null,
+      "api.serve": null,
+      "agents.liveIn": "platform",
     });
     expect(METHOD_NAMES).toEqual(Object.keys(METHOD_CAPABILITY));
   });

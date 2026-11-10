@@ -11,6 +11,8 @@ export {
   type FrameOptions,
   type FakeProject,
   type FrameConnection,
+  type FakeApi,
+  type CallApiOptions,
 } from "./fake-host.js";
 export type { FakeGroup, FakeOpenedTab, FakePickRequest } from "./data.js";
 export { mountApp, type MountedApp, type MountOptions } from "./mount.js";

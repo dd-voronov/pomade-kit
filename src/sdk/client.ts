@@ -45,6 +45,9 @@ import {
   type PlatformEventName,
   type PlatformEvents,
   type NoticeParams,
+  type ApiServeResult,
+  type RequestMessage,
+  type AgentsLiveInResult,
 } from "../protocol/index.js";
 import type { Transport } from "./transport.js";
 
@@ -67,6 +70,16 @@ export interface Welcome extends FrameTarget {
   appId: string;
   /** The project the frame was opened in. */
   project: ProjectRef;
+}
+
+/** Serves one API method: `params` as the caller sent them; `from` is the calling app's id
+ *  (`"pomade"` for the platform). Return plain JSON; throw `HostError` for a protocol error code
+ *  (anything else answers `app-error`). */
+export type ApiHandler = (params: JsonValue, context: { from: string }) => JsonValue | Promise<JsonValue>;
+
+export interface AppCallOptions {
+  /** How long to wait for the answer: 100–60000 ms, default 5000; then `app-not-responding`. */
+  timeoutMs?: number;
 }
 
 export interface FileWatch {
@@ -155,6 +168,21 @@ export interface HostClient {
     /** Close this overlay frame; focus returns where it was. Only for `welcome.surface === "overlay"`. */
     close(): Promise<void>;
   };
+  readonly apps: {
+    /** Call a method another app (or this app's own backend) offers. Rejects with `HostError`:
+     *  `app-absent` (not installed or not running), `app-not-responding` (no answer in time) —
+     *  both the caller's cue to fall back — or the serving app's own error. */
+    call<T extends JsonValue = JsonValue>(app: string, method: string, params?: JsonValue, options?: AppCallOptions): Promise<T>;
+  };
+  readonly agents: {
+    /** Platform commands only (`pomade-git`): agents running in Pomade terminals inside `folder`. */
+    liveIn(folder: string): Promise<AgentsLiveInResult>;
+  };
+  readonly api: {
+    /** Serve this app's API (the manifest's `api` methods) from this client; resolves with the
+     *  declared methods. A method without a handler answers `unknown-method`. */
+    serve(handlers: Record<string, ApiHandler>): Promise<ApiServeResult>;
+  };
   /** Called with the new route when Pomade navigates this frame's tab (`welcome.route` is the first); returns an unsubscribe function. */
   onRouteChange(callback: (route: string) => void): () => void;
   readonly git: {
@@ -181,6 +209,9 @@ export interface HostClient {
   };
   /** Detach from the transport: no more events, pending calls reject. */
   close(): void;
+  /** Called once when the client closes — `close()`, or the channel ended (Pomade quit, for a
+   *  socket client); returns an unsubscribe function. */
+  onClose(callback: () => void): () => void;
 }
 
 interface Pending {
@@ -202,6 +233,31 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
   const busHandlers = new Map<string, Set<(payload: unknown) => void>>();
   const busSubscriptions = new Map<string, Promise<unknown>>();
   const subscriberListeners = new Set<(name: string, subscribed: boolean) => void>();
+  const closeListeners = new Set<() => void>();
+  let apiHandlers: Record<string, ApiHandler> | null = null;
+
+  function respond(id: string, outcome: { ok: true; value: JsonValue } | { ok: false; code: ErrorCode; message: string }): void {
+    if (closed) return;
+    transport.send(
+      outcome.ok
+        ? { channel: CHANNEL, type: "response", id, ok: true, value: outcome.value }
+        : { channel: CHANNEL, type: "response", id, ok: false, error: { code: outcome.code, message: outcome.message } },
+    );
+  }
+
+  async function serveRequest(msg: RequestMessage): Promise<void> {
+    const handler = apiHandlers && Object.hasOwn(apiHandlers, msg.method) ? apiHandlers[msg.method] : undefined;
+    if (!handler) {
+      respond(msg.id, { ok: false, code: "unknown-method", message: `No handler for ${JSON.stringify(msg.method)}` });
+      return;
+    }
+    try {
+      respond(msg.id, { ok: true, value: await handler(msg.params, { from: msg.from }) });
+    } catch (err) {
+      if (err instanceof HostError) respond(msg.id, { ok: false, code: err.code, message: err.message });
+      else respond(msg.id, { ok: false, code: "app-error", message: err instanceof Error ? err.message : String(err) });
+    }
+  }
 
   const unlisten = transport.listen((data) => {
     const msg = parseHostMessage(data);
@@ -243,6 +299,8 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
         default:
           break;
       }
+    } else if (msg.type === "request") {
+      void serveRequest(msg);
     }
   });
 
@@ -270,6 +328,7 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
     if (closed) return;
     closed = true;
     unlisten();
+    unlistenEnd?.();
     onClose?.();
     watches.clear();
     gitWatches.clear();
@@ -282,7 +341,11 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
     const error = new Error("pomade-kit: client is closed");
     for (const p of pending.values()) p.reject(error);
     pending.clear();
+    const listeners = [...closeListeners];
+    closeListeners.clear();
+    for (const cb of listeners) cb();
   }
+  const unlistenEnd = transport.onEnd?.(dispose);
 
   return {
     welcome,
@@ -372,6 +435,26 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
         await call("overlay.close", {});
       },
     },
+    apps: {
+      async call<T extends JsonValue = JsonValue>(app: string, method: string, params?: JsonValue, options: AppCallOptions = {}) {
+        const value = await call("apps.call", {
+          app,
+          method,
+          ...(params !== undefined ? { params } : {}),
+          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+        });
+        return value as T;
+      },
+    },
+    agents: {
+      liveIn: (folder) => call("agents.liveIn", { folder }),
+    },
+    api: {
+      serve(handlers) {
+        apiHandlers = { ...handlers };
+        return call("api.serve", {});
+      },
+    },
     onRouteChange(callback) {
       routeListeners.add(callback);
       return () => routeListeners.delete(callback);
@@ -450,5 +533,13 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
       },
     },
     close: dispose,
+    onClose(callback) {
+      if (closed) {
+        callback();
+        return () => undefined;
+      }
+      closeListeners.add(callback);
+      return () => closeListeners.delete(callback);
+    },
   };
 }

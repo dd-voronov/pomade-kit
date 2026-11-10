@@ -123,8 +123,41 @@ async function useEvents(host: HostClient): Promise<void> {
   listeners(await host.events.hasSubscribers("greeted"));
 }
 
+/** The reference pattern for an app that ships agent skills: Pomade links nothing, so the app
+ *  says where its skills are — once, as a first-run notice dismissed for good (`state`), and always
+ *  in its About view. */
+async function showSkills(host: HostClient): Promise<void> {
+  const info = await host.info();
+  el("about-version").textContent = `App ${info.appId} · Host API ${info.hostApi} · Pomade ${info.pomadeVersion}`;
+  const list = el("about-skills");
+  list.replaceChildren();
+  for (const skill of info.skills) {
+    const item = document.createElement("li");
+    item.dataset.skill = skill.name;
+    const name = document.createElement("strong");
+    name.textContent = skill.name;
+    const path = document.createElement("code");
+    path.textContent = skill.path ?? "(served by a dev server: no local folder)";
+    item.append(name, " — ", path);
+    list.append(item);
+  }
+  if (list.childElementCount === 0) list.append(Object.assign(document.createElement("li"), { textContent: "none" }));
+  el("about-toggle").addEventListener("click", () => {
+    el("about").hidden = !el("about").hidden;
+  });
+  const first = info.skills[0];
+  if (!first || (await host.state.get<boolean>("skillNoticeDismissed")) === true) return;
+  el("skill-notice-text").textContent = `This app ships a skill for agents: ${first.name}, at ${first.path ?? "(no local folder)"}. To give it to an agent, copy or link that folder into the agent's skills folder.`;
+  el("skill-notice").hidden = false;
+  el("skill-notice-dismiss").addEventListener("click", () => {
+    el("skill-notice").hidden = true;
+    void host.state.set("skillNoticeDismissed", true);
+  });
+}
+
 function startApp(host: HostClient): void {
   void countLaunches(host);
+  void showSkills(host);
   void useEvents(host);
   el("notify").addEventListener(
     "click",

@@ -1,9 +1,10 @@
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parseQueuedNotice } from "../protocol/index.js";
 import { pomadeUserData, postNotice } from "./index.js";
+import type { HostClient } from "../sdk/index.js";
 
 let userData: string;
 beforeEach(async () => {
@@ -34,7 +35,7 @@ describe("postNotice", () => {
     expect(files).toHaveLength(1);
     expect(path).toBe(join(dir, files[0]!));
     expect(files[0]).toMatch(/^001794299400000-[0-9a-f]{12}\.json$/);
-    const parsed = parseQueuedNotice(JSON.parse(await readFile(path, "utf8")));
+    const parsed = parseQueuedNotice(JSON.parse(await readFile(path!, "utf8")));
     expect(parsed).toEqual({
       ok: true,
       notice: {
@@ -61,5 +62,24 @@ describe("postNotice", () => {
     );
     await expect(postNotice({ title: "x" }, { source: "Runner!", userData })).rejects.toThrow(/"source"/);
     await expect(readdir(join(userData, "notices", "queue"))).rejects.toThrow();
+  });
+});
+
+describe("postNotice with Pomade running", () => {
+  it("posts over the caller's client with its source; nothing is queued", async () => {
+    const posted: unknown[] = [];
+    const host = { notices: { post: async (n: unknown) => void posted.push(n) } } as unknown as HostClient;
+    const r = await postNotice({ title: " Hi " }, { source: "pomade-runner", userData, host });
+    expect(r).toEqual({ delivered: "pomade", path: null });
+    expect(posted).toEqual([{ title: "Hi", source: "pomade-runner" }]);
+    await expect(readdir(join(userData, "notices", "queue"))).rejects.toThrow(/ENOENT/);
+  });
+
+  it("queues when the identity is set but Pomade is not running", async () => {
+    const env = { POMADE_APP_ID: "pomade-runner", POMADE_SOCKET: join(userData, "none.sock"), POMADE_APP_KEY_FILE: join(userData, "k") };
+    await writeFile(join(userData, "k"), "key\n");
+    const r = await postNotice({ title: "Later" }, { source: "pomade-runner", userData, env });
+    expect(r.delivered).toBe("queue");
+    expect(r.path).toMatch(/notices\/queue\/.+\.json$/);
   });
 });
