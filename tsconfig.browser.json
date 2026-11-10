@@ -16,6 +16,7 @@
     "src/frontmatter/**/*.ts",
     "src/schedule/**/*.ts",
     "src/dates/**/*.ts",
+    "src/scanners/**/*.ts",
     "examples/hello/src/**/*.ts"
   ],
   "exclude": [

@@ -37,6 +37,10 @@
       "types": "./dist/dates/index.d.ts",
       "default": "./dist/dates/index.js"
     },
+    "./scanners": {
+      "types": "./dist/scanners/index.d.ts",
+      "default": "./dist/scanners/index.js"
+    },
     "./node": {
       "types": "./dist/node/index.d.ts",
       "default": "./dist/node/index.js"
@@ -56,6 +60,7 @@
     "hello:dev": "vite --config examples/hello/vite.config.ts"
   },
   "dependencies": {
+    "@xterm/headless": "^6.0.0",
     "js-yaml": "^4.1.0"
   },
   "devDependencies": {

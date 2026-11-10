@@ -23,6 +23,7 @@ The package installs from a git tag: npm clones it, installs its dev dependencie
 | `pomade-kit/frontmatter` | field-only frontmatter writes: `setField`, `removeField`, and the block core Pomade's editor uses | browser and Node |
 | `pomade-kit/schedule` | the schedule format: `parseSchedule` with readable errors, the occurrence engine, `describeSchedule`, `formatSchedule` | browser and Node |
 | `pomade-kit/dates` | date phrases: `parseDatePhrase` (`fri`, `tomorrow`, `+3d`, `nov 20`, `tonight 23:00`, `in 2 hours`) and `currentDay` with a day boundary | browser and Node |
+| `pomade-kit/scanners` | terminal output readers: `MarkerScanner` (Pomade's shell markers), `AttentionScanner` (bell, notifications), `AgentStateScanner` (claude/codex working, idle, waiting at a permission or trust prompt) | browser and Node |
 | `pomade-kit/node` | `resolveWorkspace()` for commands | Node |
 
 ## Connect to Pomade
@@ -299,6 +300,60 @@ currentDay(now, { hour: 3, minute: 0 });             // the Planner day: at 01:3
   `2026-02-30`, `tomorrow 25:00`, `13pm`, `+99999d`.
 - Case and extra spaces are ignored. Anything else — `buy milk`, `next fri`, `fri 20` — is
   `not-a-date`.
+
+## Agent output scanners
+
+Readers of a terminal's output stream, fed chunk by chunk exactly as the pty delivers them. Pomade's
+terminals use them, and so does Runner's keeper for the sessions it runs.
+
+```ts
+import { AgentStateScanner, AttentionScanner, MarkerScanner } from "pomade-kit/scanners";
+
+const markers = new MarkerScanner((ev) => {
+  if (ev.kind === "exec") ev.command;   // a command is about to run at the shell
+  else ev.cwd;                          // a prompt was drawn; its $PWD, or null
+});
+const attention = new AttentionScanner(() => markUnread());   // a bell or an OSC 9/99/777 notification
+
+const agent = new AgentStateScanner({ agent: "claude", cols, rows }, (state) => {
+  // { kind: "working" } | { kind: "idle" } | { kind: "waiting", prompt: "permission" | "trust" } | { kind: "unknown" }
+});
+
+pty.onData((data) => { markers.push(data); attention.push(data); agent.push(data); });
+pty.onResize(({ cols, rows }) => agent.resize(cols, rows));
+pty.onExit(() => agent.dispose());
+```
+
+- **Markers and attention** are synchronous and split-safe: a marker, OSC or BEL cut across two
+  chunks is recognised exactly once. A BEL that ends an OSC is not a bell; window titles (OSC
+  0/1/2) and Pomade's OSC 7879 markers are never attention.
+- **Agent state** replays the stream into a headless terminal of the pty's size
+  (`@xterm/headless`) and reads the screen and the window title. Both CLIs redraw only changed
+  cells, so a prompt's words are not reliably in the raw bytes, but they are on the screen.
+
+| | claude | codex |
+|---|---|---|
+| working | title starts with ◐ ◓ ◑ ◒ | title starts with a braille spinner |
+| idle | title starts with ✳ | any other title, once a spinner has been seen |
+| waiting: permission | dialog "Do you want to …" · "❯ 1. Yes" · "Esc to cancel" | title "[ ! ] Action Required" or dialog "› 1. Yes, proceed" · "Press enter to confirm or esc to cancel" |
+| waiting: trust | "Yes, I trust this folder" · "Enter to confirm · Esc to cancel" | "› 1. Yes, continue" · "Press enter to continue" |
+
+- A dialog counts only while its footer is the **last non-blank row** on screen, where both CLIs
+  draw a live prompt. A transcript that quotes a prompt has the composer below it and does not
+  count.
+- **Idle is reported after it holds for `idleAfterMs`** (default 500 ms). claude shows its idle
+  title a few milliseconds before it draws a permission dialog, so a consumer that ends a run
+  on idle never sees that flash. Working and waiting are reported at once. A finished turn is a
+  `working → idle` change.
+- Events are asynchronous (after the chunk is parsed); `await agent.settled()` waits for
+  everything pushed so far. `agent.state` is the last reported state.
+- `unknown` until the output says otherwise: before the first title, or under a codex
+  `[tui].terminal_title` without the spinner (the scanner never guesses idle).
+- Create the scanner when the agent starts and dispose it when it exits; after an exit the
+  screen still holds whatever the CLI left there.
+- Evidence: real captures of claude 2.1.321 and codex-cli 0.153.2 answering permission prompts
+  (`src/scanners/fixtures/`, provenance in each file) replay in the unit suite with their
+  recorded timing.
 
 ## Commands run with Pomade closed
 
