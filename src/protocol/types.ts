@@ -85,6 +85,9 @@ export const ERROR_CODES = [
   "outside-workspace",
   "not-found",
   "io-error",
+  "already-exists",
+  "unreadable-frontmatter",
+  "unsupported-key",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -93,7 +96,7 @@ export interface ErrorPayload {
   message: string;
 }
 
-export const CAPABILITIES = ["project.read", "files.read"] as const;
+export const CAPABILITIES = ["project.read", "files.read", "files.write", "tabs.open", "project.write", "files.symlink"] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
 // ── Methods ─────────────────────────────────────────────────────────────────
@@ -136,6 +139,181 @@ export interface SetBadgeParams {
   urgent?: boolean;
 }
 
+// ── Workspace data: file writes (pomade:E-030) ─────────────────────────────
+
+export interface ReadFileParams {
+  path: string;
+}
+
+/** `files.readFile` — the file's text, decoded as UTF-8. */
+export interface ReadFileResult {
+  content: string;
+  /** Bytes. */
+  size: number;
+  mtimeMs: number;
+}
+
+/** `files.create` — a new file; missing parent folders are created. Refused when the path exists. */
+export interface CreateFileParams {
+  path: string;
+  /** Default `""`. */
+  content?: string;
+}
+
+/** `files.write` — replace an existing file's whole text. */
+export interface WriteFileParams {
+  path: string;
+  content: string;
+}
+
+/** `files.setBody` — replace everything after the frontmatter block; the block's bytes stay. */
+export interface SetBodyParams {
+  path: string;
+  body: string;
+}
+
+/** A frontmatter value an app writes: text, a finite number, a boolean, a list of text, or `null` (`key:`). */
+export type FrontmatterValue = string | number | boolean | null | string[];
+
+/** `files.setField` — one frontmatter field; every other byte of the file stays. */
+export interface SetFieldParams {
+  path: string;
+  key: string;
+  value: FrontmatterValue;
+}
+
+/** `files.removeField` — remove one frontmatter field; every other byte of the file stays. */
+export interface RemoveFieldParams {
+  path: string;
+  key: string;
+}
+
+/** Field and body writes: `changed: false` when the bytes were already identical (nothing is written). */
+export interface EditResult {
+  changed: boolean;
+}
+
+/** `files.move` — move or rename a file or folder; missing parent folders are created. Refused when `to` exists. */
+export interface MoveParams {
+  from: string;
+  to: string;
+}
+
+// ── Workspace data: tabs (pomade:E-030) ────────────────────────────────────
+
+/** `tabs.openFile` — open (or focus) a file in an editor tab. */
+export interface OpenFileParams {
+  /** A file, workspace-relative. */
+  path: string;
+  /** The project whose tab strip gets the tab; default the active project. Pomade switches to it. */
+  projectId?: string;
+}
+
+/** `tabs.openTerminal` — open a terminal tab in a folder, optionally running a command. */
+export interface OpenTerminalParams {
+  /** A folder, workspace-relative; `""` = the workspace root. */
+  cwd: string;
+  /** Typed into the shell once it is ready, then run; one line. */
+  command?: string;
+  /** The tab's title; default the command, else the shell's own title. */
+  title?: string;
+  /** The project whose tab strip gets the tab; default the active project. Pomade switches to it. */
+  projectId?: string;
+}
+
+// ── Workspace data: projects (pomade:E-030) ────────────────────────────────
+
+/** A sidebar group (groups nest). */
+export interface GroupInfo {
+  /** Stable: survives renames and moves. */
+  id: string;
+  name: string;
+  /** The containing group; `null` for a top-level group. */
+  parentId: string | null;
+  /** Group names from the top level down to this group, e.g. `["Building tools", "Tools"]`. */
+  path: string[];
+}
+
+/** A project in the sidebar's tree. */
+export interface ProjectInfo extends ProjectRef {
+  kind: "project";
+  /** The project's group; `null` when ungrouped. */
+  groupId: string | null;
+  /** Group names from the top level down to the project's group; `[]` when ungrouped. */
+  groupPath: string[];
+}
+
+/** `project.list` — groups and projects in sidebar order (a group, then its projects, then its sub-groups). */
+export interface ProjectListResult {
+  /** The Workspace scope (Pomade's pseudo-project at the top of the sidebar). */
+  workspace: ProjectRef;
+  groups: GroupInfo[];
+  projects: ProjectInfo[];
+}
+
+/** A plain JSON value (finite numbers only). */
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
+/** The most an app may store per project, as UTF-8 JSON (`project.setSettings`). */
+export const PROJECT_SETTINGS_MAX_BYTES = 65536;
+
+/** `project.getSettings` / `project.getAgents` — one project; `"__workspace__"` is not a project. */
+export interface ProjectIdParams {
+  projectId: string;
+}
+
+/** The calling app's own settings for one project. */
+export interface ProjectSettingsResult {
+  settings: Record<string, JsonValue>;
+}
+
+/** `project.setSettings` — merge into the app's settings for the project; a `null` value removes the key. */
+export interface SetProjectSettingsParams {
+  projectId: string;
+  settings: Record<string, JsonValue>;
+}
+
+/** The agents shown in the project's "+" menu: roster ids, or `["*"]` for every agent. */
+export interface ProjectAgentsResult {
+  visibleAgents: string[];
+}
+
+/** `project.setAgents` — replace the project's visible agents (`["*"]` = every agent). */
+export interface SetProjectAgentsParams {
+  projectId: string;
+  visibleAgents: string[];
+}
+
+// ── Workspace data: scoped symlinks (pomade:E-030) ─────────────────────────
+
+/** `files.symlink` — create a symlink at `path` pointing to `target`, inside a manifest `symlinks` folder. */
+export interface SymlinkParams {
+  /** The link, workspace-relative; its folder must match one of the manifest's `symlinks` patterns. */
+  path: string;
+  /** What it points to: an existing workspace-relative path. The link is written relative. */
+  target: string;
+}
+
+/** `files.removeSymlink` — remove the symlink at `path` (never what it points to). */
+export interface RemoveSymlinkParams {
+  path: string;
+}
+
+// ── Workspace data: folder picker (pomade:E-030) ───────────────────────────
+
+/** `files.pickFolder` — ask the user for a folder inside a root. */
+export interface PickFolderParams {
+  /** A project id whose folder bounds the choice; absent or `"__workspace__"` = the whole workspace. */
+  root?: string;
+  /** Where the picker starts, workspace-relative; default (and when outside the root) the root. */
+  initial?: string;
+}
+
+/** The chosen folder, workspace-relative; `null` when the user cancelled. */
+export interface PickFolderResult {
+  path: string | null;
+}
+
 /** Method name → params and result. Methods without params take `{}`. */
 export interface HostMethods {
   "host.info": { params: Record<string, never>; result: HostInfo };
@@ -144,6 +322,23 @@ export interface HostMethods {
   "files.watch": { params: WatchParams; result: WatchResult };
   "files.unwatch": { params: UnwatchParams; result: Record<string, never> };
   "strip.setBadge": { params: SetBadgeParams; result: Record<string, never> };
+  "files.readFile": { params: ReadFileParams; result: ReadFileResult };
+  "files.create": { params: CreateFileParams; result: Record<string, never> };
+  "files.write": { params: WriteFileParams; result: Record<string, never> };
+  "files.setBody": { params: SetBodyParams; result: EditResult };
+  "files.setField": { params: SetFieldParams; result: EditResult };
+  "files.removeField": { params: RemoveFieldParams; result: EditResult };
+  "files.move": { params: MoveParams; result: Record<string, never> };
+  "tabs.openFile": { params: OpenFileParams; result: Record<string, never> };
+  "tabs.openTerminal": { params: OpenTerminalParams; result: Record<string, never> };
+  "project.list": { params: Record<string, never>; result: ProjectListResult };
+  "project.getSettings": { params: ProjectIdParams; result: ProjectSettingsResult };
+  "project.setSettings": { params: SetProjectSettingsParams; result: ProjectSettingsResult };
+  "project.getAgents": { params: ProjectIdParams; result: ProjectAgentsResult };
+  "project.setAgents": { params: SetProjectAgentsParams; result: Record<string, never> };
+  "files.symlink": { params: SymlinkParams; result: Record<string, never> };
+  "files.removeSymlink": { params: RemoveSymlinkParams; result: Record<string, never> };
+  "files.pickFolder": { params: PickFolderParams; result: PickFolderResult };
 }
 export type MethodName = keyof HostMethods;
 export type MethodParams<M extends MethodName> = HostMethods[M]["params"];
@@ -157,6 +352,23 @@ export const METHOD_CAPABILITY: Readonly<Record<MethodName, Capability | null>> 
   "files.watch": "files.read",
   "files.unwatch": "files.read",
   "strip.setBadge": null,
+  "files.readFile": "files.read",
+  "files.create": "files.write",
+  "files.write": "files.write",
+  "files.setBody": "files.write",
+  "files.setField": "files.write",
+  "files.removeField": "files.write",
+  "files.move": "files.write",
+  "tabs.openFile": "tabs.open",
+  "tabs.openTerminal": "tabs.open",
+  "project.list": "project.read",
+  "project.getSettings": "project.read",
+  "project.setSettings": "project.write",
+  "project.getAgents": "project.read",
+  "project.setAgents": "project.write",
+  "files.symlink": "files.symlink",
+  "files.removeSymlink": "files.symlink",
+  "files.pickFolder": "files.read",
 };
 
 export const METHOD_NAMES = Object.keys(METHOD_CAPABILITY) as MethodName[];

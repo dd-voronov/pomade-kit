@@ -28,6 +28,10 @@ export interface Manifest {
   capabilities: Capability[];
   /** The app's left-strip icons, in manifest order; absent when the manifest declares none. */
   strip?: StripIcon[];
+  /** Folder patterns where the app may create and remove symlinks (`files.symlink`): workspace-
+   *  relative folders whose `*` segments match any one folder name (segments `Agents`, `*`,
+   *  `skills` = every agent's skills folder); absent when the manifest declares none. */
+  symlinks?: string[];
 }
 
 export const MANIFEST_FILE = "manifest.json";
@@ -39,7 +43,7 @@ export const STRIP_ICON_ID_RE = /^[a-z][a-z0-9-]{0,31}$/;
 const SEMVER_RE =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
 
-const KNOWN_KEYS = new Set(["id", "name", "version", "hostApi", "entry", "icon", "capabilities", "strip"]);
+const KNOWN_KEYS = new Set(["id", "name", "version", "hostApi", "entry", "icon", "capabilities", "strip", "symlinks"]);
 
 /** One invalid field. */
 export interface ManifestError {
@@ -119,6 +123,7 @@ export function parseManifest(value: unknown): ManifestParseResult {
     }
   }
   const strip = m.strip === undefined ? undefined : parseStrip(m.strip, errors);
+  const symlinks = m.symlinks === undefined ? undefined : parseSymlinkScopes(m.symlinks, errors);
 
   if (errors.length > 0) return { ok: false, errors, ...errors[0]! };
 
@@ -132,6 +137,7 @@ export function parseManifest(value: unknown): ManifestParseResult {
   if (m.entry !== undefined) manifest.entry = m.entry as string;
   if (m.icon !== undefined) manifest.icon = m.icon as string;
   if (strip !== undefined) manifest.strip = strip;
+  if (symlinks !== undefined) manifest.symlinks = symlinks;
   const unsupportedKeys = Object.keys(m).filter((k) => !KNOWN_KEYS.has(k));
   return { ok: true, manifest, unsupportedKeys };
 }
@@ -189,6 +195,44 @@ function parseStrip(raw: unknown, errors: ManifestError[]): StripIcon[] {
     out.push(icon);
   });
   return out;
+}
+
+/** `symlinks` (HOST-API §1): workspace-relative folder patterns; a `*` segment matches any one
+ *  folder name. Errors name the pattern by index. */
+function parseSymlinkScopes(raw: unknown, errors: ManifestError[]): string[] {
+  if (!Array.isArray(raw)) {
+    errors.push({ field: "symlinks", message: `"symlinks" must be an array of folder patterns ${received(raw)}` });
+    return [];
+  }
+  const out: string[] = [];
+  (raw as unknown[]).forEach((item, i) => {
+    if (typeof item !== "string" || !isSymlinkScope(item)) {
+      errors.push({
+        field: `symlinks[${i}]`,
+        message: `"symlinks[${i}]" must be a workspace-relative folder pattern ("*" = one folder name) ${received(item)}`,
+      });
+      return;
+    }
+    if (!out.includes(item)) out.push(item);
+  });
+  return out;
+}
+
+function isSymlinkScope(p: string): boolean {
+  if (!isInnerPath(p)) return false;
+  return p.split("/").every((seg) => seg === "*" || !seg.includes("*"));
+}
+
+/** True when a link at `linkPath` (workspace-relative, normalized) sits directly in a folder one of
+ *  the manifest's `symlinks` patterns matches; a `*` segment matches any one folder name. */
+export function symlinkScopeCovers(scopes: readonly string[], linkPath: string): boolean {
+  const segs = linkPath.split("/");
+  if (segs.length < 2 || segs.some((s) => s === "")) return false;
+  const parent = segs.slice(0, -1);
+  return scopes.some((scope) => {
+    const pattern = scope.split("/");
+    return pattern.length === parent.length && pattern.every((seg, i) => seg === "*" || seg === parent[i]);
+  });
 }
 
 /**

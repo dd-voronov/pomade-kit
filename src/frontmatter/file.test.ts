@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { readFrontmatter } from "../protocol/frontmatter.js";
 import { setScalarValue } from "./block.js";
-import { removeField, setField, splitFrontmatter, type FieldWriteResult } from "./file.js";
+import { getBody, removeField, setBody, setField, splitFrontmatter, type FieldWriteResult } from "./file.js";
 
 const fixture = (name: string) => readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
 const FIXTURES = ["E-029-side-panels.md", "E-017-icon-library-picker-redesign.md", "T-100-link-picker-scroll.md", "E-001-editor-context-menus.md"];
@@ -353,5 +353,60 @@ describe("splitFrontmatter", () => {
       const hasBlock = splitFrontmatter(t).frontmatter !== "";
       expect(hasBlock).toBe((readFrontmatter(t) as { frontmatter?: unknown }).frontmatter !== null);
     }
+  });
+});
+
+describe("getBody / setBody on a real-shaped ticket (comments, quotes, lists, wikilinks, markup)", () => {
+  const LF = fixture("T-210-board-drag-mixed.md");
+  const CRLF = LF.replace(/\n/g, "\r\n");
+  const block = (t: string) => t.slice(0, t.length - getBody(t).length);
+
+  it.each([
+    ["LF", LF],
+    ["CRLF", CRLF],
+  ])("%s: the body starts after the block and its blank line; the block bytes are kept exactly", (_name, before) => {
+    const nl = before.includes("\r\n") ? "\r\n" : "\n";
+    expect(getBody(before).startsWith(`# T-210 — Board: drag a card to Done${nl}`)).toBe(true);
+    expect(block(before).endsWith(`created: 2026-11-10${nl}---${nl}${nl}`)).toBe(true);
+    const body = "New body with [[E-030]] and **bold**.\nSecond line, no final newline";
+    const after = text(setBody(before, body));
+    expect(after).toBe(block(before) + body);
+    expect(fm(after)).toEqual(fm(before));
+    expect(getBody(after)).toBe(body);
+  });
+
+  it("a field write then a body write: each leaves the other's bytes alone", () => {
+    const withField = text(setField(LF, "status", "done"));
+    expect(changedLines(LF, withField)).toEqual([["status: 'in-progress'   # moved by the Board\n", "status: done   # moved by the Board\n"]]);
+    expect(getBody(withField)).toBe(getBody(LF));
+    const withBody = text(setBody(withField, "Rewritten.\n"));
+    expect(block(withBody)).toBe(block(withField));
+  });
+
+  it("CRLF: a field write keeps CRLF in the block and every body byte", () => {
+    const after = text(setField(CRLF, "estimate", 5));
+    expect(after).toBe(CRLF.replace("estimate: 3\r\n", "estimate: 5\r\n"));
+  });
+
+  it("an identical body is no change", () => {
+    const r = setBody(LF, getBody(LF));
+    expect(r).toEqual({ ok: true, text: LF, changed: false });
+  });
+
+  it("a file without frontmatter: the whole text is the body", () => {
+    expect(getBody("# Note\n\nText.\n")).toBe("# Note\n\nText.\n");
+    expect(text(setBody("# Note\n", "# Other\n"))).toBe("# Other\n");
+    expect(text(setBody("", "x"))).toBe("x");
+  });
+
+  it("an unclosed --- block is refused (its extent is unknown); getBody shows the whole text", () => {
+    const open = "---\nid: T-1\nstatus: open\n\nNo closing line.\n";
+    expect(setBody(open, "x")).toMatchObject({ ok: false, reason: "unreadable-frontmatter" });
+    expect(getBody(open)).toBe(open);
+  });
+
+  it("a block with invalid YAML keeps its bytes (the body write does not parse it)", () => {
+    const broken = "---\nid: [unclosed\n---\n\nBody.\n";
+    expect(text(setBody(broken, "New.\n"))).toBe("---\nid: [unclosed\n---\n\nNew.\n");
   });
 });

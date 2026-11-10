@@ -37,3 +37,8 @@ export function parentPath(path: string): string {
   const i = path.lastIndexOf("/");
   return i < 0 ? "" : path.slice(0, i);
 }
+
+/** True when `path` is `folder` itself or lies below it (both normalized; `""` = the workspace root). */
+export function isInside(path: string, folder: string): boolean {
+  return folder === "" || path === folder || path.startsWith(`${folder}/`);
+}

@@ -15,6 +15,27 @@ import {
   type SetBadgeParams,
   type FrameTarget,
   type WatchParams,
+  type CreateFileParams,
+  type EditResult,
+  type MoveParams,
+  type ReadFileParams,
+  type ReadFileResult,
+  type RemoveFieldParams,
+  type SetBodyParams,
+  type SetFieldParams,
+  type WriteFileParams,
+  type OpenFileParams,
+  type OpenTerminalParams,
+  type ProjectListResult,
+  type ProjectAgentsResult,
+  type ProjectIdParams,
+  type ProjectSettingsResult,
+  type SetProjectAgentsParams,
+  type SetProjectSettingsParams,
+  type RemoveSymlinkParams,
+  type SymlinkParams,
+  type PickFolderParams,
+  type PickFolderResult,
 } from "../protocol/index.js";
 import type { Transport } from "./transport.js";
 
@@ -52,15 +73,51 @@ export interface HostClient {
     getActive(): Promise<ProjectRef>;
     /** Called on every `project.changed`; returns an unsubscribe function. */
     onChange(callback: (project: ProjectRef) => void): () => void;
+    /** Groups and projects in sidebar order, each project with its group path. */
+    list(): Promise<ProjectListResult>;
+    /** This app's own settings for a project (`{}` when none). */
+    getSettings(params: ProjectIdParams): Promise<ProjectSettingsResult>;
+    /** Merge into this app's settings for a project (`null` removes a key); returns the result. */
+    setSettings(params: SetProjectSettingsParams): Promise<ProjectSettingsResult>;
+    /** The agents shown in the project's "+" menu (`["*"]` = every agent). */
+    getAgents(params: ProjectIdParams): Promise<ProjectAgentsResult>;
+    /** Replace the project's visible agents. */
+    setAgents(params: SetProjectAgentsParams): Promise<void>;
   };
   readonly files: {
     readFolder(params: ReadFolderParams): Promise<ReadFolderResult>;
     /** Resolves once the host accepted the watch; `onChanges` receives each batch. */
     watch(params: WatchParams, onChanges: (changes: FileChange[]) => void): Promise<FileWatch>;
+    /** The file's text (UTF-8), size and mtime. */
+    readFile(params: ReadFileParams): Promise<ReadFileResult>;
+    /** A new file (parent folders created); `already-exists` when the path exists. */
+    create(params: CreateFileParams): Promise<void>;
+    /** Replace an existing file's whole text. */
+    write(params: WriteFileParams): Promise<void>;
+    /** Replace the body after the frontmatter block; the block's bytes stay. */
+    setBody(params: SetBodyParams): Promise<EditResult>;
+    /** Set one frontmatter field; every other byte of the file stays. */
+    setField(params: SetFieldParams): Promise<EditResult>;
+    /** Remove one frontmatter field; every other byte of the file stays. */
+    removeField(params: RemoveFieldParams): Promise<EditResult>;
+    /** Move or rename a file or folder (parent folders created); `already-exists` when `to` exists. */
+    move(params: MoveParams): Promise<void>;
+    /** Create a relative symlink inside a manifest `symlinks` folder. */
+    symlink(params: SymlinkParams): Promise<void>;
+    /** Remove a symlink inside a manifest `symlinks` folder (never its target). */
+    removeSymlink(params: RemoveSymlinkParams): Promise<void>;
+    /** Ask the user for a folder inside a project (or the workspace); `path: null` = cancelled. */
+    pickFolder(params?: PickFolderParams): Promise<PickFolderResult>;
   };
   readonly strip: {
     /** Badge one of the app's own strip icons; `count: 0` clears it, `urgent: true` paints it red. */
     setBadge(params: SetBadgeParams): Promise<void>;
+  };
+  readonly tabs: {
+    /** Open (or focus) a file in an editor tab, right of the active tab. */
+    openFile(params: OpenFileParams): Promise<void>;
+    /** Open a terminal tab in a folder, right of the active tab, optionally running a command. */
+    openTerminal(params: OpenTerminalParams): Promise<void>;
   };
   /** Detach from the transport: no more events, pending calls reject. */
   close(): void;
@@ -138,6 +195,13 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
         projectListeners.add(callback);
         return () => projectListeners.delete(callback);
       },
+      list: () => call("project.list", {}),
+      getSettings: (params) => call("project.getSettings", params),
+      setSettings: (params) => call("project.setSettings", params),
+      getAgents: (params) => call("project.getAgents", params),
+      async setAgents(params) {
+        await call("project.setAgents", params);
+      },
     },
     files: {
       readFolder: (params) => call("files.readFolder", params),
@@ -155,10 +219,38 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
           },
         };
       },
+      readFile: (params) => call("files.readFile", params),
+      async create(params) {
+        await call("files.create", params);
+      },
+      async write(params) {
+        await call("files.write", params);
+      },
+      setBody: (params) => call("files.setBody", params),
+      setField: (params) => call("files.setField", params),
+      removeField: (params) => call("files.removeField", params),
+      async move(params) {
+        await call("files.move", params);
+      },
+      async symlink(params) {
+        await call("files.symlink", params);
+      },
+      async removeSymlink(params) {
+        await call("files.removeSymlink", params);
+      },
+      pickFolder: (params = {}) => call("files.pickFolder", params),
     },
     strip: {
       async setBadge(params) {
         await call("strip.setBadge", params);
+      },
+    },
+    tabs: {
+      async openFile(params) {
+        await call("tabs.openFile", params);
+      },
+      async openTerminal(params) {
+        await call("tabs.openTerminal", params);
       },
     },
     close: dispose,

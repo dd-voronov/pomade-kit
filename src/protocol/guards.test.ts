@@ -172,7 +172,24 @@ describe("METHOD_CAPABILITY", () => {
       "files.watch": "files.read",
       "files.unwatch": "files.read",
       "strip.setBadge": null,
+      "files.readFile": "files.read",
+      "files.create": "files.write",
+      "files.write": "files.write",
+      "files.setBody": "files.write",
+      "files.setField": "files.write",
+      "files.removeField": "files.write",
+      "files.move": "files.write",
+      "tabs.openFile": "tabs.open",
+      "tabs.openTerminal": "tabs.open",
+      "project.list": "project.read",
+      "project.getSettings": "project.read",
+      "project.setSettings": "project.write",
+      "project.getAgents": "project.read",
+      "project.setAgents": "project.write",
+      "files.symlink": "files.symlink",
+      "files.removeSymlink": "files.symlink",
+      "files.pickFolder": "files.read",
     });
-    expect(METHOD_NAMES).toHaveLength(6);
+    expect(METHOD_NAMES).toHaveLength(23);
   });
 });

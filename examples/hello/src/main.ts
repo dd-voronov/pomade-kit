@@ -1,10 +1,17 @@
 // Hello — the smallest Pomade app: lists the active project's docs/roadmap/ with each file's
-// frontmatter and follows project switches and file changes. Built only on pomade-kit's SDK.
+// frontmatter (the folder is a per-project setting), shows the project's group path and visible
+// agents, lets the user pick its folder with Pomade's folder picker, links its skill into an
+// agent's skills folder, follows project switches and file changes, marks a ticket done with a
+// field-only frontmatter write, and opens a ticket in a Pomade editor tab. Built only on
+// pomade-kit's SDK.
 
 import { joinPath } from "pomade-kit/protocol";
 import { connect, HostError, type FileEntry, type FileWatch, type HostClient, type ProjectRef } from "pomade-kit/sdk";
 
 const FOLDER = "docs/roadmap";
+const DONE_FOLDER = "docs/roadmap/done";
+const SKILL = "Apps/hello/skill";
+const SKILL_LINK = "Agents/claude/skills/hello";
 const COLUMNS = ["id", "status", "title"];
 
 function el(testId: string): HTMLElement {
@@ -20,7 +27,23 @@ function cell(tag: "td" | "th", text: string, className?: string): HTMLTableCell
   return node;
 }
 
-function renderRows(entries: FileEntry[]): void {
+function button(testId: string, text: string, onClick: () => void): HTMLTableCellElement {
+  const td = document.createElement("td");
+  const b = document.createElement("button");
+  b.type = "button";
+  b.dataset.testid = testId;
+  b.textContent = text;
+  b.addEventListener("click", onClick);
+  td.append(b);
+  return td;
+}
+
+interface RowActions {
+  markDone(entry: FileEntry): void;
+  open(entry: FileEntry): void;
+}
+
+function renderRows(entries: FileEntry[], actions: RowActions): void {
   const table = el("rows");
   table.replaceChildren();
   const head = document.createElement("tr");
@@ -40,6 +63,8 @@ function renderRows(entries: FileEntry[]): void {
         const value = entry.frontmatter?.[key];
         row.append(cell("td", value === undefined || value === null ? "" : String(value)));
       }
+      row.append(button("done", "Done", () => actions.markDone(entry)));
+      row.append(button("open", "Open", () => actions.open(entry)));
     }
     table.append(row);
   }
@@ -48,17 +73,26 @@ function renderRows(entries: FileEntry[]): void {
 function startApp(host: HostClient): void {
   let watch: FileWatch | null = null;
   let generation = 0;
+  const actions: RowActions = {
+    // One field changes; the watch re-renders the row.
+    markDone: (entry) =>
+      void host.files.setField({ path: entry.path, key: "status", value: "done" }).catch((err: unknown) => showError(entry.path, err)),
+    open: (entry) => void host.tabs.openFile({ path: entry.path }).catch((err: unknown) => showError(entry.path, err)),
+  };
 
   async function show(project: ProjectRef): Promise<void> {
     const mine = ++generation;
     await watch?.close();
     watch = null;
-    const folder = joinPath(project.root, FOLDER);
+    const folder = joinPath(project.root, await folderSetting(project));
+    if (mine !== generation) return;
     el("state").textContent = `Project: ${project.name}`;
     el("folder").textContent = folder;
+    void showGroup(project, mine);
+    void showAgents(project, mine);
     const reload = async (): Promise<void> => {
       const { entries } = await host.files.readFolder({ path: folder, frontmatter: true });
-      if (mine === generation) renderRows(entries);
+      if (mine === generation) renderRows(entries, actions);
     };
     try {
       const next = await host.files.watch({ path: folder }, () => void reload().catch((err: unknown) => showError(folder, err)));
@@ -71,6 +105,74 @@ function startApp(host: HostClient): void {
     } catch (err) {
       if (mine === generation) showError(folder, err);
     }
+  }
+
+  /** The folder this app lists for a project: its per-project setting, else docs/roadmap. */
+  async function folderSetting(project: ProjectRef): Promise<string> {
+    if (project.kind === "workspace") return FOLDER;
+    const { settings } = await host.project.getSettings({ projectId: project.id });
+    return typeof settings.folder === "string" ? settings.folder : FOLDER;
+  }
+
+  async function showAgents(project: ProjectRef, mine: number): Promise<void> {
+    const { visibleAgents } = await host.project.getAgents({ projectId: project.id });
+    if (mine !== generation) return;
+    el("agents").textContent = `Agents: ${visibleAgents.includes("*") ? "all" : visibleAgents.join(", ") || "none"}`;
+  }
+
+  // Remember a different folder for this project, or offer only claude in its "+" menu.
+  el("use-done").addEventListener("click", () => {
+    void (async () => {
+      const project = await host.project.getActive();
+      if (project.kind === "workspace") return;
+      const { settings } = await host.project.getSettings({ projectId: project.id });
+      const folder = settings.folder === DONE_FOLDER ? null : DONE_FOLDER;
+      await host.project.setSettings({ projectId: project.id, settings: { folder } });
+      await show(project);
+    })();
+  });
+  el("only-claude").addEventListener("click", () => {
+    void (async () => {
+      const project = await host.project.getActive();
+      if (project.kind === "workspace") return;
+      await host.project.setAgents({ projectId: project.id, visibleAgents: ["claude"] });
+      await show(project);
+    })();
+  });
+
+  // Let the user pick the listed folder (inside the project) and remember it per project.
+  el("pick-folder").addEventListener("click", () => {
+    void (async () => {
+      const project = await host.project.getActive();
+      if (project.kind === "workspace") return;
+      const { path } = await host.files.pickFolder({ root: project.id, initial: joinPath(project.root, FOLDER) });
+      if (path === null) return;
+      const folder = path === project.root ? "" : path.slice(project.root.length + 1);
+      await host.project.setSettings({ projectId: project.id, settings: { folder } });
+      await show(project);
+    })();
+  });
+
+  // Link (or unlink) this app's skill for the claude agent — inside the manifest's `symlinks` folder.
+  el("link-skill").addEventListener("click", () => {
+    void (async () => {
+      try {
+        await host.files.symlink({ path: SKILL_LINK, target: SKILL });
+        el("skill").textContent = "Skill linked";
+      } catch (err) {
+        if (!(err instanceof HostError && err.code === "already-exists")) throw err;
+        await host.files.removeSymlink({ path: SKILL_LINK });
+        el("skill").textContent = "Skill unlinked";
+      }
+    })();
+  });
+
+  /** The project's place in Pomade's sidebar, looked up by its stable id. */
+  async function showGroup(project: ProjectRef, mine: number): Promise<void> {
+    const { projects } = await host.project.list();
+    if (mine !== generation) return;
+    const info = projects.find((p) => p.id === project.id);
+    el("group").textContent = project.kind === "workspace" ? "Workspace" : info && info.groupPath.length > 0 ? info.groupPath.join(" › ") : "Ungrouped";
   }
 
   function showError(folder: string, err: unknown): void {

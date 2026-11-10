@@ -11,10 +11,12 @@ import {
 } from "../protocol/index.js";
 
 interface Node {
-  kind: "file" | "dir";
+  kind: "file" | "dir" | "link";
   content: string;
   size: number;
   mtimeMs: number;
+  /** A link's target (workspace-relative). */
+  target?: string;
 }
 
 const encoder = new TextEncoder();
@@ -48,8 +50,52 @@ export class Workspace {
     for (const [path, content] of Object.entries(files)) this.writeFile(controlPath(path), content);
   }
 
+  /** What is at `path`, following symlinks (a broken link is `null`). */
   kindOf(path: string): "file" | "dir" | null {
-    return this.nodes.get(path)?.kind ?? null;
+    const node = this.resolve(path);
+    return node === null ? null : (node.kind as "file" | "dir");
+  }
+
+  /** True when something — a broken symlink included — is at `path` itself. */
+  exists(path: string): boolean {
+    return this.nodes.has(path);
+  }
+
+  /** True when `path` itself is a symlink. */
+  isLink(path: string): boolean {
+    return this.nodes.get(path)?.kind === "link";
+  }
+
+  /** A file's text, size and mtime (symlinks followed); `null` when `path` is not a file. */
+  file(path: string): { content: string; size: number; mtimeMs: number } | null {
+    const node = this.resolve(path);
+    return node?.kind === "file" ? { content: node.content, size: node.size, mtimeMs: node.mtimeMs } : null;
+  }
+
+  /** Create a symlink at `path` to `target` (both workspace-relative), making missing parent folders. */
+  symlink(path: string, target: string): FileChange[] {
+    if (this.nodes.has(path)) throw new Error(`fake host: ${path} already exists`);
+    const changes = this.ensureFolder(parentPath(path));
+    const time = this.now();
+    this.nodes.set(path, { kind: "link", content: "", size: 0, mtimeMs: time, target });
+    this.touch(parentPath(path), time);
+    changes.push({ kind: "create", path });
+    return changes;
+  }
+
+  /** Remove the symlink at `path` (never its target). */
+  removeLink(path: string): FileChange[] {
+    if (!this.isLink(path)) throw new Error(`fake host: no symlink at ${path}`);
+    this.nodes.delete(path);
+    this.touch(parentPath(path), this.now());
+    return [{ kind: "delete", path }];
+  }
+
+  /** The node at `path` with symlinks followed (cycle-safe); `null` when missing or broken. */
+  private resolve(path: string): Node | null {
+    let node = this.nodes.get(path);
+    for (let hops = 0; node?.kind === "link" && hops < 40; hops++) node = this.nodes.get(node.target ?? "");
+    return node && node.kind !== "link" ? node : null;
   }
 
   /** True when a segment of `rel` (relative to some folder) is on the ignore list. */
@@ -72,9 +118,12 @@ export class Workspace {
       if (path === folder || !isUnder(path, folder)) continue;
       const rel = relativeTo(path, folder);
       if ((!recursive && rel.includes("/")) || this.isIgnored(rel)) continue;
-      const entry: FileEntry = { path, name: baseName(path), kind: node.kind, size: node.size, mtimeMs: node.mtimeMs };
-      if (withFrontmatter && node.kind === "file" && isMarkdownPath(path)) {
-        Object.assign(entry, readFrontmatter(node.content));
+      // A symlink reports what it points to (a broken one as a file), and is never descended into.
+      const shown = node.kind === "link" ? (this.resolve(path) ?? { ...node, kind: "file" as const }) : node;
+      const kind = shown.kind === "dir" ? "dir" : "file";
+      const entry: FileEntry = { path, name: baseName(path), kind, size: kind === "dir" ? 0 : shown.size, mtimeMs: shown.mtimeMs };
+      if (withFrontmatter && kind === "file" && isMarkdownPath(path)) {
+        Object.assign(entry, readFrontmatter(shown.content));
       }
       entries.push(entry);
     }
@@ -83,6 +132,9 @@ export class Workspace {
 
   /** Create or overwrite a file, creating missing parent folders. Returns the changes. */
   writeFile(path: string, content: string): FileChange[] {
+    // Writing through a symlink writes its target; the link stays a link.
+    const link = this.nodes.get(path);
+    if (link?.kind === "link" && link.target !== undefined && this.resolve(path)) return this.writeFile(link.target, content);
     const existing = this.nodes.get(path);
     if (existing?.kind === "dir") throw new Error(`fake host: ${path} is a folder`);
     const changes = this.ensureFolder(parentPath(path));

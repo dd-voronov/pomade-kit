@@ -6,3 +6,4 @@ export * from "./guards.js";
 export * from "./manifest.js";
 export * from "./paths.js";
 export * from "./frontmatter.js";
+export * from "./project-data.js";

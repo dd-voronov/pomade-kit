@@ -20,7 +20,7 @@ The package installs from a git tag: npm clones it, installs its dev dependencie
 | `pomade-kit/protocol` | Host API v0 in code: messages, `ProjectRef`, `FileEntry`, `FileChange`, error codes, `Manifest` + `parseManifest`, strip icons (`StripIcon`, `resolveFrameTarget`), `HOST_API_VERSION`, message guards, workspace path rules, `readFrontmatter` | browser and Node |
 | `pomade-kit/sdk` | `connect()` and the typed client | browser (any `Transport` elsewhere) |
 | `pomade-kit/fake-host` | the Host API in memory, for standalone runs and tests | browser and Node |
-| `pomade-kit/frontmatter` | field-only frontmatter writes: `setField`, `removeField`, and the block core Pomade's editor uses | browser and Node |
+| `pomade-kit/frontmatter` | field-only frontmatter writes: `setField`, `removeField`, body writes `setBody` / `getBody`, and the block core Pomade's editor uses | browser and Node |
 | `pomade-kit/schedule` | the schedule format: `parseSchedule` with readable errors, the occurrence engine, `describeSchedule`, `formatSchedule` | browser and Node |
 | `pomade-kit/dates` | date phrases: `parseDatePhrase` (`fri`, `tomorrow`, `+3d`, `nov 20`, `tonight 23:00`, `in 2 hours`) and `currentDay` with a day boundary | browser and Node |
 | `pomade-kit/scanners` | terminal output readers: `MarkerScanner` (Pomade's shell markers), `AttentionScanner` (bell, notifications), `AgentStateScanner` (claude/codex working, idle, waiting at a permission or trust prompt) | browser and Node |
@@ -52,6 +52,10 @@ else if (result.status === "rejected") {
 
   await host.strip.setBadge({ icon: "board", count: 3, urgent: true });   // count 0 clears it
 
+  // files.read / files.write (see "Read and write files" below)
+  const { content } = await host.files.readFile({ path: "Projects/x/docs/roadmap/T-1.md" });
+  await host.files.setField({ path: "Projects/x/docs/roadmap/T-1.md", key: "status", value: "done" });
+
   try {
     await host.files.readFolder({ path: "../outside" });
   } catch (err) {
@@ -75,6 +79,109 @@ else if (result.status === "rejected") {
   reload; the app sets them again.
 - `host.close()` detaches the client: no more events, pending calls reject.
 
+## Read and write files
+
+Capabilities: `files.read` for `readFile`, `files.write` for every write. Paths are
+workspace-relative and name an entry below the root.
+
+```ts
+await host.files.readFile({ path });                       // { content, size, mtimeMs } — UTF-8 text
+await host.files.setField({ path, key: "status", value: "done" });   // { changed }
+await host.files.setField({ path, key: "tags", value: ["a", "b"] }); // value: string | number | boolean | null | string[]
+await host.files.removeField({ path, key: "parked" });     // { changed }
+await host.files.setBody({ path, body: "New body\n" });    // { changed } — the frontmatter block's bytes stay
+await host.files.create({ path: "Projects/x/docs/roadmap/T-9.md", content: "---\nid: T-9\n---\n" });
+await host.files.write({ path, content });                 // replace an existing file's text
+await host.files.move({ from: path, to: "Projects/x/docs/roadmap/done/T-1.md" });   // move or rename
+```
+
+- `setField` / `removeField` are the kit's own `setField` / `removeField` run by the host on the
+  file: only the key's lines change, every other byte stays (see "Write one frontmatter field").
+  `setBody` keeps the frontmatter block and the blank lines after it, and replaces the rest.
+  `changed: false` = the bytes were identical; nothing was written and no watch event fires.
+- `create` makes missing parent folders and refuses a taken path (`already-exists`); `write` needs
+  an existing file (`not-found`); `move` creates missing parent folders and refuses a taken `to`
+  (`already-exists`).
+- Refusals are `HostError`s: `unreadable-frontmatter` (invalid YAML or an unclosed `---` — nothing is
+  written), `unsupported-key`, `invalid-params`, `outside-workspace` (also for a write that would
+  leave the workspace through a symlink), `not-found`, `io-error`.
+- Pomade's editor treats an app's write like any outside write: a doc open with unsaved edits
+  shows "File changed since your edits" and nothing is overwritten.
+
+## Projects
+
+```ts
+const { workspace, groups, projects } = await host.project.list();   // sidebar order
+projects[0];   // { id, kind: "project", name, root, groupId, groupPath: ["Building tools", "Tools"] }
+groups[0];     // { id, name, parentId, path: ["Building tools"] }
+```
+
+Project ids are stable: renames, moves and regrouping keep them, so store ids and look names and
+roots up with `project.list()` / `project.getActive()`. `project.onChange` fires when the user
+switches project or picks the sidebar's Workspace item (`kind: "workspace"`, root `""`), and when
+the active project is renamed or moved.
+
+**Per-project settings and agents** (`project.read` to read, `project.write` to change):
+
+```ts
+const { settings } = await host.project.getSettings({ projectId });          // this app's own; {} when none
+await host.project.setSettings({ projectId, settings: { backlog: "docs/roadmap", view: null } });  // merge; null removes
+const { visibleAgents } = await host.project.getAgents({ projectId });       // ["*"] = every agent
+await host.project.setAgents({ projectId, visibleAgents: ["claude", "claude-coder"] });
+```
+
+Settings are plain JSON (`JsonValue`), at most 64 KiB per app per project
+(`PROJECT_SETTINGS_MAX_BYTES`); each app sees only its own. They live with the project in Pomade's
+workspace config, so they follow renames and moves. The Workspace scope (`"__workspace__"`) has no
+settings and offers every agent. `pomade-kit/protocol` exports the shared checks: `jsonProblem`,
+`mergeProjectSettings`, `settingsSizeProblem`, `normalizeVisibleAgents`.
+
+## Choose a folder
+
+```ts
+const { path } = await host.files.pickFolder({ root: project.id, initial: "Projects/x/docs" });  // files.read
+if (path !== null) save(path);   // workspace-relative; null = cancelled
+```
+
+Pomade opens its native folder dialog at `initial` (when it is inside the root, else at the
+root). `root` is a project id — absent or `"__workspace__"` for the whole workspace. A folder
+outside the root is refused in the dialog, which opens again until the user picks one inside or
+cancels.
+
+## Symlinks for agent skills
+
+Capability `files.symlink`, plus the folders in the manifest:
+
+```jsonc
+{ "capabilities": ["files.symlink"], "symlinks": ["Agents/*/skills"] }   // "*" = any one folder name
+```
+
+```ts
+await host.files.symlink({ path: "Agents/claude-coder/skills/sessions", target: "Apps/pomade-agents/skill" });
+await host.files.removeSymlink({ path: "Agents/claude-coder/skills/sessions" });   // the link only, never its target
+```
+
+The link must sit directly in a declared folder, reached without passing through a symlinked
+folder (`capability-denied` otherwise); missing folders are created; the link is written
+relative. A taken path is `already-exists`, a missing target `not-found`; `removeSymlink` on
+anything that is not a link is `invalid-params`. `symlinkScopeCovers(scopes, path)` in
+`pomade-kit/protocol` is the rule both hosts apply.
+
+## Open tabs
+
+Capability `tabs.open`. The tab opens right of the active tab of `projectId`'s tab strip (default
+the active project; `"__workspace__"` = the Workspace scope), and Pomade switches to that project.
+
+```ts
+await host.tabs.openFile({ path: "Projects/x/docs/roadmap/T-1.md" });           // focuses it when already open
+await host.tabs.openTerminal({ cwd: "Projects/coda", command: "npm run dev", title: "Coda web" });
+await host.tabs.openTerminal({ cwd: "", projectId: "__workspace__" });          // a plain shell at the root
+```
+
+`command` is one line, typed and run once the shell is ready (Relaunch runs it again); `title`
+names the tab (default: the command). A missing path or folder is `not-found`, a folder passed as a
+file (or the reverse) `io-error`, an unknown project `not-found`.
+
 ## Develop and test without Pomade — the fake host
 
 ```ts
@@ -84,7 +191,9 @@ import manifest from "./public/manifest.json" with { type: "json" };
 
 const fake = createFakeHost({
   manifest,                                     // sets the app id and the granted capabilities
-  projects: [{ id: "alpha", name: "Alpha", root: "Projects/alpha" }],
+  groups: [{ id: "tools", name: "Tools" }],      // optional; `parent` nests a group
+  projects: [{ id: "alpha", name: "Alpha", root: "Projects/alpha", group: "tools",
+              settings: { backlog: "docs/roadmap" }, visibleAgents: ["claude"] }],   // both optional
   activeProject: "alpha",                       // omit for the Workspace scope
   files: { "Projects/alpha/docs/roadmap/E-001-x.md": "---\nid: E-001\nstatus: planned\n---\n" },
 });
@@ -105,6 +214,12 @@ code, and the events. Test controls emit the events Pomade would:
 | `fake.rename(from, to)` | `rename` (file or folder) |
 | `fake.batch(() => …)` | the changes inside as one `files.changed` per watch |
 | `fake.setActiveProject(id \| null)` | `project.changed` |
+| `fake.updateProject(id, { name?, root?, group? })` | `project.changed` when it is the active project (rename / move / regroup; the id stays) |
+| `fake.readFile(path)` | — (returns the file's text: what the app's writes left) |
+| `fake.symlink(path, target)` | `create` (a link listings report as its target's kind) |
+| `fake.isSymlink(path)` | — (true when a symlink is at `path`) |
+| `fake.answerPick(path \| null)` | — (queues the user's next folder-picker choice; a folder outside the root is refused and the next answer used; none left = cancel). `fake.pickRequests` logs `{ root, initial }` per picker |
+| `fake.openedTabs` | — (every `tabs.openFile` / `openTerminal`, in order: `{ kind: "file", projectId, path }` · `{ kind: "terminal", projectId, cwd, command?, title? }`; the call switches the active project like Pomade) |
 
 `fake.keys` lists the forwarded keys; `fake.badges` holds the badges the app set
 (`{ board: { count: 3, urgent: true } }`; a cleared icon is absent); `fake.createTransport()` gives
@@ -151,6 +266,7 @@ const r = setField(fileText, "status", "done");   // FieldValue: string | number
 if (r.ok) save(r.text);                           // r.changed: false when the bytes are identical
 else showError(r.reason);                         // "unreadable-frontmatter" | "unsupported-key" | "invalid-value"
 removeField(fileText, "parked");
+setBody(fileText, "New body\n");                  // keeps the frontmatter block's bytes; getBody(fileText) reads it
 ```
 
 Only the field's own lines change; every other byte — other keys, their quoting, comments,

@@ -18,7 +18,7 @@ test.beforeEach(async ({ page }) => {
 
 test("lists the active project's tickets with their frontmatter", async ({ page }) => {
   await expect(app(page).getByTestId("folder")).toHaveText("Projects/alpha/docs/roadmap");
-  await expect(row(page, "Projects/alpha/docs/roadmap/E-001-first.md")).toHaveText(/E-001-first\.mdE-001plannedFirst/);
+  await expect(row(page, "Projects/alpha/docs/roadmap/E-001-first.md")).toHaveText(/E-001-first\.mdE-001plannedFirstDoneOpen/);
   await expect(row(page, "Projects/alpha/docs/roadmap/T-002-broken.md")).toContainText("can't read:");
   await expect(app(page).locator("tr[data-path]")).toHaveCount(2);
 });
@@ -76,4 +76,67 @@ test("a frame reload starts a new handshake and keeps working", async ({ page })
 test("standalone (no host): shows the no-host state", async ({ page }) => {
   await page.goto(APP);
   await expect(page.getByTestId("state")).toHaveText("No Pomade host — open this app inside Pomade.");
+});
+
+test("Done writes one frontmatter field; every other byte stays; the row follows", async ({ page }) => {
+  const path = "Projects/alpha/docs/roadmap/E-001-first.md";
+  await page.evaluate((p) => window.fakeHost.writeFile(p, "---\n# keep me\nid: E-001\nstatus: 'planned'   # board\ntitle: First\n---\n\nBody [[E-030]] **bold**.\r\n"), path);
+  await row(page, path).getByTestId("done").click();
+  await expect(row(page, path)).toHaveText(/E-001-first\.mdE-001doneFirstDoneOpen/);
+  expect(await page.evaluate((p) => window.fakeHost.readFile(p), path)).toBe(
+    "---\n# keep me\nid: E-001\nstatus: done   # board\ntitle: First\n---\n\nBody [[E-030]] **bold**.\r\n",
+  );
+});
+
+test("Open asks Pomade for an editor tab", async ({ page }) => {
+  await row(page, "Projects/alpha/docs/roadmap/E-001-first.md").getByTestId("open").click();
+  await expect.poll(() => page.evaluate(() => window.fakeHost.openedTabs)).toEqual([
+    { kind: "file", projectId: "alpha", path: "Projects/alpha/docs/roadmap/E-001-first.md" },
+  ]);
+});
+
+test("shows the project's group path from project.list, and follows a rename by id", async ({ page }) => {
+  await expect(app(page).getByTestId("group")).toHaveText("Building tools › Tools");
+  await page.evaluate(() => window.fakeHost.setActiveProject("beta"));
+  await expect(app(page).getByTestId("group")).toHaveText("Ungrouped");
+  await page.evaluate(() => window.fakeHost.setActiveProject(null));
+  await expect(app(page).getByTestId("group")).toHaveText("Workspace");
+  await page.evaluate(() => window.fakeHost.setActiveProject("alpha"));
+  await page.evaluate(() => window.fakeHost.updateProject("alpha", { name: "Alpha Prime" }));
+  await expect(app(page).getByTestId("state")).toHaveText("Project: Alpha Prime");
+});
+
+test("the listed folder is a per-project setting; the visible agents are the project's", async ({ page }) => {
+  await expect(app(page).getByTestId("agents")).toHaveText("Agents: claude, codex");
+  await app(page).getByTestId("use-done").click();
+  await expect(app(page).getByTestId("folder")).toHaveText("Projects/alpha/docs/roadmap/done");
+  await expect(row(page, "Projects/alpha/docs/roadmap/done/E-000-old.md")).toContainText("Old");
+  // The setting is per project: Beta keeps the default; back on Alpha it is remembered.
+  await page.evaluate(() => window.fakeHost.setActiveProject("beta"));
+  await expect(app(page).getByTestId("folder")).toHaveText("Projects/beta/docs/roadmap");
+  await expect(app(page).getByTestId("agents")).toHaveText("Agents: all");
+  await page.evaluate(() => window.fakeHost.setActiveProject("alpha"));
+  await expect(app(page).getByTestId("folder")).toHaveText("Projects/alpha/docs/roadmap/done");
+  await app(page).getByTestId("only-claude").click();
+  await expect(app(page).getByTestId("agents")).toHaveText("Agents: claude");
+});
+
+test("links its skill into an agent's skills folder and unlinks it", async ({ page }) => {
+  await app(page).getByTestId("link-skill").click();
+  await expect(app(page).getByTestId("skill")).toHaveText("Skill linked");
+  expect(await page.evaluate(() => window.fakeHost.isSymlink("Agents/claude/skills/hello"))).toBe(true);
+  await app(page).getByTestId("link-skill").click();
+  await expect(app(page).getByTestId("skill")).toHaveText("Skill unlinked");
+  expect(await page.evaluate(() => window.fakeHost.isSymlink("Agents/claude/skills/hello"))).toBe(false);
+  expect(await page.evaluate(() => window.fakeHost.readFile("Apps/hello/skill/SKILL.md"))).toBe("---\nname: hello\n---\n");
+});
+
+test("Choose folder… uses the host's folder picker, bounded by the project", async ({ page }) => {
+  await page.evaluate(() => {
+    window.fakeHost.answerPick("Projects/beta/docs/roadmap");
+    window.fakeHost.answerPick("Projects/alpha/docs/roadmap/done");
+  });
+  await app(page).getByTestId("pick-folder").click();
+  await expect(app(page).getByTestId("folder")).toHaveText("Projects/alpha/docs/roadmap/done");
+  expect(await page.evaluate(() => window.fakeHost.pickRequests)).toEqual([{ root: "Projects/alpha", initial: "Projects/alpha/docs/roadmap" }]);
 });

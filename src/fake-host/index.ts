@@ -11,4 +11,5 @@ export {
   type FakeProject,
   type FrameConnection,
 } from "./fake-host.js";
+export type { FakeGroup, FakeOpenedTab, FakePickRequest } from "./data.js";
 export { mountApp, type MountedApp, type MountOptions } from "./mount.js";

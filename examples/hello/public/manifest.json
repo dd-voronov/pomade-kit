@@ -3,5 +3,6 @@
   "name": "Hello",
   "version": "0.1.0",
   "hostApi": 0,
-  "capabilities": ["project.read", "files.read"]
+  "capabilities": ["project.read", "project.write", "files.read", "files.write", "files.symlink", "tabs.open"],
+  "symlinks": ["Agents/*/skills"]
 }

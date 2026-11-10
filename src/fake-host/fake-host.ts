@@ -12,11 +12,11 @@ import {
   parseAppMessage,
   parseManifest,
   resolveFrameTarget,
-  type ErrorCode,
   type FileChange,
   type FrameTarget,
   type HostToAppMessage,
   type IncomingCall,
+  type JsonValue,
   type KeyMessage,
   type Manifest,
   type MethodName,
@@ -25,6 +25,19 @@ import {
   type Surface,
 } from "../protocol/index.js";
 import type { Transport } from "../sdk/transport.js";
+import {
+  dispatchFileWrite,
+  dispatchPick,
+  dispatchProjects,
+  dispatchSymlinks,
+  dispatchTabs,
+  listProjects,
+  type DataContext,
+  type FakeGroup,
+  type FakeOpenedTab,
+  type FakePickRequest,
+} from "./data.js";
+import { booleanParam, CallError, paramsObject, stringParam } from "./params.js";
 import { controlPath, Workspace } from "./workspace.js";
 
 /** Pomade's default tree ignore list. */
@@ -43,12 +56,20 @@ export interface FakeProject {
   name: string;
   /** Workspace-relative. */
   root: string;
+  /** The id of the project's group (`FakeHostOptions.groups`); absent = ungrouped. */
+  group?: string;
+  /** The project's visible agents; default `["*"]` (every agent). */
+  visibleAgents?: string[];
+  /** The app's own settings for this project; default `{}`. */
+  settings?: Record<string, JsonValue>;
 }
 
 export interface FakeHostOptions {
   /** Workspace files, path → content. Folders are created as needed. */
   files?: Record<string, string>;
   projects?: FakeProject[];
+  /** Sidebar groups, in sidebar order among siblings. */
+  groups?: FakeGroup[];
   /** The active project's id; `null`/absent = the Workspace scope. */
   activeProject?: string | null;
   /** The app's manifest (parsed `manifest.json`); it sets the app id and the granted capabilities. Default: an app with every capability. */
@@ -86,15 +107,6 @@ export interface FrameConnection {
   detach(): void;
 }
 
-class CallError extends Error {
-  constructor(
-    readonly code: ErrorCode,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
 interface Watch {
   path: string;
   recursive: boolean;
@@ -107,29 +119,6 @@ interface Frame {
   watches: Map<string, Watch>;
 }
 
-type Obj = Record<string, unknown>;
-
-function paramsObject(params: unknown): Obj {
-  if (params === undefined) return {};
-  if (typeof params !== "object" || params === null || Array.isArray(params)) {
-    throw new CallError("invalid-params", "params must be an object");
-  }
-  return params as Obj;
-}
-
-function stringParam(p: Obj, key: string): string {
-  const v = p[key];
-  if (typeof v !== "string") throw new CallError("invalid-params", `"${key}" must be a string`);
-  return v;
-}
-
-function booleanParam(p: Obj, key: string): boolean {
-  const v = p[key];
-  if (v === undefined) return false;
-  if (typeof v !== "boolean") throw new CallError("invalid-params", `"${key}" must be a boolean`);
-  return v;
-}
-
 function isMethod(name: string): name is MethodName {
   return Object.hasOwn(METHOD_CAPABILITY, name);
 }
@@ -140,9 +129,18 @@ export class FakeHost {
   readonly hostApi: number;
   /** Every `key` message received, in order. */
   readonly keys: KeyMessage[] = [];
+  /** Every tab the app opened (`tabs.openFile` / `tabs.openTerminal`), in order. */
+  readonly openedTabs: FakeOpenedTab[] = [];
+  /** Every folder picker the app opened (`files.pickFolder`), in order. */
+  readonly pickRequests: FakePickRequest[] = [];
+  private readonly pickAnswers: (string | null)[] = [];
 
   private readonly workspace: Workspace;
   private readonly projects: ProjectRef[];
+  private readonly groupList: FakeGroup[];
+  private readonly projectGroup = new Map<string, string>();
+  private readonly projectAgents = new Map<string, string[]>();
+  private readonly projectSettings = new Map<string, Record<string, JsonValue>>();
   private active: ProjectRef;
   private readonly frames = new Set<Frame>();
   private nextWatchId = 1;
@@ -150,6 +148,7 @@ export class FakeHost {
   private defaultTransport: Transport | null = null;
   private readonly strip: readonly StripIcon[];
   private readonly badgeMap = new Map<string, FakeBadge>();
+  private readonly data: DataContext;
 
   constructor(options: FakeHostOptions = {}) {
     const parsed = parseManifest(
@@ -161,8 +160,44 @@ export class FakeHost {
     this.pomadeVersion = options.pomadeVersion ?? "0.0.0-fake";
     this.hostApi = options.hostApi ?? HOST_API_VERSION;
     this.workspace = new Workspace(options.files ?? {}, options.ignore ?? DEFAULT_IGNORE, options.now ?? Date.now);
+    this.groupList = (options.groups ?? []).map((g) => ({ ...g }));
+    for (const g of this.groupList) {
+      if (g.parent !== undefined && !this.groupList.some((x) => x.id === g.parent)) {
+        throw new Error(`fake host: group ${JSON.stringify(g.id)} has an unknown parent ${JSON.stringify(g.parent)}`);
+      }
+    }
     this.projects = (options.projects ?? []).map((p) => ({ id: p.id, kind: "project", name: p.name, root: controlPath(p.root) }));
+    for (const p of options.projects ?? []) {
+      if (p.group === undefined) continue;
+      if (!this.groupList.some((g) => g.id === p.group)) {
+        throw new Error(`fake host: project ${JSON.stringify(p.id)} is in an unknown group ${JSON.stringify(p.group)}`);
+      }
+      this.projectGroup.set(p.id, p.group);
+    }
+    for (const p of options.projects ?? []) {
+      this.projectAgents.set(p.id, [...(p.visibleAgents ?? ["*"])]);
+      this.projectSettings.set(p.id, structuredClone(p.settings ?? {}));
+    }
     this.active = this.findScope(options.activeProject ?? null);
+    this.data = {
+      workspace: this.workspace,
+      emit: (changes) => this.emit(changes),
+      project: (id) => {
+        if (id === undefined) return { ...this.active };
+        if (id === WORKSPACE_PROJECT_ID) return { ...WORKSPACE_SCOPE };
+        const project = this.projects.find((p) => p.id === id);
+        if (!project) throw new CallError("not-found", `No project ${JSON.stringify(id)}`);
+        return { ...project };
+      },
+      activate: (id) => this.setActiveProject(id === WORKSPACE_PROJECT_ID ? null : id),
+      openedTabs: this.openedTabs,
+      listProjects: () => listProjects(this.groupList, this.projects, this.projectGroup),
+      projectAgents: this.projectAgents,
+      projectSettings: this.projectSettings,
+      symlinkScopes: parsed.manifest.symlinks ?? [],
+      pickAnswers: this.pickAnswers,
+      pickRequests: this.pickRequests,
+    };
   }
 
   // ── Frames and transports ────────────────────────────────────────────────
@@ -217,6 +252,35 @@ export class FakeHost {
     this.emit(this.workspace.writeFile(controlPath(path), content));
   }
 
+  /** Create a symlink at `path` to `target` (both workspace-relative); emits `create`. */
+  symlink(path: string, target: string): void {
+    this.emit(this.workspace.symlink(controlPath(path), controlPath(target)));
+  }
+
+  /** True when `path` is a symlink (what the app's `files.symlink` left on the fake disk). */
+  isSymlink(path: string): boolean {
+    return this.workspace.isLink(controlPath(path));
+  }
+
+  /** Script the user's next folder-picker choice: a workspace-relative folder, or `null` to cancel.
+   *  Answers queue up; with none left a picker is cancelled. */
+  answerPick(path: string | null): void {
+    if (path === null) {
+      this.pickAnswers.push(null);
+      return;
+    }
+    // An answer outside the workspace stays as given: the picker refuses it like any outside folder.
+    const n = normalizeWorkspacePath(path);
+    this.pickAnswers.push(n.ok ? n.path : path);
+  }
+
+  /** A file's current text — what the app's writes left on the fake disk. */
+  readFile(path: string): string {
+    const file = this.workspace.file(controlPath(path));
+    if (!file) throw new Error(`fake host: no file at ${path}`);
+    return file.content;
+  }
+
   /** Delete a file; emits `delete`. */
   deleteFile(path: string): void {
     this.emit(this.workspace.deleteFile(controlPath(path)));
@@ -234,6 +298,25 @@ export class FakeHost {
     this.active = next;
     for (const frame of this.frames) {
       if (frame.welcomed) frame.post({ channel: CHANNEL, type: "event", name: "project.changed", payload: { ...next } });
+    }
+  }
+
+  /** Rename or move a project (or regroup it); its id stays. Emits `project.changed` when it is
+   *  the active project, as Pomade does. */
+  updateProject(id: string, patch: { name?: string; root?: string; group?: string | null }): void {
+    const project = this.projects.find((p) => p.id === id);
+    if (!project) throw new Error(`fake host: no project ${JSON.stringify(id)}`);
+    if (patch.group !== undefined && patch.group !== null && !this.groupList.some((g) => g.id === patch.group)) {
+      throw new Error(`fake host: no group ${JSON.stringify(patch.group)}`);
+    }
+    if (patch.name !== undefined) project.name = patch.name;
+    if (patch.root !== undefined) project.root = controlPath(patch.root);
+    if (patch.group === null) this.projectGroup.delete(id);
+    else if (patch.group !== undefined) this.projectGroup.set(id, patch.group);
+    if (this.active.id !== id || (patch.name === undefined && patch.root === undefined)) return;
+    this.active = { ...project };
+    for (const frame of this.frames) {
+      if (frame.welcomed) frame.post({ channel: CHANNEL, type: "event", name: "project.changed", payload: { ...project } });
     }
   }
 
@@ -363,6 +446,28 @@ export class FakeHost {
         else this.badgeMap.set(icon, { count, urgent });
         return {};
       }
+      case "files.readFile":
+      case "files.create":
+      case "files.write":
+      case "files.setBody":
+      case "files.setField":
+      case "files.removeField":
+      case "files.move":
+        return dispatchFileWrite(this.data, method, params);
+      case "tabs.openFile":
+      case "tabs.openTerminal":
+        return dispatchTabs(this.data, method, params);
+      case "project.list":
+      case "project.getSettings":
+      case "project.setSettings":
+      case "project.getAgents":
+      case "project.setAgents":
+        return dispatchProjects(this.data, method, params);
+      case "files.symlink":
+      case "files.removeSymlink":
+        return dispatchSymlinks(this.data, method, params);
+      case "files.pickFolder":
+        return dispatchPick(this.data, method, params);
     }
   }
 

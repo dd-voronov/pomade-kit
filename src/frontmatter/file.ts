@@ -147,6 +147,38 @@ export function setField(text: string, key: string, value: FieldValue): FieldWri
   return join(text, parts, block);
 }
 
+/**
+ * The raw offset where the body starts: after the frontmatter block and the blank lines that
+ * follow it (Pomade's editor split), `0` without a block, `null` when a first `---` line never
+ * closes. Line endings are the file's own.
+ */
+function bodyStart(text: string): number | null {
+  const norm = text.replace(/\r\n/g, "\n");
+  const { frontmatter } = splitFrontmatter(norm);
+  if (frontmatter !== "") return rawIndex(text, frontmatter.length);
+  const nl = norm.indexOf("\n");
+  return (nl < 0 ? norm : norm.slice(0, nl)).trimEnd() === "---" ? null : 0;
+}
+
+/** A file's body as `setBody` replaces it — everything after the frontmatter block and the blank
+ *  lines that follow it, with the file's own line endings. The whole text when there is no block
+ *  (an unclosed `---` block included, as Pomade's editor shows it). */
+export function getBody(text: string): string {
+  return text.slice(bodyStart(text) ?? 0);
+}
+
+/**
+ * Replace a file's body, keeping every byte of the frontmatter block and the blank lines after
+ * it. `body` is written as given (its own line endings). Without a block the whole text is the
+ * body. A first `---` line that never closes is refused: the block's extent is unknown.
+ */
+export function setBody(text: string, body: string): FieldWriteResult {
+  const start = bodyStart(text);
+  if (start === null) return fail("unreadable-frontmatter", "the leading --- block is not closed");
+  const next = text.slice(0, start) + body;
+  return { ok: true, text: next, changed: next !== text };
+}
+
 /** Remove `key`'s lines; removing the last key drops the whole block. A missing key changes nothing. */
 export function removeField(text: string, key: string): FieldWriteResult {
   const parts = split(text);

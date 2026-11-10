@@ -158,7 +158,7 @@ describe("calls — errors", () => {
 
   it("unknown-method", () => {
     const f = welcomed();
-    expect(f.errorOf("files.write", { path: "x" })).toBe("unknown-method");
+    expect(f.errorOf("files.delete", { path: "x" })).toBe("unknown-method");
     expect(f.errorOf("toString")).toBe("unknown-method");
     expect(f.errorOf("constructor")).toBe("unknown-method");
   });

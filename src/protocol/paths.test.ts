@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { baseName, joinPath, normalizeWorkspacePath, parentPath } from "./paths.js";
+import { baseName, isInside, joinPath, normalizeWorkspacePath, parentPath } from "./paths.js";
 
 describe("normalizeWorkspacePath", () => {
   it.each([
@@ -34,5 +34,18 @@ describe("joinPath / baseName / parentPath", () => {
     expect(baseName("c.md")).toBe("c.md");
     expect(parentPath("a/b/c.md")).toBe("a/b");
     expect(parentPath("c.md")).toBe("");
+  });
+});
+
+describe("isInside", () => {
+  it.each([
+    ["a/b", "a", true],
+    ["a", "a", true],
+    ["ab", "a", false],
+    ["a", "a/b", false],
+    ["x", "", true],
+    ["", "", true],
+  ])("%j inside %j → %s", (path, folder, inside) => {
+    expect(isInside(path, folder)).toBe(inside);
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { parseManifest, resolveFrameTarget, type ManifestParseResult } from "./manifest.js";
+import { CAPABILITIES } from "./types.js";
+import { parseManifest, resolveFrameTarget, symlinkScopeCovers, type ManifestParseResult } from "./manifest.js";
 import type { StripIcon } from "./types.js";
 
 const valid = { id: "pomade-planner", name: "Planner", version: "0.1.0", hostApi: 0, capabilities: ["project.read", "files.read"] };
@@ -58,7 +59,7 @@ describe("parseManifest", () => {
     ["icon", { icon: "../icon.svg" }],
     ["capabilities", { capabilities: undefined }],
     ["capabilities", { capabilities: "files.read" }],
-    ["capabilities", { capabilities: ["files.write"] }],
+    ["capabilities", { capabilities: ["files.delete"] }],
     ["capabilities", { capabilities: [1] }],
   ])("rejects a bad %s (%j) with a message naming the field", (field, patch) => {
     const r = parseManifest({ ...valid, ...patch });
@@ -85,9 +86,9 @@ describe("parseManifest", () => {
   });
 
   it("reports one unknown capability once", () => {
-    const r = parseManifest({ ...valid, capabilities: ["files.read", "files.write", "x"] });
+    const r = parseManifest({ ...valid, capabilities: ["files.read", "files.delete", "x"] });
     expect(!r.ok && r.errors).toEqual([
-      { field: "capabilities", message: '"capabilities" has unknown capability "files.write"; known: project.read, files.read' },
+      { field: "capabilities", message: `"capabilities" has unknown capability "files.delete"; known: ${CAPABILITIES.join(", ")}` },
     ]);
   });
 
@@ -228,5 +229,49 @@ describe("resolveFrameTarget", () => {
 
   it("an empty strip resolves every icon to the default view", () => {
     expect(resolveFrameTarget([], "tab", "board")).toEqual({ surface: "tab", route: "" });
+  });
+});
+
+describe("parseManifest — symlinks", () => {
+  const base = { id: "pomade-agents", name: "Agents", version: "0.1.0", hostApi: 0, capabilities: ["files.symlink"] };
+
+  it("accepts folder patterns with whole-segment wildcards, deduped", () => {
+    const r = parseManifest({ ...base, symlinks: ["Agents/*/skills", "Knowledge/_skills", "Agents/*/skills"] });
+    expect(r.ok && r.manifest.symlinks).toEqual(["Agents/*/skills", "Knowledge/_skills"]);
+    expect(r.ok && r.unsupportedKeys).toEqual([]);
+  });
+
+  it("absent: no symlinks on the manifest", () => {
+    const r = parseManifest(base);
+    expect(r.ok && r.manifest).not.toHaveProperty("symlinks");
+  });
+
+  it.each([["/abs"], [""], ["a/../b"], ["a/sk*"], ["./a"], ["a//b"], [3], ["a\\b"]])("refuses %j, naming its index", (bad) => {
+    const r = parseManifest({ ...base, symlinks: ["ok", bad] });
+    expect(!r.ok && r.errors.map((e) => e.field)).toEqual(["symlinks[1]"]);
+  });
+
+  it("refuses a non-array", () => {
+    const r = parseManifest({ ...base, symlinks: "Agents/*/skills" });
+    expect(!r.ok && r.field).toBe("symlinks");
+  });
+});
+
+describe("symlinkScopeCovers", () => {
+  const scopes = ["Agents/*/skills", "Knowledge/_skills"];
+  it.each([
+    ["Agents/claude-coder/skills/pomade-runner-jobs", true],
+    ["Knowledge/_skills/x", true],
+    ["Agents/claude-coder/skills", false],
+    ["Agents/claude-coder/skills/a/b", false],
+    ["Agents/skills/x", false],
+    ["Knowledge/_skills", false],
+    ["x", false],
+    ["", false],
+  ])("%s → %s", (path, covered) => {
+    expect(symlinkScopeCovers(scopes, path)).toBe(covered);
+  });
+  it("no scopes cover nothing", () => {
+    expect(symlinkScopeCovers([], "Agents/a/skills/x")).toBe(false);
   });
 });
