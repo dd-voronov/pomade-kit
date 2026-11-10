@@ -222,7 +222,12 @@ describe("METHOD_CAPABILITY", () => {
       "git.getState": "git.read",
       "git.watch": "git.read",
       "git.unwatch": "git.read",
+      "events.publish": null,
+      "events.subscribe": null,
+      "events.unsubscribe": null,
+      "events.hasSubscribers": null,
+      "notices.post": null,
     });
-    expect(METHOD_NAMES).toHaveLength(30);
+    expect(METHOD_NAMES).toEqual(Object.keys(METHOD_CAPABILITY));
   });
 });

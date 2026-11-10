@@ -1,6 +1,16 @@
 // Host API v0 — the data types and messages of Pomade's docs/HOST-API.md, transcribed.
 
 import type { GitChangedPayload, GitStateParams, GitStateResult } from "./git.js";
+import type {
+  AgentTabExitedPayload,
+  HasSubscribersParams,
+  HasSubscribersResult,
+  ProjectRenamedPayload,
+  PublishParams,
+  SubscribeParams,
+  SubscribersChangedPayload,
+} from "./events.js";
+import type { NoticeParams } from "./notices.js";
 
 /** The Host API version this kit speaks (HOST-API "Version"). */
 export const HOST_API_VERSION = 0;
@@ -393,6 +403,11 @@ export interface HostMethods {
   "git.getState": { params: GitStateParams; result: GitStateResult };
   "git.watch": { params: GitStateParams; result: WatchResult };
   "git.unwatch": { params: UnwatchParams; result: Record<string, never> };
+  "events.publish": { params: PublishParams; result: Record<string, never> };
+  "events.subscribe": { params: SubscribeParams; result: Record<string, never> };
+  "events.unsubscribe": { params: SubscribeParams; result: Record<string, never> };
+  "events.hasSubscribers": { params: HasSubscribersParams; result: HasSubscribersResult };
+  "notices.post": { params: NoticeParams; result: Record<string, never> };
 }
 export type MethodName = keyof HostMethods;
 export type MethodParams<M extends MethodName> = HostMethods[M]["params"];
@@ -430,6 +445,11 @@ export const METHOD_CAPABILITY: Readonly<Record<MethodName, Capability | null>> 
   "git.getState": "git.read",
   "git.watch": "git.read",
   "git.unwatch": "git.read",
+  "events.publish": null,
+  "events.subscribe": null,
+  "events.unsubscribe": null,
+  "events.hasSubscribers": null,
+  "notices.post": null,
 };
 
 export const METHOD_NAMES = Object.keys(METHOD_CAPABILITY) as MethodName[];
@@ -459,6 +479,13 @@ export interface HostEvents {
   "state.changed": StateChangedPayload;
   "route.changed": RouteChangedPayload;
   "git.changed": GitChangedPayload;
+  // The event bus (pomade:E-031): platform events a frame subscribed to, and the publisher's news.
+  "pomade.ready": Record<string, never>;
+  "project.created": ProjectRef;
+  "project.renamed": ProjectRenamedPayload;
+  "project.opened": ProjectRef;
+  "agentTab.exited": AgentTabExitedPayload;
+  "events.subscribersChanged": SubscribersChangedPayload;
 }
 export type EventName = keyof HostEvents;
 
@@ -502,9 +529,21 @@ export type ResultMessage =
   | { channel: Channel; type: "result"; id: string; ok: true; value: unknown }
   | { channel: Channel; type: "result"; id: string; ok: false; error: ErrorPayload };
 
-export type EventMessage = {
-  [E in EventName]: { channel: Channel; type: "event"; name: E; payload: HostEvents[E] };
-}[EventName];
+/** Another app's event a frame subscribed to (`events.subscribe`): `<appId>:<event>`. */
+export type AppEventName = `${string}:${string}`;
+
+export interface AppEventMessage {
+  channel: Channel;
+  type: "event";
+  name: AppEventName;
+  payload: JsonValue;
+}
+
+export type EventMessage =
+  | {
+      [E in EventName]: { channel: Channel; type: "event"; name: E; payload: HostEvents[E] };
+    }[EventName]
+  | AppEventMessage;
 
 export interface KeyMessage {
   channel: Channel;

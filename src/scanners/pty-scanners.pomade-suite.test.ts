@@ -53,6 +53,21 @@ describe('MarkerScanner — classification', () => {
     expect(runMarker([marker('pomade:prompt;')])).toEqual([{ kind: 'prompt', cwd: null }])
   })
 
+  it('carries the status marker that precedes a prompt on that prompt only', () => {
+    expect(
+      runMarker([marker('pomade:status;130') + 'theme output' + marker('pomade:prompt;/a') + marker('pomade:prompt;/a')])
+    ).toEqual([
+      { kind: 'prompt', cwd: '/a', status: 130 },
+      { kind: 'prompt', cwd: '/a' }
+    ])
+  })
+
+  it('ignores a malformed status and survives a status split across chunks', () => {
+    expect(runMarker([marker('pomade:status;x') + marker('pomade:prompt;/a')])).toEqual([{ kind: 'prompt', cwd: '/a' }])
+    const whole = marker('pomade:status;0') + marker('pomade:prompt;/b')
+    expect(runMarker([whole.slice(0, 9), whole.slice(9)])).toEqual([{ kind: 'prompt', cwd: '/b', status: 0 }])
+  })
+
   it('drops an unrecognised 7879 marker (neither exec nor prompt)', () => {
     expect(runMarker([marker('pomade:whatever;x')])).toEqual([])
   })

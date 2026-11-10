@@ -2,6 +2,7 @@
 // fake host.
 
 import { CHORD_FORMAT, formatChord, parseChord } from "./shortcuts.js";
+import { parseManifestEvents, type ManifestEvents } from "./events.js";
 import {
   CAPABILITIES,
   SHORTCUT_ACTIONS,
@@ -42,6 +43,8 @@ export interface Manifest {
   shortcuts?: AppShortcut[];
   /** Agent skills the app ships: folders inside the build, each holding a `SKILL.md`; absent when none. */
   skills?: AppSkill[];
+  /** The events the app publishes and subscribes to (pomade:E-031); absent when the manifest declares none. */
+  events?: ManifestEvents;
 }
 
 /** One agent skill an app ships (manifest `skills[]`, HOST-API §1). */
@@ -77,6 +80,7 @@ const KNOWN_KEYS = new Set([
   "startOnLaunch",
   "shortcuts",
   "skills",
+  "events",
 ]);
 
 /** One invalid field. */
@@ -167,6 +171,7 @@ export function parseManifest(value: unknown): ManifestParseResult {
   }
   const shortcuts = m.shortcuts === undefined ? undefined : parseShortcuts(m.shortcuts, errors);
   const skills = m.skills === undefined ? undefined : parseSkills(m.skills, errors);
+  const events = m.events === undefined ? undefined : parseManifestEvents(m.events, errors);
 
   if (errors.length > 0) return { ok: false, errors, ...errors[0]! };
 
@@ -184,6 +189,7 @@ export function parseManifest(value: unknown): ManifestParseResult {
   if (m.startOnLaunch !== undefined) manifest.startOnLaunch = m.startOnLaunch as boolean;
   if (shortcuts !== undefined) manifest.shortcuts = shortcuts;
   if (skills !== undefined) manifest.skills = skills;
+  if (events !== undefined) manifest.events = events;
   const unsupportedKeys = Object.keys(m).filter((k) => !KNOWN_KEYS.has(k));
   return { ok: true, manifest, unsupportedKeys };
 }

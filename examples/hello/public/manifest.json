@@ -3,12 +3,48 @@
   "name": "Hello",
   "version": "0.1.0",
   "hostApi": 0,
-  "capabilities": ["project.read", "project.write", "files.read", "files.write", "tabs.open", "git.read"],
-  "strip": [{ "id": "hello", "title": "Hello", "action": "panel" }],
+  "capabilities": [
+    "project.read",
+    "project.write",
+    "files.read",
+    "files.write",
+    "tabs.open",
+    "git.read"
+  ],
+  "strip": [
+    {
+      "id": "hello",
+      "title": "Hello",
+      "action": "panel"
+    }
+  ],
   "startOnLaunch": true,
   "shortcuts": [
-    { "id": "roadmap", "title": "Open the roadmap", "key": "Cmd+Shift+Y", "action": "tab", "route": "roadmap" },
-    { "id": "note", "title": "Quick note", "key": "Cmd+Shift+J", "action": "overlay", "route": "note" }
+    {
+      "id": "roadmap",
+      "title": "Open the roadmap",
+      "key": "Cmd+Shift+Y",
+      "action": "tab",
+      "route": "roadmap"
+    },
+    {
+      "id": "note",
+      "title": "Quick note",
+      "key": "Cmd+Shift+J",
+      "action": "overlay",
+      "route": "note"
+    }
   ],
-  "skills": ["skills/hello-roadmap"]
+  "skills": [
+    "skills/hello-roadmap"
+  ],
+  "events": {
+    "publish": [
+      "greeted"
+    ],
+    "subscribe": [
+      "pomade.ready",
+      "project.renamed"
+    ]
+  }
 }

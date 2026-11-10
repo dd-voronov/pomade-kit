@@ -897,3 +897,173 @@ describe("construction and control errors", () => {
     expect(host.createTransport()).not.toBe(host.transport);
   });
 });
+
+describe("events (pomade:E-031)", () => {
+  const manifest = {
+    id: "pomade-runner",
+    name: "Runner",
+    version: "0.1.0",
+    hostApi: 0,
+    capabilities: [],
+    events: { publish: ["run.finished"], subscribe: ["pomade.ready", "project.renamed", "pomade-agents:session.closed", "pomade-runner:run.finished"] },
+  };
+  const evs = (r: ReturnType<typeof raw>, name: string) =>
+    r.events().flatMap((m) => (m.name === name ? [m.payload] : []));
+
+  it("every frame hears project.changed; project.renamed only when subscribed", () => {
+    const host = fake({ manifest, activeProject: "pomade" });
+    const a = raw(host);
+    const b = raw(host);
+    a.hello();
+    b.hello();
+    expect(a.call("events.subscribe", { name: "project.renamed" }).ok).toBe(true);
+    host.updateProject("pomade", { name: "Pomade 2" });
+    const project = { id: "pomade", kind: "project", name: "Pomade 2", root: "Projects/Pomade" };
+    expect(evs(a, "project.renamed")).toEqual([{ project, previous: { ...project, name: "Pomade" } }]);
+    expect(evs(b, "project.renamed")).toEqual([]);
+    expect(evs(a, "project.changed")).toEqual([project]);
+    expect(evs(b, "project.changed")).toEqual([project]);
+  });
+
+  it("refuses undeclared and malformed names", () => {
+    const r = raw(fake({ manifest }));
+    r.hello();
+    expect(r.errorOf("events.subscribe", { name: "project.created" })).toBe("capability-denied");
+    expect(r.errorOf("events.subscribe", { name: "session.closed" })).toBe("invalid-params");
+    expect(r.errorOf("events.publish", { name: "run.started" })).toBe("capability-denied");
+    expect(r.errorOf("events.publish", { name: "run.finished", payload: { at: Number.POSITIVE_INFINITY } })).toBe("invalid-params");
+    expect(r.errorOf("events.hasSubscribers", { name: "run.started" })).toBe("capability-denied");
+    expect(r.errorOf("events.unsubscribe", { name: "never" })).toBeNull();
+  });
+
+  it("pomade.ready is sticky: a later subscription gets it right after its result", async () => {
+    const host = fake({ manifest });
+    host.ready();
+    const r = raw(host);
+    r.hello();
+    r.call("events.subscribe", { name: "pomade.ready" });
+    expect(evs(r, "pomade.ready")).toEqual([]);
+    await flush();
+    expect(evs(r, "pomade.ready")).toEqual([{}]);
+  });
+
+  it("publish reaches the other subscribed frames, is recorded, and other apps' events arrive by emitEvent", () => {
+    const host = fake({ manifest });
+    const a = raw(host);
+    const b = raw(host);
+    a.hello();
+    b.hello();
+    b.call("events.subscribe", { name: "pomade-runner:run.finished" });
+    b.call("events.subscribe", { name: "pomade-agents:session.closed" });
+    expect(a.call("events.publish", { name: "run.finished", payload: { id: "r1" } }).ok).toBe(true);
+    expect(evs(b, "pomade-runner:run.finished")).toEqual([{ id: "r1" }]);
+    expect(evs(a, "pomade-runner:run.finished")).toEqual([]);
+    expect(host.published).toEqual([{ name: "run.finished", payload: { id: "r1" } }]);
+    host.emitEvent("pomade-agents:session.closed", { sessionId: "s1" });
+    expect(evs(b, "pomade-agents:session.closed")).toEqual([{ sessionId: "s1" }]);
+    expect(() => host.emitEvent("nope", 1)).toThrow(/not a platform event/);
+    expect(host.subscriptions).toEqual(["pomade-agents:session.closed", "pomade-runner:run.finished", "project.changed"]);
+  });
+
+  it("hasSubscribers follows other apps' subscriptions, with subscribersChanged news", () => {
+    const host = fake({ manifest });
+    const r = raw(host);
+    r.hello();
+    expect(r.call("events.hasSubscribers", { name: "run.finished" })).toMatchObject({ ok: true, value: { subscribed: false } });
+    const heard: unknown[] = [];
+    const off = host.subscribeAs("pomade-agents", "run.finished", heard as never);
+    expect(r.call("events.hasSubscribers", { name: "run.finished" })).toMatchObject({ ok: true, value: { subscribed: true } });
+    r.call("events.publish", { name: "run.finished", payload: 1 });
+    expect(heard).toEqual([1]);
+    off();
+    expect(r.call("events.hasSubscribers", { name: "run.finished" })).toMatchObject({ ok: true, value: { subscribed: false } });
+    expect(evs(r, "events.subscribersChanged")).toEqual([
+      { name: "run.finished", subscribed: true },
+      { name: "run.finished", subscribed: false },
+    ]);
+  });
+
+  it("a new handshake or a detach ends the frame's subscriptions", () => {
+    const host = fake({ manifest });
+    const r = raw(host);
+    r.hello();
+    r.call("events.subscribe", { name: "project.renamed" });
+    r.hello();
+    host.updateProject("kit", { name: "kit 2" });
+    expect(evs(r, "project.renamed")).toEqual([]);
+    r.call("events.subscribe", { name: "pomade-runner:run.finished" });
+    const other = raw(host);
+    other.hello();
+    expect(other.call("events.hasSubscribers", { name: "run.finished" })).toMatchObject({ value: { subscribed: true } });
+    r.frame.detach();
+    expect(other.call("events.hasSubscribers", { name: "run.finished" })).toMatchObject({ value: { subscribed: false } });
+  });
+
+  it("through the SDK: subscribe, publish, hasSubscribers, subscriber news", async () => {
+    const host = fake({ manifest });
+    const a = await client(host);
+    const b = await client(host);
+    const runs: unknown[] = [];
+    const news: [string, boolean][] = [];
+    a.events.onSubscribersChange((name, subscribed) => news.push([name, subscribed]));
+    expect(await a.events.hasSubscribers("run.finished")).toBe(false);
+    const sub = await b.events.subscribe("pomade-runner:run.finished", (p) => runs.push(p));
+    const sub2 = await b.events.subscribe("pomade-runner:run.finished", (p) => runs.push(["second", p]));
+    expect(await a.events.hasSubscribers("run.finished")).toBe(true);
+    await a.events.publish("run.finished", { id: "r9" });
+    await flush();
+    expect(runs).toEqual([{ id: "r9" }, ["second", { id: "r9" }]]);
+    await sub.close();
+    expect(await a.events.hasSubscribers("run.finished")).toBe(true);
+    await sub2.close();
+    expect(await a.events.hasSubscribers("run.finished")).toBe(false);
+    await flush();
+    expect(news).toEqual([
+      ["run.finished", true],
+      ["run.finished", false],
+    ]);
+    await expect(b.events.subscribe("project.created", () => {})).rejects.toMatchObject({ code: "capability-denied" });
+    const renamed: unknown[] = [];
+    await b.events.subscribe("project.renamed", (p) => renamed.push(p.project.name));
+    host.updateProject("pomade", { name: "P" });
+    await flush();
+    expect(renamed).toEqual(["P"]);
+    host.ready();
+    const ready: unknown[] = [];
+    await b.events.subscribe("pomade.ready", (p) => ready.push(p));
+    await flush();
+    expect(ready).toEqual([{}]);
+  });
+});
+
+describe("notices (pomade:E-032)", () => {
+  it("records a posted notice, normalized; a click runs its action like Pomade", () => {
+    const host = fake({ activeProject: "pomade" });
+    const r = raw(host);
+    r.hello();
+    expect(r.call("notices.post", { title: " Run failed ", body: "nightly", action: { kind: "openFile", path: "Projects/Pomade/README.md", projectId: "kit" } }).ok).toBe(true);
+    expect(host.notices).toEqual([
+      { title: "Run failed", body: "nightly", action: { kind: "openFile", path: "Projects/Pomade/README.md", projectId: "kit" } },
+    ]);
+    host.clickNotice();
+    expect(host.openedTabs).toEqual([{ kind: "file", projectId: "kit", path: "Projects/Pomade/README.md" }]);
+    expect(host.activeProject.id).toBe("kit");
+    r.call("notices.post", { title: "Today", action: { kind: "openApp", route: "today" } });
+    host.clickNotice();
+    expect(host.openedTabs.at(-1)).toEqual({ kind: "app", projectId: "kit", route: "today" });
+    r.call("notices.post", { title: "Just news" });
+    host.clickNotice();
+    expect(host.openedTabs).toHaveLength(2);
+  });
+
+  it("refuses an invalid notice; a tab-opening action needs tabs.open", () => {
+    const host = fake({ manifest: { id: "planner", name: "Planner", version: "0.1.0", hostApi: 0, capabilities: [] } });
+    const r = raw(host);
+    r.hello();
+    expect(r.errorOf("notices.post", { title: "" })).toBe("invalid-params");
+    expect(r.errorOf("notices.post", { title: "x", action: { kind: "openFile", path: "../x" } })).toBe("outside-workspace");
+    expect(r.errorOf("notices.post", { title: "x", action: { kind: "openTerminal", cwd: "" } })).toBe("capability-denied");
+    expect(r.errorOf("notices.post", { title: "x", action: { kind: "openApp", route: "today" } })).toBeNull();
+    expect(host.notices).toHaveLength(1);
+  });
+});

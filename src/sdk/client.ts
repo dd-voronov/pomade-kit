@@ -41,6 +41,10 @@ import {
   type GitRepoState,
   type GitStateParams,
   type GitStateResult,
+  type AppEventName,
+  type PlatformEventName,
+  type PlatformEvents,
+  type NoticeParams,
 } from "../protocol/index.js";
 import type { Transport } from "./transport.js";
 
@@ -74,6 +78,13 @@ export interface FileWatch {
 export interface GitWatch {
   readonly watchId: string;
   /** Stop delivering changes (immediately) and unwatch on the host. Idempotent. */
+  close(): Promise<void>;
+}
+
+/** A subscription to one bus event (`host.events.subscribe`). */
+export interface EventSubscription {
+  readonly name: string;
+  /** Stop calling this handler (immediately); the host subscription ends with the last handler. Idempotent. */
   close(): Promise<void>;
 }
 
@@ -152,6 +163,22 @@ export interface HostClient {
     /** Resolves once the host accepted the watch; `onChange` receives the scope's repos after each change. */
     watch(params: GitStateParams, onChange: (repos: GitRepoState[]) => void): Promise<GitWatch>;
   };
+  readonly events: {
+    /** Publish one of this app's own events (declared in the manifest's `events.publish`) to its subscribers. */
+    publish(name: string, payload?: JsonValue): Promise<void>;
+    /** Listen to a platform event (declared in the manifest's `events.subscribe`); resolves once the host accepted. */
+    subscribe<E extends PlatformEventName>(name: E, handler: (payload: PlatformEvents[E]) => void): Promise<EventSubscription>;
+    /** Listen to another app's event, `<appId>:<event>` (declared in the manifest's `events.subscribe`). */
+    subscribe(name: AppEventName, handler: (payload: JsonValue) => void): Promise<EventSubscription>;
+    /** Whether one of this app's own events has subscribers now. */
+    hasSubscribers(name: string): Promise<boolean>;
+    /** Called when one of this app's own events gains its first subscriber or loses its last; returns an unsubscribe function. */
+    onSubscribersChange(callback: (name: string, subscribed: boolean) => void): () => void;
+  };
+  readonly notices: {
+    /** Show a notice in Pomade (a toast that also stays in the Notices list); `action` is what a click does. */
+    post(notice: NoticeParams): Promise<void>;
+  };
   /** Detach from the transport: no more events, pending calls reject. */
   close(): void;
 }
@@ -171,6 +198,10 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
   const stateListeners = new Set<(key: string, value: JsonValue | null) => void>();
   const routeListeners = new Set<(route: string) => void>();
   const gitWatches = new Map<string, (repos: GitRepoState[]) => void>();
+  // Bus subscriptions: handlers by event name, and the host subscription each name rides.
+  const busHandlers = new Map<string, Set<(payload: unknown) => void>>();
+  const busSubscriptions = new Map<string, Promise<unknown>>();
+  const subscriberListeners = new Set<(name: string, subscribed: boolean) => void>();
 
   const unlisten = transport.listen((data) => {
     const msg = parseHostMessage(data);
@@ -182,6 +213,7 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
       if (msg.ok) p.resolve(msg.value);
       else p.reject(new HostError(msg.error.code, msg.error.message));
     } else if (msg.type === "event") {
+      for (const handler of [...(busHandlers.get(msg.name) ?? [])]) handler(msg.payload);
       switch (msg.name) {
         case "project.changed":
           for (const cb of [...projectListeners]) cb(msg.payload);
@@ -197,6 +229,18 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
           break;
         case "git.changed":
           gitWatches.get(msg.payload.watchId)?.(msg.payload.repos);
+          break;
+        case "events.subscribersChanged":
+          for (const cb of [...subscriberListeners]) cb(msg.payload.name, msg.payload.subscribed);
+          break;
+        // Bus events reach their `events.subscribe` handlers above.
+        case "pomade.ready":
+        case "project.created":
+        case "project.renamed":
+        case "project.opened":
+        case "agentTab.exited":
+          break;
+        default:
           break;
       }
     }
@@ -230,6 +274,9 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
     watches.clear();
     gitWatches.clear();
     projectListeners.clear();
+    busHandlers.clear();
+    busSubscriptions.clear();
+    subscriberListeners.clear();
     stateListeners.clear();
     routeListeners.clear();
     const error = new Error("pomade-kit: client is closed");
@@ -344,6 +391,62 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
             return unwatched;
           },
         };
+      },
+    },
+    events: {
+      async publish(name, payload = null) {
+        await call("events.publish", { name, payload });
+      },
+      async subscribe(name: string, handler: (payload: never) => void): Promise<EventSubscription> {
+        const h = handler as (payload: unknown) => void;
+        let handlers = busHandlers.get(name);
+        if (!handlers) {
+          handlers = new Set();
+          busHandlers.set(name, handlers);
+        }
+        handlers.add(h);
+        const own = handlers;
+        let accepted = busSubscriptions.get(name);
+        if (!accepted) {
+          accepted = call("events.subscribe", { name });
+          busSubscriptions.set(name, accepted);
+        }
+        const drop = (): boolean => {
+          own.delete(h);
+          if (own.size > 0 || busHandlers.get(name) !== own) return false;
+          busHandlers.delete(name);
+          busSubscriptions.delete(name);
+          return true;
+        };
+        try {
+          await accepted;
+        } catch (err) {
+          drop();
+          throw err;
+        }
+        let closing: Promise<void> | null = null;
+        return {
+          name,
+          close() {
+            closing ??= (async () => {
+              if (drop() && !closed) await call("events.unsubscribe", { name });
+            })();
+            return closing;
+          },
+        };
+      },
+      async hasSubscribers(name) {
+        const { subscribed } = await call("events.hasSubscribers", { name });
+        return subscribed;
+      },
+      onSubscribersChange(callback) {
+        subscriberListeners.add(callback);
+        return () => subscriberListeners.delete(callback);
+      },
+    },
+    notices: {
+      async post(notice) {
+        await call("notices.post", notice);
       },
     },
     close: dispose,

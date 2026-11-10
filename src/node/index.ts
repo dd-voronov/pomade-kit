@@ -10,3 +10,4 @@ export function resolveWorkspace(env: Readonly<Record<string, string | undefined
   const value = env.POMADE_WORKSPACE;
   return value ? resolve(value) : null;
 }
+export { pomadeUserData, postNotice, queueNotice, type PomadeTarget, type PostNoticeOptions } from "./notices.js";

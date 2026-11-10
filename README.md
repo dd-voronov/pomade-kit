@@ -17,14 +17,14 @@ The package installs from a git tag: npm clones it, installs its dev dependencie
 
 | Import | What | Runs in |
 |---|---|---|
-| `pomade-kit/protocol` | Host API v0 in code: messages, `ProjectRef`, `FileEntry`, `FileChange`, error codes, `Manifest` + `parseManifest`, strip icons (`StripIcon`, `resolveFrameTarget`), shortcuts (`AppShortcut`, `parseChord`, `formatChord`, `chordMatches`), app state rules, `HOST_API_VERSION`, message guards, workspace path rules, `readFrontmatter` | browser and Node |
+| `pomade-kit/protocol` | Host API v0 in code: messages, `ProjectRef`, `FileEntry`, `FileChange`, error codes, `Manifest` + `parseManifest`, strip icons (`StripIcon`, `resolveFrameTarget`), shortcuts (`AppShortcut`, `parseChord`, `formatChord`, `chordMatches`), app state rules, the event bus (`PLATFORM_EVENTS`, event name and payload rules, `parseManifestEvents`, the `EventBus` both hosts run), `HOST_API_VERSION`, message guards, workspace path rules, `readFrontmatter` | browser and Node |
 | `pomade-kit/sdk` | `connect()` and the typed client | browser (any `Transport` elsewhere) |
 | `pomade-kit/fake-host` | the Host API in memory, for standalone runs and tests | browser and Node |
 | `pomade-kit/frontmatter` | field-only frontmatter writes: `setField`, `removeField`, body writes `setBody` / `getBody`, and the block core Pomade's editor uses | browser and Node |
 | `pomade-kit/schedule` | the schedule format: `parseSchedule` with readable errors, the occurrence engine, `describeSchedule`, `formatSchedule` | browser and Node |
 | `pomade-kit/dates` | date phrases: `parseDatePhrase` (`fri`, `tomorrow`, `+3d`, `nov 20`, `tonight 23:00`, `in 2 hours`) and `currentDay` with a day boundary | browser and Node |
 | `pomade-kit/scanners` | terminal output readers: `MarkerScanner` (Pomade's shell markers), `AttentionScanner` (bell, notifications), `AgentStateScanner` (claude/codex working, idle, waiting at a permission or trust prompt) | browser and Node |
-| `pomade-kit/node` | `resolveWorkspace()` for commands | Node |
+| `pomade-kit/node` | `resolveWorkspace()` for commands; `postNotice()` — a notice from a backend or command, with Pomade open or closed | Node |
 
 ## Connect to Pomade
 
@@ -235,6 +235,80 @@ A project's repos are the repos at or below its folder plus the nearest repo hol
 project that moves, and ends with the frame (a reload drops it). An unknown project is
 `not-found`.
 
+## Events
+
+The event bus (`pomade:E-031`). Pomade and apps publish; apps subscribe; a publisher can ask whether
+anyone listens. Declare both sides in the manifest — a call on an undeclared name is
+`capability-denied`, a malformed one `invalid-params`:
+
+```jsonc
+"events": {
+  "publish": ["run.started", "run.finished"],                        // your own events, unqualified
+  "subscribe": ["pomade.ready", "project.renamed", "pomade-agents:session.closed"]
+}
+```
+
+```ts
+const sub = await host.events.subscribe("project.renamed", ({ project, previous }) => { /* … */ });
+await host.events.subscribe("pomade-agents:session.closed", (payload) => { /* JsonValue */ });
+await sub.close();                                  // the host subscription ends with its last handler
+
+if (await host.events.hasSubscribers("run.finished")) {
+  await host.events.publish("run.finished", { runId: "r1", ok: true });   // plain JSON ≤ 64 KiB; default null
+}
+host.events.onSubscribersChange((name, subscribed) => { /* first subscriber came / last one left */ });
+```
+
+**Platform events** (`PLATFORM_EVENTS`, payloads typed by `PlatformEvents`):
+
+| Event | Payload | When |
+|---|---|---|
+| `pomade.ready` | `{}` | Pomade restored the workspace's tabs. Sticky: a later subscription gets it at once |
+| `project.created` | `ProjectRef` | a project was added |
+| `project.renamed` | `{ project, previous }` (`ProjectRef`s) | a project's name or folder changed |
+| `project.opened` | `ProjectRef` | a project (or the Workspace scope) became active for the first time since Pomade started |
+| `project.changed` | `ProjectRef` | the active project changed; every frame gets it without subscribing |
+| `agentTab.exited` | `{ tabId, projectId, agentId, sessionId \| null, reason }` | an agent process in a tab ended — `reason` `exit` · `crash` · `tab-closed` · `quit` |
+
+**App events** travel as `<appId>:<event>` (`pomade-runner:run.finished`); an event name is
+dot-separated lowerCamel words (`EVENT_NAME_RE`, at most 64 characters). A published event reaches
+every subscribed frame of every app — hidden ones too — except the publishing frame itself.
+Subscriptions end with the frame (a reload subscribes again). `EventBus` (`pomade-kit/protocol`)
+is the bookkeeping Pomade and the fake host share; `checkPublish` / `checkSubscribe` /
+`checkHasSubscribers` are their call checks.
+
+## Notices
+
+`pomade:E-032`. A notice shows as a toast in Pomade and stays in its Notices list; a click runs its
+action. No capability, except that an action opening a file or a terminal needs `tabs.open`.
+
+```ts
+await host.notices.post({
+  title: "Run failed",                           // one line, ≤ 200 characters
+  body: "Nightly commit-push: conflict in Knowledge",   // optional, ≤ 2000
+  action: { kind: "openApp", route: "runs/r42" },       // optional: what a click does
+});
+// action kinds: { kind: "openApp", route?, projectId? } — your own tab, exactly tabs.openApp
+//               { kind: "openFile", path, projectId? } · { kind: "openTerminal", cwd, command?, title?, projectId? }
+```
+
+Pomade coalesces a burst from one app into one toast ("4 more from Runner"), and the user can mute
+an app's notices (they still land in the list). `checkNotice` (`pomade-kit/protocol`) is the rule
+every host applies.
+
+**From a backend or a command** — with Pomade open or closed — post through the queue:
+
+```ts
+import { postNotice } from "pomade-kit/node";
+await postNotice({ title: "Commit & push failed", body: "Knowledge: conflict" }, { source: "pomade-git" });
+```
+
+It writes one JSON file into `<userData>/notices/queue/` (a dot-file renamed into place); Pomade
+drains the folder at launch and watches it while running. `source` is the app's id (or the
+platform command's name); the target is the dev Pomade unless `stable: true`, and
+`POMADE_USER_DATA` overrides both (`pomadeUserData()`). The file format is `QueuedNotice`
+(`parseQueuedNotice`, `NOTICE_QUEUE_DIR`, `queuedNoticeFileName` in `pomade-kit/protocol`).
+
 ## Develop and test without Pomade — the fake host
 
 ```ts
@@ -270,7 +344,11 @@ code, and the events. Test controls emit the events Pomade would:
 | `fake.rename(from, to)` | `rename` (file or folder) |
 | `fake.batch(() => …)` | the changes inside as one `files.changed` per watch |
 | `fake.setActiveProject(id \| null)` | `project.changed` |
-| `fake.updateProject(id, { name?, root?, group? })` | `project.changed` when it is the active project (rename / move / regroup; the id stays) |
+| `fake.updateProject(id, { name?, root?, group? })` | `project.renamed` to its subscribers when the name or folder changed, and `project.changed` when it is the active project (rename / move / regroup; the id stays) |
+| `fake.clickNotice(index?)` | — (the user clicks a notice the app posted, default the last: its action runs as in Pomade, landing in `openedTabs`). `fake.notices` lists every `notices.post`, normalized |
+| `fake.ready()` | `pomade.ready` (sticky: later subscriptions get it at once) |
+| `fake.emitEvent(name, payload)` | a platform event or another app's `<appId>:<event>` to the frames subscribed to it |
+| `fake.subscribeAs(appId, name, heard?)` | — (another app subscribes to this app's event `name`: `hasSubscribers` turns true and `events.subscribersChanged` fires; what it hears is pushed to `heard`; returns its unsubscribe). `fake.published` lists every `events.publish` (`{ name, payload }`), `fake.subscriptions` the names the frames subscribe to |
 | `fake.readFile(path)` | — (returns the file's text: what the app's writes left) |
 | `fake.symlink(path, target)` | `create` (a link listings report as its target's kind) |
 | `fake.isSymlink(path)` | — (true when a symlink is at `path`) |
@@ -568,7 +646,7 @@ import { AgentStateScanner, AttentionScanner, MarkerScanner } from "pomade-kit/s
 
 const markers = new MarkerScanner((ev) => {
   if (ev.kind === "exec") ev.command;   // a command is about to run at the shell
-  else ev.cwd;                          // a prompt was drawn; its $PWD, or null
+  else ev.cwd;                          // a prompt was drawn; its $PWD, or null; `ev.status`: the ended command's exit status, when the shell reported it
 });
 const attention = new AttentionScanner(() => markUnread());   // a bell or an OSC 9/99/777 notification
 
@@ -624,7 +702,10 @@ Reading the workspace pointer Pomade records joins with `pomade:E-028`.
 ## Example
 
 `examples/hello/` — the smallest app: lists the active project's `docs/roadmap/` frontmatter rows,
-shows the project's git repos, and follows project, file and git events. `npm run hello:build` writes the installable folder
+shows the project's git repos, and follows project, file and git events. On the bus it shows the
+last platform event it heard (Pomade ready, a project renamed) and publishes `greeted` from a
+button that is enabled only while another app listens; "Notify me" posts a notice whose click opens
+its roadmap tab. `npm run hello:build` writes the installable folder
 `examples/hello/dist/` (`index.html`, `manifest.json`, assets).
 
 ## Develop this repo

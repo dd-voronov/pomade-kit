@@ -6,6 +6,7 @@ export {
   FakeHost,
   WORKSPACE_SCOPE,
   type FakeBadge,
+  type FakePublishedEvent,
   type FakeHostOptions,
   type FrameOptions,
   type FakeProject,

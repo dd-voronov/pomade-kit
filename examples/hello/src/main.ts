@@ -6,7 +6,10 @@
 // launches in the app state shared by all its frames, shows the route it renders and opens its
 // own tab at a route, and badges its strip icon with the number of tickets — it starts on launch,
 // so the badge is there before the panel is opened; its Cmd+Shift+J overlay takes a quick note
-// into the app state; it shows the project's git repos live. Built only on pomade-kit's SDK.
+// into the app state; it shows the project's git repos live. On the event bus it shows the last
+// platform event it heard (Pomade ready, a project renamed); its Greet button publishes a
+// `greeted` event and is enabled only while another app listens. "Notify me" posts a Pomade notice
+// whose click opens the roadmap in the app's own tab. Built only on pomade-kit's SDK.
 
 import { joinPath } from "pomade-kit/protocol";
 import {
@@ -101,8 +104,37 @@ function describeGit(repos: GitRepoState[]): string {
   return `Git: ${repos.map((r) => `${r.name} · ${r.branch ?? "detached"} · ● ${r.changes.length} ↑${r.ahead} · ${r.remoteUrl ?? "local only"}`).join("; ")}`;
 }
 
+/** The bus: the last event heard, and a Greet button that publishes `greeted` only while it has subscribers. */
+async function useEvents(host: HostClient): Promise<void> {
+  const heard = (text: string): void => {
+    el("events").textContent = `Last event: ${text}`;
+  };
+  const greet = el("greet") as HTMLButtonElement;
+  const listeners = (subscribed: boolean): void => {
+    greet.disabled = !subscribed;
+    el("listeners").textContent = subscribed ? "someone listens" : "nobody listens";
+  };
+  host.events.onSubscribersChange((name, subscribed) => {
+    if (name === "greeted") listeners(subscribed);
+  });
+  greet.addEventListener("click", () => void host.events.publish("greeted", { from: host.welcome.surface }));
+  await host.events.subscribe("pomade.ready", () => heard("Pomade ready"));
+  await host.events.subscribe("project.renamed", ({ project, previous }) => heard(`${previous.name} renamed to ${project.name}`));
+  listeners(await host.events.hasSubscribers("greeted"));
+}
+
 function startApp(host: HostClient): void {
   void countLaunches(host);
+  void useEvents(host);
+  el("notify").addEventListener(
+    "click",
+    () =>
+      void host.notices.post({
+        title: "Roadmap ready",
+        body: `${el("rows").querySelectorAll("tr[data-path]").length} tickets in ${el("folder").textContent}`,
+        action: { kind: "openApp", route: "roadmap" },
+      }),
+  );
   const showRoute = (route: string): void => {
     el("route").textContent = `Route: ${route === "" ? "(default)" : route}`;
   };

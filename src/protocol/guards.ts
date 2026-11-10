@@ -14,6 +14,7 @@ import {
 } from "./types.js";
 import { isJsonValue } from "./state.js";
 import { isGitRepoState } from "./git.js";
+import { AGENT_EXIT_REASONS, parseBusEventName, type AgentTabExitedPayload } from "./events.js";
 
 type Obj = Record<string, unknown>;
 
@@ -174,8 +175,62 @@ export function parseHostMessage(v: unknown): HostToAppMessage | null {
       ) {
         return { channel: CHANNEL, type: "event", name: "git.changed", payload: { watchId: m.payload.watchId, repos: m.payload.repos } };
       }
-      return null;
+      return parseBusEvent(m.name, m.payload);
     default:
       return null;
+  }
+}
+
+function isAgentTabExited(v: unknown): v is AgentTabExitedPayload {
+  return (
+    isObj(v) &&
+    typeof v.tabId === "string" &&
+    typeof v.projectId === "string" &&
+    typeof v.agentId === "string" &&
+    (v.sessionId === null || typeof v.sessionId === "string") &&
+    (AGENT_EXIT_REASONS as readonly unknown[]).includes(v.reason)
+  );
+}
+
+/** An event the bus carries (pomade:E-031): the platform's, checked by shape, another app's
+ *  (`<appId>:<event>`, any JSON payload), or the publisher's `events.subscribersChanged`. */
+function parseBusEvent(name: unknown, payload: unknown): HostToAppMessage | null {
+  if (name === "events.subscribersChanged") {
+    return isObj(payload) && typeof payload.name === "string" && typeof payload.subscribed === "boolean"
+      ? { channel: CHANNEL, type: "event", name, payload: { name: payload.name, subscribed: payload.subscribed } }
+      : null;
+  }
+  const bus = parseBusEventName(name);
+  if (!bus) return null;
+  if (bus.kind === "app") {
+    return isJsonValue(payload) ? { channel: CHANNEL, type: "event", name: `${bus.appId}:${bus.event}`, payload } : null;
+  }
+  switch (bus.name) {
+    case "pomade.ready":
+      return isObj(payload) ? { channel: CHANNEL, type: "event", name: bus.name, payload: {} } : null;
+    case "project.created":
+    case "project.opened":
+      return isProjectRef(payload) ? { channel: CHANNEL, type: "event", name: bus.name, payload } : null;
+    case "project.changed":
+      return isProjectRef(payload) ? { channel: CHANNEL, type: "event", name: bus.name, payload } : null;
+    case "project.renamed":
+      return isObj(payload) && isProjectRef(payload.project) && isProjectRef(payload.previous)
+        ? { channel: CHANNEL, type: "event", name: bus.name, payload: { project: payload.project, previous: payload.previous } }
+        : null;
+    case "agentTab.exited":
+      return isAgentTabExited(payload)
+        ? {
+            channel: CHANNEL,
+            type: "event",
+            name: bus.name,
+            payload: {
+              tabId: payload.tabId,
+              projectId: payload.projectId,
+              agentId: payload.agentId,
+              sessionId: payload.sessionId,
+              reason: payload.reason,
+            },
+          }
+        : null;
   }
 }

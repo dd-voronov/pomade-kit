@@ -5,6 +5,17 @@
 import {
   CHANNEL,
   CAPABILITIES,
+  EventBus,
+  checkEventPayload,
+  checkHasSubscribers,
+  checkPublish,
+  checkSubscribe,
+  checkUnsubscribe,
+  checkNotice,
+  noticeActionCapability,
+  isBusEventName,
+  type NoticeParams,
+  type BusMember,
   HOST_API_VERSION,
   METHOD_CAPABILITY,
   WORKSPACE_PROJECT_ID,
@@ -132,8 +143,16 @@ interface Watch {
   recursive: boolean;
 }
 
+/** One event the app published (`events.publish`), as declared (unqualified). */
+export interface FakePublishedEvent {
+  name: string;
+  payload: JsonValue;
+}
+
 interface Frame {
   post(message: HostToAppMessage): void;
+  /** The frame's place on the event bus, from its welcome on. */
+  bus: BusMember | null;
   target: FrameTarget;
   onClose: (() => void) | undefined;
   welcomed: boolean;
@@ -174,6 +193,11 @@ export class FakeHost {
   private readonly data: DataContext;
   private readonly stateMap = new Map<string, string>();
   private gitRepos: GitRepoState[];
+  private readonly bus = new EventBus();
+  /** Every event the app published (`events.publish`), in order. */
+  readonly published: FakePublishedEvent[] = [];
+  /** Every notice the app posted (`notices.post`), normalized as Pomade keeps it, in order. */
+  readonly notices: NoticeParams[] = [];
 
   constructor(options: FakeHostOptions = {}) {
     const parsed = parseManifest(
@@ -240,7 +264,7 @@ export class FakeHost {
     const target =
       surface === "overlay" ? resolveOverlayTarget(this.shortcuts, open.shortcut) : resolveFrameTarget(this.strip, surface, open.icon);
     if (open.route !== undefined) target.route = open.route;
-    const frame: Frame = { post, target, onClose: open.onClose, welcomed: false, watches: new Map(), gitWatches: new Map() };
+    const frame: Frame = { post, target, onClose: open.onClose, welcomed: false, watches: new Map(), gitWatches: new Map(), bus: null };
     this.frames.add(frame);
     return {
       receive: (data) => {
@@ -250,6 +274,8 @@ export class FakeHost {
         this.frames.delete(frame);
         frame.watches.clear();
         frame.gitWatches.clear();
+        frame.bus?.close();
+        frame.bus = null;
       },
       navigate: (route) => {
         if (route === frame.target.route) return;
@@ -346,9 +372,7 @@ export class FakeHost {
     const next = this.findScope(id);
     if (next.id === this.active.id) return;
     this.active = next;
-    for (const frame of this.frames) {
-      if (frame.welcomed) frame.post({ channel: CHANNEL, type: "event", name: "project.changed", payload: { ...next } });
-    }
+    this.bus.publish("project.changed", { ...next });
   }
 
   /** Rename or move a project (or regroup it); its id stays. Emits `project.changed` when it is
@@ -359,17 +383,18 @@ export class FakeHost {
     if (patch.group !== undefined && patch.group !== null && !this.groupList.some((g) => g.id === patch.group)) {
       throw new Error(`fake host: no group ${JSON.stringify(patch.group)}`);
     }
+    const previous = { ...project };
     if (patch.name !== undefined) project.name = patch.name;
     if (patch.root !== undefined) project.root = controlPath(patch.root);
     if (patch.group === null) this.projectGroup.delete(id);
     else if (patch.group !== undefined) this.projectGroup.set(id, patch.group);
     // A moved project's git scope follows its new root.
     if (patch.root !== undefined) this.refreshGitWatches();
-    if (this.active.id !== id || (patch.name === undefined && patch.root === undefined)) return;
+    if (project.name === previous.name && project.root === previous.root) return;
+    this.bus.publish("project.renamed", { project: { ...project }, previous });
+    if (this.active.id !== id) return;
     this.active = { ...project };
-    for (const frame of this.frames) {
-      if (frame.welcomed) frame.post({ channel: CHANNEL, type: "event", name: "project.changed", payload: { ...project } });
-    }
+    this.bus.publish("project.changed", { ...project });
   }
 
   /** Run several controls and deliver their file changes as one `files.changed` batch per watch. */
@@ -386,6 +411,52 @@ export class FakeHost {
       this.batched = null;
       this.emit(changes);
     }
+  }
+
+  /** Pomade finished restoring its tabs: raise the sticky `pomade.ready` (later subscriptions get it at once). */
+  ready(): void {
+    this.bus.publishSticky("pomade.ready", {});
+  }
+
+  /** Deliver a bus event to the frames subscribed to it — a platform event (`project.created`, `agentTab.exited`, …)
+   *  or another app's (`pomade-runner:run.finished`). */
+  emitEvent(name: string, payload: JsonValue): void {
+    if (!isBusEventName(name)) throw new Error(`fake host: ${JSON.stringify(name)} is not a platform event or "<appId>:<event>"`);
+    const bad = checkEventPayload(payload);
+    if (bad) throw new Error(`fake host: ${bad}`);
+    this.bus.publish(name, structuredClone(payload));
+  }
+
+  /** Another app subscribes to this app's own event `name` (unqualified), as `events.hasSubscribers` and
+   *  `events.subscribersChanged` see it; returns its unsubscribe. What it hears lands in `heard`. */
+  subscribeAs(appId: string, name: string, heard: JsonValue[] = []): () => void {
+    const member = this.bus.open({
+      appId,
+      deliver: (event, payload) => {
+        if (event !== "events.subscribersChanged") heard.push(payload);
+      },
+    });
+    member.subscribe(`${this.manifest.id}:${name}`);
+    return () => member.close();
+  }
+
+  /** The user clicks a notice the app posted (default: the last one): its action runs as in Pomade —
+   *  the tab it opens lands in `openedTabs` and its project becomes active. A notice without an action does nothing. */
+  clickNotice(index = this.notices.length - 1): void {
+    const notice = this.notices[index];
+    if (!notice) throw new Error(`fake host: no notice #${index}`);
+    const action = notice.action;
+    if (!action) return;
+    const { kind, ...params } = action;
+    const method = kind === "openFile" ? "tabs.openFile" : kind === "openTerminal" ? "tabs.openTerminal" : "tabs.openApp";
+    dispatchTabs(this.data, method, params as Record<string, unknown>);
+  }
+
+  /** The bus event names the app's frames subscribe to now (each once), `project.changed` included. */
+  get subscriptions(): string[] {
+    const names = new Set<string>();
+    for (const frame of this.frames) for (const name of frame.bus?.subscriptions() ?? []) names.add(name);
+    return [...names].sort();
   }
 
   get activeProject(): ProjectRef {
@@ -431,6 +502,8 @@ export class FakeHost {
   private handshake(frame: Frame, appHostApi: number): void {
     frame.watches.clear();
     frame.gitWatches.clear();
+    frame.bus?.close();
+    frame.bus = null;
     frame.welcomed = false;
     if (appHostApi !== this.hostApi) {
       const reason = appHostApi > this.hostApi ? "needs-newer-pomade" : "app-too-old";
@@ -438,6 +511,14 @@ export class FakeHost {
       return;
     }
     frame.welcomed = true;
+    // Every frame hears `project.changed` (its welcome carries the project), subscribed or not.
+    frame.bus = this.bus.open(
+      {
+        appId: this.manifest.id,
+        deliver: (name, payload) => frame.post({ channel: CHANNEL, type: "event", name, payload } as HostToAppMessage),
+      },
+      ["project.changed"],
+    );
     frame.post({
       channel: CHANNEL,
       type: "welcome",
@@ -563,6 +644,41 @@ export class FakeHost {
       case "git.unwatch":
         frame.gitWatches.delete(stringParam(params, "watchId"));
         return {};
+      case "events.publish": {
+        const p = checkPublish(this.manifest.events, params);
+        if (!p.ok) throw new CallError(p.error.code, p.error.message);
+        this.published.push({ name: p.name, payload: structuredClone(p.payload) });
+        frame.bus?.publish(p.name, structuredClone(p.payload));
+        return {};
+      }
+      case "events.subscribe": {
+        const p = checkSubscribe(this.manifest.events, params);
+        if (!p.ok) throw new CallError(p.error.code, p.error.message);
+        // A sticky event (`pomade.ready`) follows the result, as in Pomade.
+        frame.bus?.subscribe(p.name, (deliver) => setTimeout(deliver, 0));
+        return {};
+      }
+      case "events.unsubscribe": {
+        const p = checkUnsubscribe(params);
+        if (!p.ok) throw new CallError(p.error.code, p.error.message);
+        frame.bus?.unsubscribe(p.name);
+        return {};
+      }
+      case "notices.post": {
+        const n = checkNotice(params);
+        if (!n.ok) throw new CallError(n.error.code, n.error.message);
+        const needs = noticeActionCapability(n.value.action);
+        if (needs && !this.manifest.capabilities.includes(needs)) {
+          throw new CallError("capability-denied", `a notice that opens a tab needs the "${needs}" capability`);
+        }
+        this.notices.push(structuredClone(n.value));
+        return {};
+      }
+      case "events.hasSubscribers": {
+        const p = checkHasSubscribers(this.manifest.events, params);
+        if (!p.ok) throw new CallError(p.error.code, p.error.message);
+        return { subscribed: this.bus.count(`${this.manifest.id}:${p.name}`) > 0 };
+      }
     }
   }
 

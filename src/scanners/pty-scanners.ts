@@ -10,13 +10,16 @@
 // ─── OSC 7879 marker protocol ────────────────────────────────────────────────────────────────
 // Pomade's shimmed `zsh -il` prints invisible OSC 7879 markers from its precmd/preexec hooks:
 // precmd → `pomade:prompt;<cwd>` (a prompt was drawn; carries $PWD), preexec →
-// `pomade:exec;<cmdline>` (a command is about to run). The payload-less `pomade:prompt` is
-// accepted too: a pty spawned by an older Pomade, or a stale ZDOTDIR copy, can outlive an upgrade.
+// `pomade:exec;<cmdline>` (a command is about to run). Right before a prompt marker the shim may
+// print `pomade:status;<n>` — the exit status of the command that just ended — which rides on that
+// prompt's event. The payload-less `pomade:prompt` is accepted too: a pty spawned by an older
+// Pomade, or a stale ZDOTDIR copy, can outlive an upgrade.
 const OSC_MARK_PREFIX = "\x1b]7879;";
 const OSC_MARK_END = "\x07";
 const MARK_PROMPT = "pomade:prompt";
 const MARK_PROMPT_CWD = "pomade:prompt;";
 const MARK_EXEC = "pomade:exec;";
+const MARK_STATUS = "pomade:status;";
 // Longest partial marker carried across a chunk split: prefix + payload + terminator. Sized off
 // the longer payload — a prompt's $PWD up to PATH_MAX (1024 on macOS) or an exec line up to the
 // shim's 500-byte cap — with headroom. A split marker longer than this is dropped rather than
@@ -25,14 +28,17 @@ const MARK_CARRY_MAX = 2048;
 
 /** A framed, classified OSC 7879 marker. `exec` — a command is about to run (payload = the
  *  command line). `prompt` — the shell drew a prompt (`cwd` = the reported $PWD, or null when
- *  the payload-less `pomade:prompt` form is seen). Markers that are neither are dropped. */
-export type MarkerEvent = { kind: "exec"; command: string } | { kind: "prompt"; cwd: string | null };
+ *  the payload-less `pomade:prompt` form is seen; `status` = the exit status of the command that
+ *  just ended, when a `pomade:status;<n>` marker came since the last prompt). Markers that are
+ *  neither are dropped. */
+export type MarkerEvent = { kind: "exec"; command: string } | { kind: "prompt"; cwd: string | null; status?: number };
 
 /** Frames OSC 7879 markers out of the pty output stream and classifies each into a MarkerEvent.
  *  `carry` holds a possibly marker-splitting tail across data chunks so every marker is seen
  *  exactly once. */
 export class MarkerScanner {
   private carry = "";
+  private status: number | null = null;
 
   constructor(private readonly onMarker: (event: MarkerEvent) => void) {}
 
@@ -58,12 +64,18 @@ export class MarkerScanner {
   private classify(payload: string): void {
     if (payload.startsWith(MARK_EXEC)) {
       this.onMarker({ kind: "exec", command: payload.slice(MARK_EXEC.length) });
+    } else if (payload.startsWith(MARK_STATUS)) {
+      const text = payload.slice(MARK_STATUS.length);
+      this.status = /^\d{1,3}$/.test(text) ? Number(text) : null;
     } else if (payload === MARK_PROMPT || payload.startsWith(MARK_PROMPT_CWD)) {
       // The payload-less form (and an empty `$PWD`) reports cwd null, so the caller keeps the last
       // known cwd rather than blanking it.
+      const status = this.status;
+      this.status = null;
       this.onMarker({
         kind: "prompt",
         cwd: payload.length > MARK_PROMPT_CWD.length ? payload.slice(MARK_PROMPT_CWD.length) : null,
+        ...(status !== null ? { status } : {}),
       });
     }
   }

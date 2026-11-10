@@ -179,3 +179,40 @@ test("shows the project's git repos and follows git changes and project switches
   await page.evaluate(() => window.fakeHost.setActiveProject("beta"));
   await expect(app(page).getByTestId("git")).toHaveText("Git: no repository");
 });
+
+test("hears platform events it subscribes to: Pomade ready (sticky), a project renamed", async ({ page }) => {
+  await expect.poll(() => page.evaluate(() => window.fakeHost.subscriptions)).toEqual(["pomade.ready", "project.changed", "project.renamed"]);
+  await page.evaluate(() => window.fakeHost.ready());
+  await expect(app(page).getByTestId("events")).toHaveText("Last event: Pomade ready");
+  await page.evaluate(() => window.fakeHost.updateProject("beta", { name: "Beta 2" }));
+  await expect(app(page).getByTestId("events")).toHaveText("Last event: Beta renamed to Beta 2");
+  // A frame loaded after Pomade was ready still hears it.
+  await app(page).locator("body").evaluate(() => location.reload());
+  await expect(app(page).getByTestId("events")).toHaveText("Last event: Pomade ready");
+});
+
+test("publishes only while someone listens; subscribers hear it", async ({ page }) => {
+  await expect(app(page).getByTestId("listeners")).toHaveText("nobody listens");
+  await expect(app(page).getByTestId("greet")).toBeDisabled();
+  await page.evaluate(() => {
+    const w = window as unknown as { heard: never[]; off: () => void };
+    w.heard = [];
+    w.off = window.fakeHost.subscribeAs("other", "greeted", w.heard);
+  });
+  await expect(app(page).getByTestId("listeners")).toHaveText("someone listens");
+  await app(page).getByTestId("greet").click();
+  await expect.poll(() => page.evaluate(() => window.fakeHost.published)).toEqual([{ name: "greeted", payload: { from: "tab" } }]);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { heard: unknown[] }).heard)).toEqual([{ from: "tab" }]);
+  await page.evaluate(() => (window as unknown as { off: () => void }).off());
+  await expect(app(page).getByTestId("greet")).toBeDisabled();
+});
+
+test("posts a notice whose click opens its own tab at the roadmap", async ({ page }) => {
+  await expect(app(page).locator("tr[data-path]")).toHaveCount(2);
+  await app(page).getByTestId("notify").click();
+  await expect
+    .poll(() => page.evaluate(() => window.fakeHost.notices))
+    .toEqual([{ title: "Roadmap ready", body: "2 tickets in Projects/alpha/docs/roadmap", action: { kind: "openApp", route: "roadmap" } }]);
+  await page.evaluate(() => window.fakeHost.clickNotice());
+  expect(await page.evaluate(() => window.fakeHost.openedTabs)).toEqual([{ kind: "app", route: "roadmap", projectId: "alpha" }]);
+});
