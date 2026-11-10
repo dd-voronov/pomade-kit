@@ -93,7 +93,6 @@ function checkKey(parts: Parts, key: string): FieldWriteResult | null {
  * line. Dates stay plain.
  */
 function emitString(value: string): string {
-  if (/[\u0000-\u001f\u007f]/.test(value)) return JSON.stringify(value);
   const plain = emitScalar(value);
   if (plain !== value) return plain;
   try {

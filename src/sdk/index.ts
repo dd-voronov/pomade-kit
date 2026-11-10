@@ -7,8 +7,11 @@ export { installKeyForwarder, shouldForwardKey, toKeyMessage, type KeyLike, type
 export type {
   FileChange,
   FileEntry,
+  FrameTarget,
   HostInfo,
   ProjectRef,
+  SetBadgeParams,
+  Surface,
   ReadFolderParams,
   WatchParams,
   ErrorCode,

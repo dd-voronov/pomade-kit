@@ -11,14 +11,18 @@ import {
   normalizeWorkspacePath,
   parseAppMessage,
   parseManifest,
+  resolveFrameTarget,
   type ErrorCode,
   type FileChange,
+  type FrameTarget,
   type HostToAppMessage,
   type IncomingCall,
   type KeyMessage,
   type Manifest,
   type MethodName,
   type ProjectRef,
+  type StripIcon,
+  type Surface,
 } from "../protocol/index.js";
 import type { Transport } from "../sdk/transport.js";
 import { controlPath, Workspace } from "./workspace.js";
@@ -59,6 +63,21 @@ export interface FakeHostOptions {
   now?: () => number;
 }
 
+/** What a frame is opened for, as Pomade opens it from the new-tab menu or a strip icon. */
+export interface FrameOptions {
+  /** Default `"tab"`. */
+  surface?: Surface;
+  /** The strip icon id; an id the manifest does not declare opens the default view (no icon, route `""`). */
+  icon?: string;
+}
+
+/** A strip icon's badge (`strip.setBadge`). */
+export interface FakeBadge {
+  /** ≥ 1; a count of 0 removes the badge. */
+  count: number;
+  urgent: boolean;
+}
+
 /** One app frame attached to the host. */
 export interface FrameConnection {
   /** Hand the host a message the frame sent. */
@@ -83,6 +102,7 @@ interface Watch {
 
 interface Frame {
   post(message: HostToAppMessage): void;
+  target: FrameTarget;
   welcomed: boolean;
   watches: Map<string, Watch>;
 }
@@ -128,13 +148,16 @@ export class FakeHost {
   private nextWatchId = 1;
   private batched: FileChange[] | null = null;
   private defaultTransport: Transport | null = null;
+  private readonly strip: readonly StripIcon[];
+  private readonly badgeMap = new Map<string, FakeBadge>();
 
   constructor(options: FakeHostOptions = {}) {
     const parsed = parseManifest(
       options.manifest ?? { id: "fake-app", name: "Fake app", version: "0.0.0", hostApi: HOST_API_VERSION, capabilities: [...CAPABILITIES] },
     );
-    if (!parsed.ok) throw new Error(`fake host: invalid manifest: ${parsed.message}`);
+    if (!parsed.ok) throw new Error(`fake host: invalid manifest: ${parsed.errors.map((e) => e.message).join("; ")}`);
     this.manifest = parsed.manifest;
+    this.strip = parsed.manifest.strip ?? [];
     this.pomadeVersion = options.pomadeVersion ?? "0.0.0-fake";
     this.hostApi = options.hostApi ?? HOST_API_VERSION;
     this.workspace = new Workspace(options.files ?? {}, options.ignore ?? DEFAULT_IGNORE, options.now ?? Date.now);
@@ -144,9 +167,10 @@ export class FakeHost {
 
   // ── Frames and transports ────────────────────────────────────────────────
 
-  /** Attach a frame; `post` delivers host → app messages to it. */
-  attach(post: (message: HostToAppMessage) => void): FrameConnection {
-    const frame: Frame = { post, welcomed: false, watches: new Map() };
+  /** Attach a frame opened for `open` (default: a tab from the new-tab menu); `post` delivers host → app messages to it. */
+  attach(post: (message: HostToAppMessage) => void, open: FrameOptions = {}): FrameConnection {
+    const target = resolveFrameTarget(this.strip, open.surface ?? "tab", open.icon);
+    const frame: Frame = { post, target, welcomed: false, watches: new Map() };
     this.frames.add(frame);
     return {
       receive: (data) => {
@@ -159,15 +183,15 @@ export class FakeHost {
     };
   }
 
-  /** A new in-memory frame: pass it to `connect({ transport })`. Messages are cloned and delivered asynchronously, like postMessage. */
-  createTransport(): Transport {
+  /** A new in-memory frame opened for `open` (default: a tab from the new-tab menu): pass it to `connect({ transport })`. Messages are cloned and delivered asynchronously, like postMessage. */
+  createTransport(open?: FrameOptions): Transport {
     const listeners = new Set<(data: unknown) => void>();
     const frame = this.attach((message) => {
       const copy = structuredClone(message);
       setTimeout(() => {
         for (const listener of [...listeners]) listener(copy);
       }, 0);
-    });
+    }, open);
     return {
       send(message) {
         const copy = structuredClone(message);
@@ -233,6 +257,11 @@ export class FakeHost {
     return { ...this.active };
   }
 
+  /** The badges the app set, by strip icon id; icons without a badge are absent. */
+  get badges(): Record<string, FakeBadge> {
+    return Object.fromEntries([...this.badgeMap].map(([icon, badge]) => [icon, { ...badge }]));
+  }
+
   // ── Protocol ─────────────────────────────────────────────────────────────
 
   private findScope(id: string | null): ProjectRef {
@@ -273,7 +302,7 @@ export class FakeHost {
       hostApi: this.hostApi,
       pomadeVersion: this.pomadeVersion,
       appId: this.manifest.id,
-      surface: "tab",
+      ...frame.target,
       project: { ...this.active },
     });
   }
@@ -299,7 +328,7 @@ export class FakeHost {
     const params = paramsObject(call.params);
     switch (method) {
       case "host.info":
-        return { pomadeVersion: this.pomadeVersion, hostApi: this.hostApi, appId: this.manifest.id, surface: "tab" };
+        return { pomadeVersion: this.pomadeVersion, hostApi: this.hostApi, appId: this.manifest.id, ...frame.target };
       case "project.getActive":
         return { ...this.active };
       case "files.readFolder": {
@@ -320,6 +349,20 @@ export class FakeHost {
       case "files.unwatch":
         frame.watches.delete(stringParam(params, "watchId"));
         return {};
+      case "strip.setBadge": {
+        const { icon, count } = params;
+        if (typeof icon !== "string") throw new CallError("invalid-params", '"icon" must be a strip icon id');
+        if (typeof count !== "number" || !Number.isInteger(count) || count < 0) {
+          throw new CallError("invalid-params", '"count" must be a non-negative integer');
+        }
+        const urgent = booleanParam(params, "urgent");
+        if (!this.strip.some((s) => s.id === icon)) {
+          throw new CallError("invalid-params", `No strip icon ${JSON.stringify(icon)} in the manifest`);
+        }
+        if (count === 0) this.badgeMap.delete(icon);
+        else this.badgeMap.set(icon, { count, urgent });
+        return {};
+      }
     }
   }
 

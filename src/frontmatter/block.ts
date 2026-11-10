@@ -93,8 +93,16 @@ function unquoteKey(raw: string): string {
 // Emit a value as a YAML scalar, preferring the PLAIN style so edits stay byte-minimal (a date
 // stays `2026-06-15`, not `"2026-06-15"`). Double-quoted only when plain would be ambiguous or
 // invalid.
+
+// Characters a plain scalar cannot carry: C0 controls (tab and line breaks included), DEL, C1
+// controls, U+FFFE/U+FFFF and lone surrogates — a line break splits the value, the rest are
+// non-printable to YAML and make the whole block unreadable. Double-quoted (JSON) they are
+// escaped or allowed.
+const NOT_PLAIN_RE = /[\u0000-\u001f\u007f-\u009f\ufffe\uffff]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+
 function isSafePlain(s: string): boolean {
   if (s.length === 0) return false;
+  if (NOT_PLAIN_RE.test(s)) return false;
   if (s !== s.trim()) return false;
   if (/^[-?:,[\]{}#&*!|>'"%@`]/.test(s)) return false;
   if (/:(\s|$)/.test(s)) return false; // 'key: value' style colon inside the value

@@ -10,6 +10,7 @@ import {
   type KeyMessage,
   type ProjectRef,
   type FileChange,
+  type Surface,
 } from "./types.js";
 
 type Obj = Record<string, unknown>;
@@ -25,6 +26,10 @@ export function isPomadeMessage(v: unknown): v is { channel: typeof CHANNEL; typ
 
 export function isErrorCode(v: unknown): v is ErrorCode {
   return typeof v === "string" && (ERROR_CODES as readonly string[]).includes(v);
+}
+
+export function isSurface(v: unknown): v is Surface {
+  return v === "tab" || v === "panel";
 }
 
 export function isProjectRef(v: unknown): v is ProjectRef {
@@ -99,7 +104,9 @@ export function parseHostMessage(v: unknown): HostToAppMessage | null {
       return typeof m.hostApi === "number" &&
         typeof m.pomadeVersion === "string" &&
         typeof m.appId === "string" &&
-        m.surface === "tab" &&
+        isSurface(m.surface) &&
+        (m.icon === undefined || typeof m.icon === "string") &&
+        typeof m.route === "string" &&
         isProjectRef(m.project)
         ? {
             channel: CHANNEL,
@@ -108,6 +115,8 @@ export function parseHostMessage(v: unknown): HostToAppMessage | null {
             pomadeVersion: m.pomadeVersion,
             appId: m.appId,
             surface: m.surface,
+            ...(typeof m.icon === "string" ? { icon: m.icon } : {}),
+            route: m.route,
             project: m.project,
           }
         : null;

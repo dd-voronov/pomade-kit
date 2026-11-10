@@ -39,6 +39,7 @@ export const WELCOME = {
   pomadeVersion: "0.3.0",
   appId: "hello",
   surface: "tab",
+  route: "",
   project: PROJECT,
 } as const;
 

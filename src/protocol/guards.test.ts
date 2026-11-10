@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isFileChange, isPomadeMessage, isProjectRef, parseAppMessage, parseHostMessage } from "./guards.js";
+import { isFileChange, isPomadeMessage, isProjectRef, isSurface, parseAppMessage, parseHostMessage } from "./guards.js";
 import { ERROR_CODES, METHOD_CAPABILITY, METHOD_NAMES } from "./types.js";
 
 const project = { id: "p1", kind: "project", name: "Pomade", root: "Projects/Pomade" } as const;
@@ -14,6 +14,20 @@ describe("isPomadeMessage", () => {
     expect(isPomadeMessage(null)).toBe(false);
     expect(isPomadeMessage("pomade")).toBe(false);
     expect(isPomadeMessage([])).toBe(false);
+  });
+});
+
+describe("isSurface", () => {
+  it.each<[unknown, boolean]>([
+    ["tab", true],
+    ["panel", true],
+    ["Tab", false],
+    ["both", false],
+    ["", false],
+    [undefined, false],
+    [null, false],
+  ])("%j → %s", (v, expected) => {
+    expect(isSurface(v)).toBe(expected);
   });
 });
 
@@ -72,11 +86,20 @@ describe("parseAppMessage", () => {
 });
 
 describe("parseHostMessage", () => {
-  const welcome = { channel: "pomade", type: "welcome", hostApi: 0, pomadeVersion: "0.3.0", appId: "a1", surface: "tab", project };
+  const welcome = { channel: "pomade", type: "welcome", hostApi: 0, pomadeVersion: "0.3.0", appId: "a1", surface: "tab", route: "", project };
 
   it("welcome", () => {
     expect(parseHostMessage(welcome)).toEqual(welcome);
-    expect(parseHostMessage({ ...welcome, surface: "panel" })).toBeNull();
+    const panel = { ...welcome, surface: "panel", icon: "board", route: "needs-you" };
+    expect(parseHostMessage(panel)).toEqual(panel);
+    expect(parseHostMessage({ ...welcome, icon: "board", route: "board" })).toEqual({ ...welcome, icon: "board", route: "board" });
+    expect(parseHostMessage({ ...welcome, extra: 1 })).toEqual(welcome);
+    expect(parseHostMessage({ ...welcome, surface: "popup" })).toBeNull();
+    expect(parseHostMessage({ ...welcome, surface: undefined })).toBeNull();
+    expect(parseHostMessage({ ...welcome, route: undefined })).toBeNull();
+    expect(parseHostMessage({ ...welcome, route: 1 })).toBeNull();
+    expect(parseHostMessage({ ...welcome, icon: 1 })).toBeNull();
+    expect(parseHostMessage({ ...welcome, icon: null })).toBeNull();
     expect(parseHostMessage({ ...welcome, project: { id: "x" } })).toBeNull();
     expect(parseHostMessage({ ...welcome, pomadeVersion: undefined })).toBeNull();
     expect(parseHostMessage({ ...welcome, appId: 1 })).toBeNull();
@@ -148,7 +171,8 @@ describe("METHOD_CAPABILITY", () => {
       "files.readFolder": "files.read",
       "files.watch": "files.read",
       "files.unwatch": "files.read",
+      "strip.setBadge": null,
     });
-    expect(METHOD_NAMES).toHaveLength(5);
+    expect(METHOD_NAMES).toHaveLength(6);
   });
 });

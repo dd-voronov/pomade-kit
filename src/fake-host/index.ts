@@ -5,7 +5,9 @@ export {
   DEFAULT_IGNORE,
   FakeHost,
   WORKSPACE_SCOPE,
+  type FakeBadge,
   type FakeHostOptions,
+  type FrameOptions,
   type FakeProject,
   type FrameConnection,
 } from "./fake-host.js";

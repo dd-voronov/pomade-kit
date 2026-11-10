@@ -12,7 +12,8 @@ import {
   type ProjectRef,
   type ReadFolderParams,
   type ReadFolderResult,
-  type Surface,
+  type SetBadgeParams,
+  type FrameTarget,
   type WatchParams,
 } from "../protocol/index.js";
 import type { Transport } from "./transport.js";
@@ -28,12 +29,12 @@ export class HostError extends Error {
   }
 }
 
-/** What the host said in `welcome`. */
-export interface Welcome {
+/** What the host said in `welcome`: versions, app id, what the frame was opened for (`surface`,
+ *  `icon`, `route`) and the project it was opened in. */
+export interface Welcome extends FrameTarget {
   hostApi: number;
   pomadeVersion: string;
   appId: string;
-  surface: Surface;
   /** The project the frame was opened in. */
   project: ProjectRef;
 }
@@ -56,6 +57,10 @@ export interface HostClient {
     readFolder(params: ReadFolderParams): Promise<ReadFolderResult>;
     /** Resolves once the host accepted the watch; `onChanges` receives each batch. */
     watch(params: WatchParams, onChanges: (changes: FileChange[]) => void): Promise<FileWatch>;
+  };
+  readonly strip: {
+    /** Badge one of the app's own strip icons; `count: 0` clears it, `urgent: true` paints it red. */
+    setBadge(params: SetBadgeParams): Promise<void>;
   };
   /** Detach from the transport: no more events, pending calls reject. */
   close(): void;
@@ -149,6 +154,11 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
             return unwatched;
           },
         };
+      },
+    },
+    strip: {
+      async setBadge(params) {
+        await call("strip.setBadge", params);
       },
     },
     close: dispose,

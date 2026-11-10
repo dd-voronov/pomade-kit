@@ -17,7 +17,7 @@ The package installs from a git tag: npm clones it, installs its dev dependencie
 
 | Import | What | Runs in |
 |---|---|---|
-| `pomade-kit/protocol` | Host API v0 in code: messages, `ProjectRef`, `FileEntry`, `FileChange`, error codes, `Manifest` + `parseManifest`, `HOST_API_VERSION`, message guards, workspace path rules, `readFrontmatter` | browser and Node |
+| `pomade-kit/protocol` | Host API v0 in code: messages, `ProjectRef`, `FileEntry`, `FileChange`, error codes, `Manifest` + `parseManifest`, strip icons (`StripIcon`, `resolveFrameTarget`), `HOST_API_VERSION`, message guards, workspace path rules, `readFrontmatter` | browser and Node |
 | `pomade-kit/sdk` | `connect()` and the typed client | browser (any `Transport` elsewhere) |
 | `pomade-kit/fake-host` | the Host API in memory, for standalone runs and tests | browser and Node |
 | `pomade-kit/frontmatter` | field-only frontmatter writes: `setField`, `removeField`, and the block core Pomade's editor uses | browser and Node |
@@ -39,7 +39,8 @@ else if (result.status === "rejected") {
 } else {
   const host = result.host;
   host.welcome.project;                         // the project the frame was opened in
-  await host.info();                            // { pomadeVersion, hostApi, appId, surface }
+  const { surface, icon, route } = host.welcome; // what the frame was opened for — render `route`
+  await host.info();                            // { pomadeVersion, hostApi, appId, surface, icon?, route }
   await host.project.getActive();               // ProjectRef; the Workspace scope when none
   const off = host.project.onChange((project) => { /* switch */ });
 
@@ -48,6 +49,8 @@ else if (result.status === "rejected") {
     /* FileChange[] — one batch */
   });
   await watch.close();
+
+  await host.strip.setBadge({ icon: "board", count: 3, urgent: true });   // count 0 clears it
 
   try {
     await host.files.readFolder({ path: "../outside" });
@@ -64,6 +67,12 @@ else if (result.status === "rejected") {
   working while the app has focus. The decision
   waits one task, so any keydown handler of the app can still claim a key with
   `preventDefault()`. `connect({ keySource: null })` turns it off.
+- One bundle serves every surface. `surface` is `"tab"` or `"panel"`; `icon` is the manifest
+  `strip` icon the frame was opened for (absent for a tab from the new-tab menu); `route` is that
+  icon's `route` on a tab, its `panelRoute` (else `route`) on a panel, `""` without an icon.
+- `host.strip.setBadge` badges one of the app's own strip icons from any of its frames; an icon
+  the manifest does not declare is `invalid-params`. Pomade clears an app's badges when its frames
+  reload; the app sets them again.
 - `host.close()` detaches the client: no more events, pending calls reject.
 
 ## Develop and test without Pomade — the fake host
@@ -97,8 +106,15 @@ code, and the events. Test controls emit the events Pomade would:
 | `fake.batch(() => …)` | the changes inside as one `files.changed` per watch |
 | `fake.setActiveProject(id \| null)` | `project.changed` |
 
-`fake.keys` lists the forwarded keys; `fake.createTransport()` gives another frame;
-`createFakeHost({ hostApi: 1 })` makes the handshake reject.
+`fake.keys` lists the forwarded keys; `fake.badges` holds the badges the app set
+(`{ board: { count: 3, urgent: true } }`; a cleared icon is absent); `fake.createTransport()` gives
+another frame; `createFakeHost({ hostApi: 1 })` makes the handshake reject.
+
+A frame opens as a tab from the new-tab menu by default. Open it for a strip icon or as a panel
+with `fake.createTransport({ surface: "panel", icon: "board" })` (also `fake.attach(post, open)`
+and `mountApp(fake, { src, surface, icon })`); `welcome` and `host.info` then carry the icon and
+its resolved route, exactly as Pomade resolves them. An icon the manifest does not declare opens
+the default view (no icon, route `""`).
 
 **Browser e2e (Playwright):** a harness page creates the fake host, puts it on `window` for the
 specs, and hosts the app's page in an iframe with `mountApp(fake, { src: appUrl })` — the app
@@ -107,6 +123,24 @@ runs unchanged, as inside Pomade. Working setup: `e2e/harness/` and `e2e/hello.s
 
 **`dev:fake`:** serve such a harness page with a fixture workspace from the app's own Vite dev
 server, with `?app=` pointing at the app's page — a standalone app with live, scriptable data.
+
+## Validate a manifest
+
+```ts
+import { parseManifest } from "pomade-kit/protocol";
+
+const r = parseManifest(JSON.parse(text));
+if (r.ok) r.manifest.strip;                     // StripIcon[] | undefined; routes defaulted to ""
+else r.errors;                                  // every invalid field: [{ field: "strip[1].action", message }]
+```
+
+A failed result lists every invalid field in `errors` (`field` is a path: `"id"`, `"strip"`,
+`"strip[1].action"`; `""` when the manifest is not an object); its `field` and `message` are the
+first error's. Messages name the field and the value received (`(got "popup")`, `(missing)`).
+Strip icon rules follow HOST-API §1: `id` matches `^[a-z][a-z0-9-]{0,31}$` and is unique (a repeat
+is reported on the later icon), `title` is non-empty (kept trimmed), `action` is `panel`, `tab` or
+`both`, `route` defaults to `""`, `panelRoute` only with `both`; other keys inside an icon are
+ignored. `resolveFrameTarget(strip, surface, icon)` is the route rule `welcome` uses.
 
 ## Write one frontmatter field
 
@@ -123,7 +157,9 @@ Only the field's own lines change; every other byte — other keys, their quotin
 blank lines, key order, the body and its line endings — stays identical. A missing key is
 appended at the end of the block (a file without frontmatter gets a new block on top). A string
 is written plain when it reads back as the same string, otherwise double-quoted (`"true"`,
-`"3"`); dates stay plain (`2026-11-09`). A block that is not a valid YAML mapping, or a first
+`"3"`); dates stay plain (`2026-11-09`). A string with a control character (tab and line
+breaks included, DEL, C1, U+FFFE/U+FFFF) or a lone surrogate is always double-quoted with JSON
+escapes, by `emitScalar` as by `setField`, so a written block always parses. A block that is not a valid YAML mapping, or a first
 `---` line that never closes, is refused — never rewritten.
 
 Exceptions on the edited key itself (Pomade's editor has the same ones): a quoted value is

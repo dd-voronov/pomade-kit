@@ -1,9 +1,10 @@
 // The fake host as the parent window of an app frame — what an app's browser e2e runs against
 // instead of Pomade.
 
-import type { FakeHost } from "./fake-host.js";
+import type { FakeHost, FrameOptions } from "./fake-host.js";
 
-export interface MountOptions {
+/** `surface` / `icon`: what the frame is opened for (default: a tab from the new-tab menu). */
+export interface MountOptions extends FrameOptions {
   /** The app page to load. */
   src: string;
   /** Where the frame goes. Default `document.body`. */
@@ -25,7 +26,7 @@ export function mountApp(host: FakeHost, options: MountOptions): MountedApp {
   const win = parent.ownerDocument.defaultView;
   if (!win) throw new Error("fake host: the parent element has no window");
   const iframe = parent.ownerDocument.createElement("iframe");
-  const frame = host.attach((message) => iframe.contentWindow?.postMessage(message, "*"));
+  const frame = host.attach((message) => iframe.contentWindow?.postMessage(message, "*"), options);
   const onMessage = (event: MessageEvent): void => {
     if (event.source !== null && event.source === iframe.contentWindow) frame.receive(event.data);
   };

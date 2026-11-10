@@ -6,8 +6,8 @@ import { mockTransport, PROJECT, WELCOME } from "./test-helpers.js";
 function setup() {
   const mock = mockTransport();
   const onClose = vi.fn();
-  const { hostApi, pomadeVersion, appId, surface, project } = WELCOME;
-  const host = createClient(mock.transport, { hostApi, pomadeVersion, appId, surface, project }, onClose);
+  const { hostApi, pomadeVersion, appId, surface, route, project } = WELCOME;
+  const host = createClient(mock.transport, { hostApi, pomadeVersion, appId, surface, route, project }, onClose);
   const calls = () => mock.sent.filter((m): m is CallMessage => m.type === "call");
   const lastCall = () => {
     const c = calls().at(-1);
@@ -27,8 +27,8 @@ describe("client calls", () => {
     const t = setup();
     const info = t.host.info();
     expect(t.lastCall()).toEqual({ channel: "pomade", type: "call", id: "1", method: "host.info", params: {} });
-    t.ok("1", { pomadeVersion: "0.3.0", hostApi: 0, appId: "hello", surface: "tab" });
-    expect(await info).toEqual({ pomadeVersion: "0.3.0", hostApi: 0, appId: "hello", surface: "tab" });
+    t.ok("1", { pomadeVersion: "0.3.0", hostApi: 0, appId: "hello", surface: "panel", icon: "board", route: "needs-you" });
+    expect(await info).toEqual({ pomadeVersion: "0.3.0", hostApi: 0, appId: "hello", surface: "panel", icon: "board", route: "needs-you" });
 
     const active = t.host.project.getActive();
     expect(t.lastCall()).toMatchObject({ id: "2", method: "project.getActive", params: {} });
@@ -78,6 +78,29 @@ describe("client calls", () => {
     t.ok("1", PROJECT);
     t.ok("1", "duplicate");
     expect(await p).toEqual(PROJECT);
+  });
+});
+
+describe("strip.setBadge", () => {
+  it("sends the params as given and resolves with nothing", async () => {
+    const t = setup();
+    const done = t.host.strip.setBadge({ icon: "board", count: 3, urgent: true });
+    expect(t.lastCall()).toEqual({
+      channel: "pomade",
+      type: "call",
+      id: "1",
+      method: "strip.setBadge",
+      params: { icon: "board", count: 3, urgent: true },
+    });
+    t.ok("1", {});
+    expect(await done).toBeUndefined();
+  });
+
+  it("a refused badge rejects with HostError", async () => {
+    const t = setup();
+    const done = t.host.strip.setBadge({ icon: "nope", count: 1 });
+    t.fail("1", "invalid-params", 'No strip icon "nope" in the manifest');
+    await expect(done).rejects.toMatchObject({ name: "HostError", code: "invalid-params" });
   });
 });
 

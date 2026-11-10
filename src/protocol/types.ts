@@ -10,7 +10,37 @@ export type Channel = typeof CHANNEL;
 /** How long an app waits for `welcome` before it treats itself as standalone (HOST-API §3). */
 export const HANDSHAKE_TIMEOUT_MS = 1500;
 
-export type Surface = "tab";
+/** Where a frame lives: a main-area tab or the side panel. */
+export type Surface = "tab" | "panel";
+
+/** What a frame was opened for — carried by `welcome` and `host.info` (HOST-API §3). */
+export interface FrameTarget {
+  surface: Surface;
+  /** The strip icon id the frame was opened for; absent for a tab opened from the new-tab menu. */
+  icon?: string;
+  /** The route the app renders on this surface; "" = the app's default view. */
+  route: string;
+}
+
+/** What clicking a strip icon does: fill the side panel, open (or focus) a tab, or both. */
+export type StripAction = "panel" | "tab" | "both";
+
+export const STRIP_ACTIONS: readonly StripAction[] = ["panel", "tab", "both"];
+
+/** One icon an app contributes to Pomade's left strip (manifest `strip[]`, HOST-API §1). */
+export interface StripIcon {
+  /** `STRIP_ICON_ID_RE`, unique within the app. */
+  id: string;
+  /** Tooltip, panel header, and the title of the tab it opens. Trimmed. */
+  title: string;
+  /** Path inside the build folder; falls back to the app's icon. */
+  icon?: string;
+  action: StripAction;
+  /** The route of the surface(s) the icon opens; "" = the app's default view. */
+  route: string;
+  /** `both` only: the panel's route when it differs from the tab's (`route`). */
+  panelRoute?: string;
+}
 
 /** `ProjectRef.id` of the Workspace scope (Pomade's pseudo-project). */
 export const WORKSPACE_PROJECT_ID = "__workspace__";
@@ -68,11 +98,11 @@ export type Capability = (typeof CAPABILITIES)[number];
 
 // ── Methods ─────────────────────────────────────────────────────────────────
 
-export interface HostInfo {
+/** `host.info` — the `welcome` values. */
+export interface HostInfo extends FrameTarget {
   pomadeVersion: string;
   hostApi: number;
   appId: string;
-  surface: Surface;
 }
 
 export interface ReadFolderParams {
@@ -98,6 +128,14 @@ export interface UnwatchParams {
   watchId: string;
 }
 
+/** `strip.setBadge` — one of the app's own strip icons; `count` 0 clears the badge, `urgent` paints it red. */
+export interface SetBadgeParams {
+  icon: string;
+  /** An integer ≥ 0. */
+  count: number;
+  urgent?: boolean;
+}
+
 /** Method name → params and result. Methods without params take `{}`. */
 export interface HostMethods {
   "host.info": { params: Record<string, never>; result: HostInfo };
@@ -105,6 +143,7 @@ export interface HostMethods {
   "files.readFolder": { params: ReadFolderParams; result: ReadFolderResult };
   "files.watch": { params: WatchParams; result: WatchResult };
   "files.unwatch": { params: UnwatchParams; result: Record<string, never> };
+  "strip.setBadge": { params: SetBadgeParams; result: Record<string, never> };
 }
 export type MethodName = keyof HostMethods;
 export type MethodParams<M extends MethodName> = HostMethods[M]["params"];
@@ -117,6 +156,7 @@ export const METHOD_CAPABILITY: Readonly<Record<MethodName, Capability | null>> 
   "files.readFolder": "files.read",
   "files.watch": "files.read",
   "files.unwatch": "files.read",
+  "strip.setBadge": null,
 };
 
 export const METHOD_NAMES = Object.keys(METHOD_CAPABILITY) as MethodName[];
@@ -143,13 +183,12 @@ export interface HelloMessage {
   hostApi: number;
 }
 
-export interface WelcomeMessage {
+export interface WelcomeMessage extends FrameTarget {
   channel: Channel;
   type: "welcome";
   hostApi: number;
   pomadeVersion: string;
   appId: string;
-  surface: Surface;
   project: ProjectRef;
 }
 

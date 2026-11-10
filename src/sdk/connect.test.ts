@@ -43,9 +43,26 @@ describe("connect — handshake", () => {
     const r = await h.promise;
     expect(r.status).toBe("connected");
     if (r.status !== "connected") return;
-    expect(r.host.welcome).toEqual({ hostApi: 0, pomadeVersion: "0.3.0", appId: "hello", surface: "tab", project: PROJECT });
+    expect(r.host.welcome).toEqual({ hostApi: 0, pomadeVersion: "0.3.0", appId: "hello", surface: "tab", route: "", project: PROJECT });
     // The handshake listener is gone; the client's own listener remains.
     expect(mock.listenerCount()).toBe(1);
+  });
+
+  it("a panel welcome exposes its surface, strip icon and route", async () => {
+    const mock = mockTransport();
+    const h = start(mock);
+    mock.deliver({ ...WELCOME, surface: "panel", icon: "board", route: "needs-you" });
+    const r = await h.promise;
+    if (r.status !== "connected") throw new Error(r.status);
+    expect(r.host.welcome).toEqual({
+      hostApi: 0,
+      pomadeVersion: "0.3.0",
+      appId: "hello",
+      surface: "panel",
+      icon: "board",
+      route: "needs-you",
+      project: PROJECT,
+    });
   });
 
   it.each(["needs-newer-pomade", "app-too-old"] as const)("reject %s → rejected result, nothing left listening", async (reason) => {

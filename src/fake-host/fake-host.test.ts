@@ -69,6 +69,7 @@ describe("handshake", () => {
         pomadeVersion: "0.3.0",
         appId: "pomade-planner",
         surface: "tab",
+        route: "",
         project: { id: "pomade", kind: "project", name: "Pomade", root: "Projects/Pomade" },
       },
     ]);
@@ -239,7 +240,7 @@ describe("calls — errors", () => {
 describe("host.info and project.getActive", () => {
   it("host.info", async () => {
     const host = await client(fake({ pomadeVersion: "0.3.0" }));
-    expect(await host.info()).toEqual({ pomadeVersion: "0.3.0", hostApi: 0, appId: "fake-app", surface: "tab" });
+    expect(await host.info()).toEqual({ pomadeVersion: "0.3.0", hostApi: 0, appId: "fake-app", surface: "tab", route: "" });
   });
 
   it("the Workspace scope when no project is active", async () => {
@@ -251,6 +252,147 @@ describe("host.info and project.getActive", () => {
   it("the active project, with its root normalized", async () => {
     const host = await client(fake({ activeProject: "kit" }));
     expect(await host.project.getActive()).toEqual({ id: "kit", kind: "project", name: "pomade-kit", root: "Projects/pomade-kit" });
+  });
+});
+
+const STRIP_MANIFEST = {
+  id: "pomade-planner",
+  name: "Planner",
+  version: "0.1.0",
+  hostApi: 0,
+  capabilities: [],
+  strip: [
+    { id: "planner", title: "Planner", action: "panel" },
+    { id: "board", title: "Board", action: "both", route: "board", panelRoute: "needs-you" },
+    { id: "log", title: "Log", action: "tab", route: "log" },
+  ],
+};
+
+describe("surfaces, strip icons and routes", () => {
+  async function opened(open?: Parameters<FakeHost["createTransport"]>[0]) {
+    const host = fake({ manifest: STRIP_MANIFEST });
+    const r = await connect({ transport: host.createTransport(open), keySource: null });
+    if (r.status !== "connected") throw new Error(r.status);
+    const { surface, icon, route } = r.host.welcome;
+    return { welcome: { surface, icon, route }, info: await r.host.info() };
+  }
+
+  it.each<[string, Parameters<FakeHost["createTransport"]>[0], object]>([
+    ["default: a tab from the new-tab menu", undefined, { surface: "tab", icon: undefined, route: "" }],
+    ["a tab for an icon takes its route", { icon: "board" }, { surface: "tab", icon: "board", route: "board" }],
+    ["a panel takes panelRoute", { surface: "panel", icon: "board" }, { surface: "panel", icon: "board", route: "needs-you" }],
+    ["a panel falls back to route", { surface: "panel", icon: "log" }, { surface: "panel", icon: "log", route: "log" }],
+    ["a default route is \"\"", { surface: "panel", icon: "planner" }, { surface: "panel", icon: "planner", route: "" }],
+    ["an unknown icon opens the default view", { surface: "panel", icon: "ghost" }, { surface: "panel", icon: undefined, route: "" }],
+    ["a panel without an icon", { surface: "panel" }, { surface: "panel", icon: undefined, route: "" }],
+  ])("%s — in welcome and host.info", async (_label, open, expected) => {
+    const { welcome, info } = await opened(open);
+    expect(welcome).toEqual(expected);
+    expect({ surface: info.surface, icon: info.icon, route: info.route }).toEqual(expected);
+    expect("icon" in info).toBe((expected as { icon?: string }).icon !== undefined);
+  });
+
+  it("raw frames: attach takes the same options; a reload keeps the target", () => {
+    const host = fake({ manifest: STRIP_MANIFEST });
+    const got: HostToAppMessage[] = [];
+    const frame = host.attach((m) => got.push(m), { surface: "panel", icon: "board" });
+    frame.receive({ channel: "pomade", type: "hello", hostApi: 0 });
+    frame.receive({ channel: "pomade", type: "hello", hostApi: 0 });
+    expect(got.map((m) => (m.type === "welcome" ? [m.surface, m.icon, m.route] : null))).toEqual([
+      ["panel", "board", "needs-you"],
+      ["panel", "board", "needs-you"],
+    ]);
+  });
+
+  it("a manifest without strip: every icon opens the default view", async () => {
+    const host = fake();
+    const r = await connect({ transport: host.createTransport({ surface: "panel", icon: "board" }), keySource: null });
+    if (r.status !== "connected") throw new Error(r.status);
+    expect(r.host.welcome).toMatchObject({ surface: "panel", route: "" });
+    expect(r.host.welcome).not.toHaveProperty("icon");
+  });
+});
+
+describe("strip.setBadge", () => {
+  function welcomed(manifest: unknown = STRIP_MANIFEST) {
+    const host = fake({ manifest });
+    const f = raw(host);
+    f.hello();
+    return { host, ...f };
+  }
+
+  it("needs no capability; sets, replaces and clears badges by icon", async () => {
+    const host = fake({ manifest: STRIP_MANIFEST });
+    const app = await client(host);
+    expect(host.badges).toEqual({});
+    await app.strip.setBadge({ icon: "board", count: 3 });
+    await app.strip.setBadge({ icon: "planner", count: 1, urgent: true });
+    expect(host.badges).toEqual({ board: { count: 3, urgent: false }, planner: { count: 1, urgent: true } });
+    await app.strip.setBadge({ icon: "board", count: 5, urgent: true });
+    await app.strip.setBadge({ icon: "planner", count: 2, urgent: false });
+    expect(host.badges).toEqual({ board: { count: 5, urgent: true }, planner: { count: 2, urgent: false } });
+    await app.strip.setBadge({ icon: "board", count: 0 });
+    await app.strip.setBadge({ icon: "log", count: 0 });
+    expect(host.badges).toEqual({ planner: { count: 2, urgent: false } });
+  });
+
+  it("any frame of the app badges any of its icons", async () => {
+    const host = fake({ manifest: STRIP_MANIFEST });
+    const panel = await connect({ transport: host.createTransport({ surface: "panel", icon: "planner" }), keySource: null });
+    if (panel.status !== "connected") throw new Error(panel.status);
+    await panel.host.strip.setBadge({ icon: "log", count: 7 });
+    expect(host.badges).toEqual({ log: { count: 7, urgent: false } });
+  });
+
+  it("badges is a snapshot", async () => {
+    const host = fake({ manifest: STRIP_MANIFEST });
+    await (await client(host)).strip.setBadge({ icon: "board", count: 1 });
+    const snapshot = host.badges;
+    (snapshot.board as { count: number }).count = 99;
+    expect(host.badges).toEqual({ board: { count: 1, urgent: false } });
+  });
+
+  it.each<[string, unknown]>([
+    ["no params", undefined],
+    ["params not an object", 5],
+    ["icon missing", { count: 1 }],
+    ["icon not a string", { icon: 1, count: 1 }],
+    ["icon not declared", { icon: "ghost", count: 1 }],
+    ["icon of another shape", { icon: "Board", count: 1 }],
+    ["count missing", { icon: "board" }],
+    ["count a string", { icon: "board", count: "1" }],
+    ["count negative", { icon: "board", count: -1 }],
+    ["count fractional", { icon: "board", count: 1.5 }],
+    ["count NaN", { icon: "board", count: Number.NaN }],
+    ["count infinite", { icon: "board", count: Number.POSITIVE_INFINITY }],
+    ["urgent not a boolean", { icon: "board", count: 1, urgent: "yes" }],
+    ["urgent null", { icon: "board", count: 1, urgent: null }],
+  ])("invalid-params: %s", (_label, params) => {
+    const f = welcomed();
+    expect(f.errorOf("strip.setBadge", params)).toBe("invalid-params");
+    expect(f.host.badges).toEqual({});
+  });
+
+  it("an app without strip icons has nothing to badge", () => {
+    const f = welcomed({ id: "a1", name: "A", version: "1.0.0", hostApi: 0, capabilities: [] });
+    const r = f.call("strip.setBadge", { icon: "board", count: 1 });
+    expect(!r.ok && r.error).toEqual({ code: "invalid-params", message: 'No strip icon "board" in the manifest' });
+  });
+
+  it("names the rule in the message", () => {
+    const f = welcomed();
+    const message = (params: unknown) => {
+      const r = f.call("strip.setBadge", params);
+      return r.ok ? null : r.error.message;
+    };
+    expect(message({ count: 1 })).toBe('"icon" must be a strip icon id');
+    expect(message({ icon: "board", count: -1 })).toBe('"count" must be a non-negative integer');
+    expect(message({ icon: "board", count: 1, urgent: 1 })).toBe('"urgent" must be a boolean');
+  });
+
+  it("is not-ready before welcome", () => {
+    const f = raw(fake({ manifest: STRIP_MANIFEST }));
+    expect(f.errorOf("strip.setBadge", { icon: "board", count: 1 })).toBe("not-ready");
   });
 });
 
@@ -529,7 +671,7 @@ describe("setActiveProject", () => {
 
 describe("construction and control errors", () => {
   it("rejects an invalid manifest and an unknown active project", () => {
-    expect(() => createFakeHost({ manifest: { id: "X" } })).toThrow(/invalid manifest.*"id"/);
+    expect(() => createFakeHost({ manifest: { id: "X" } })).toThrow(/invalid manifest.*"id".*; "name"/);
     expect(() => createFakeHost({ activeProject: "nope" })).toThrow(/no project/);
   });
 
