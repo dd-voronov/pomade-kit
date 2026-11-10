@@ -36,6 +36,7 @@ export type {
   MoveParams,
   OpenFileParams,
   OpenTerminalParams,
+  OpenAttachedParams,
   GroupInfo,
   ProjectInfo,
   ProjectListResult,

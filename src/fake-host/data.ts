@@ -3,6 +3,7 @@
 
 import { removeField, setBody, setField, type FieldWriteResult } from "../frontmatter/index.js";
 import {
+  checkSessionRef,
   isInside,
   jsonProblem,
   mergeProjectSettings,
@@ -17,15 +18,17 @@ import {
   type ProjectInfo,
   type ProjectListResult,
   type ProjectRef,
+  type SessionRef,
   type JsonValue,
 } from "../protocol/index.js";
 import { CallError, entryParam, pathParam, requireAllowedTarget, stringParam, type Obj } from "./params.js";
 import type { Workspace } from "./workspace.js";
 
-/** A tab an app opened (`tabs.openFile` / `tabs.openTerminal` / `tabs.openApp`), as the fake host records it. */
+/** A tab an app opened (`tabs.openFile` / `tabs.openTerminal` / `tabs.openAttached` / `tabs.openApp`), as the fake host records it. */
 export type FakeOpenedTab =
   | { kind: "file"; projectId: string; path: string }
   | { kind: "terminal"; projectId: string; cwd: string; command?: string; title?: string }
+  | { kind: "attached"; projectId: string; session: SessionRef; title?: string }
   | { kind: "app"; projectId: string; route: string };
 
 /** A sidebar group of the fake host (`FakeHostOptions.groups`). */
@@ -164,7 +167,7 @@ function ancestorIsFile(ws: Workspace, path: string): boolean {
 }
 
 /** The tab methods of pomade:E-030. */
-export type TabDataMethod = Extract<MethodName, "tabs.openFile" | "tabs.openTerminal" | "tabs.openApp">;
+export type TabDataMethod = Extract<MethodName, "tabs.openFile" | "tabs.openTerminal" | "tabs.openAttached" | "tabs.openApp">;
 
 export function dispatchTabs(ctx: DataContext, method: TabDataMethod, p: Obj): unknown {
   const ws = ctx.workspace;
@@ -175,6 +178,21 @@ export function dispatchTabs(ctx: DataContext, method: TabDataMethod, p: Obj): u
       const project = ctx.project(optionalString(p, "projectId"));
       ctx.activate(project.id);
       ctx.openedTabs.push({ kind: "file", projectId: project.id, path });
+      return {};
+    }
+    case "tabs.openAttached": {
+      const ref = checkSessionRef(p.session);
+      if (!ref.ok) throw new CallError("invalid-params", ref.message);
+      const title = optionalString(p, "title");
+      if (title !== undefined && title.trim() === "") throw new CallError("invalid-params", '"title" must not be empty');
+      const project = ctx.project(optionalString(p, "projectId"));
+      ctx.activate(project.id);
+      ctx.openedTabs.push({
+        kind: "attached",
+        projectId: project.id,
+        session: ref.value,
+        ...(title !== undefined ? { title: title.trim() } : {}),
+      });
       return {};
     }
     case "tabs.openTerminal": {

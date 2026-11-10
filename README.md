@@ -24,7 +24,8 @@ The package installs from a git tag: npm clones it, installs its dev dependencie
 | `pomade-kit/schedule` | the schedule format: `parseSchedule` with readable errors, the occurrence engine, `describeSchedule`, `formatSchedule` | browser and Node |
 | `pomade-kit/dates` | date phrases: `parseDatePhrase` (`fri`, `tomorrow`, `+3d`, `nov 20`, `tonight 23:00`, `in 2 hours`) and `currentDay` with a day boundary | browser and Node |
 | `pomade-kit/scanners` | terminal output readers: `MarkerScanner` (Pomade's shell markers), `AttentionScanner` (bell, notifications), `AgentStateScanner` (claude/codex working, idle, waiting at a permission or trust prompt) | browser and Node |
-| `pomade-kit/node` | the Host API over Pomade's socket for backends and commands (`connectSocket`, `stayConnected`, `launchPomade`), `resolveWorkspace()`; `postNotice()` — a notice from a backend or command, with Pomade open or closed | Node |
+| `pomade-kit/node` | the Host API over Pomade's socket for backends and commands (`connectSocket`, `stayConnected`, `launchPomade`), `resolveWorkspace()`; `postNotice()` — a notice from a backend or command, with Pomade open or closed; the attach protocol's client (`connectKeeper`, `followSession`, `startKeeper`) | Node |
+| `pomade-kit/keeper` | the keeper: holds an app's terminal sessions so they outlive Pomade, and serves the attach protocol (`runKeeper`). Needs `node-pty` (a peer dependency) | Node |
 
 ## Connect to Pomade
 
@@ -210,6 +211,16 @@ await host.tabs.openTerminal({ cwd: "", projectId: "__workspace__" });          
 names the tab (default: the command). A missing path or folder is `not-found`, a folder passed as a
 file (or the reverse) `io-error`, an unknown project `not-found`.
 
+```ts
+await host.tabs.openAttached({ session: { app: "pomade-runner", session: "svc:coda-web" } });   // any app's session
+await host.tabs.openAttached({ session: { app: "hello", session: "ticker" }, title: "Ticker", projectId: "p1" });
+```
+
+`openAttached` opens (or focuses) a terminal tab attached to a session an app's keeper holds
+("Attached terminals" below), by reference — the owning app is not asked. `title` replaces the
+session's own; the tab shows the owner's name after it ("Coda web · Runner"). A malformed reference
+is `invalid-params`.
+
 ## Git state
 
 Capability `git.read`. Pomade serves its own git snapshot — the one its file tree and sidebar
@@ -269,6 +280,7 @@ host.events.onSubscribersChange((name, subscribed) => { /* first subscriber came
 | `project.opened` | `ProjectRef` | a project (or the Workspace scope) became active for the first time since Pomade started |
 | `project.changed` | `ProjectRef` | the active project changed; every frame gets it without subscribing |
 | `agentTab.exited` | `{ tabId, projectId, agentId, sessionId \| null, reason }` | an agent process in a tab ended — `reason` `exit` · `crash` · `tab-closed` · `quit` |
+| `attachedTab.action` | `{ session: { app, session }, action, projectId }` | a person clicked a header action the app contributed on an attached tab; delivered **only to the app that owns the session** (`EventBus.publishTo`) |
 
 **App events** travel as `<appId>:<event>` (`pomade-runner:run.finished`); an event name is
 dot-separated lowerCamel words (`EVENT_NAME_RE`, at most 64 characters). A published event reaches
@@ -819,13 +831,126 @@ if (up.status === "connected") up.host;      // up.launched: this call started i
   on macOS), the environment names (`POMADE_ENV`) and the home layout (`HOME_FILES`) are in
   `pomade-kit/protocol`, shared with Pomade.
 
+## Attached terminals — the keeper and the attach protocol
+
+An app that runs things in terminals while Pomade is closed (Runner's services and jobs) keeps
+them in a **keeper**: a small Node process that holds the sessions' PTYs and serves the **attach
+protocol** on a unix socket (`pomade:E-034`). Pomade's attached tabs, and the owning app itself,
+are clients. The app's always-on backend starts the keeper as its own detached process, so the
+backend can restart, update or crash while the sessions run on; the keeper runs on Pomade's runtime
+(Electron as Node) like the backend.
+
+```js
+// backend/keeper.mjs — the keeper's entry: app id, socket and owner key come from the backend's
+// environment (POMADE_APP_ID, POMADE_KEEPER_SOCKET, POMADE_APP_KEY_FILE).
+import { runKeeper } from "pomade-kit/keeper";
+await runKeeper({ version: "1" });
+```
+
+```ts
+// backend/main.mjs — keep the keeper up and drive it as its owner.
+import { startKeeper, connectKeeper, followSession } from "pomade-kit/node";
+
+await startKeeper({ entry: new URL("./keeper.mjs", import.meta.url).pathname });  // no-op when it runs
+const r = await connectKeeper({ socketPath: process.env.POMADE_KEEPER_SOCKET, app: "pomade-runner", role: "owner", key });
+if (r.status === "connected") {
+  const k = r.keeper;
+  await k.spawn({
+    id: "svc:coda-web", title: "Coda web",
+    command: "npm run dev",                    // run by the user's login shell (`$SHELL -l -c`); or argv: [...]
+    cwd: "/Users/me/Projects/coda",
+    log: "/…/app-state/pomade-runner/output/run-17.log",   // optional: every output byte, appended
+    background: false,                         // true: macOS background priority (taskpolicy -b)
+    actions: [{ id: "restart", title: "Restart" }],        // header actions on attached tabs
+  });
+  await k.list();                              // SessionInfo[]: id, title, command, cwd, pid, state, exit, clients, actions
+  await k.stop("svc:coda-web", { reason: "time-limit", graceMs: 3000 });   // SIGTERM, then SIGKILL
+  await k.update("svc:coda-web", { title: "Coda web (dev)" });
+  await k.forget("svc:coda-web");              // drop an ended session
+}
+
+// Any client: follow one session across keeper updates and restarts.
+const f = followSession({ socketPath, app: "pomade-agents", session: "svc:coda-web", cols: 120, rows: 30 }, {
+  onSnapshot(data, info) { /* draw into an emptied terminal of info.cols × info.rows */ },
+  onDelta(data) { /* output missed during a reconnect: write on top */ },
+  onOutput(data) { /* live output */ },
+  onExit(exit) { /* exit.reason */ },
+  onState(state) { /* connecting · attached · unreachable · gone · rejected */ },
+});
+f.input("q"); f.paste("text"); f.resize(100, 30); await f.stop(); f.close();   // close = detach; the session runs on
+```
+
+**Where.** One keeper per app, at a fixed socket: `keeperSocketPath(userData, appId)` =
+`<userData>/run/keepers/<appId>.sock` (folder 0700). Pomade gives an app's backend the path as
+`POMADE_KEEPER_SOCKET` (`POMADE_ENV.keeperSocket`, in the login item too) and connects there itself,
+so attaching never calls the owner (`PLATFORM` rule 4): a **session reference** is
+`{ app, session }` (`SessionRef`, `checkSessionRef`). macOS caps a socket path at 103 bytes;
+`keeperSocketProblem()` says why a path is too long, and `runKeeper` / `startKeeper` refuse one with
+that message. The keeper's own records live in `stateDir` (default
+`<userData>/app-state/<appId>/keeper`): one record per session, exit statuses, its log.
+
+**The protocol** (`pomade-kit/protocol`, `ATTACH_PROTOCOL` = 1): one JSON object per line over the
+socket — the Host API socket's framing (`encodeLine`, `createLineDecoder`). Requests that carry a
+`rid` are answered `result` or `error`.
+
+| Client → keeper | Answer |
+|---|---|
+| `hello { protocol, client: { app, role: "owner" \| "viewer", key? } }` | `welcome { protocol, app, keeper: { version, pid } }` or `reject { code: "unauthorized" \| "version-mismatch" }` — the owner must be the keeper's app with its key |
+| `list` | `SessionInfo[]` |
+| `spawn { spec }` *(owner)* | `SessionInfo`; an id held by an ended session is reused (its clients stay attached and get the new session's screen); a running id is `session-running` |
+| `attach { session, cols?, rows?, since?, scrollback? }` | a `snapshot` (or a `delta` when `since: { startedAt, seq }` is still in the keeper's ring), then the session's events |
+| `input { session, data }` · `paste { session, text }` · `resize { session, cols, rows }` · `detach { session }` | — (paste is bracketed when the program asked for it) |
+| `stop { session, reason?, graceMs? }` | a viewer's stop ends as `stopped-by-you`; the owner names `stopped` (default), `stopped-by-you` or `time-limit` |
+| `update { session, title?, actions? }` · `forget { session }` · `upgrade { entry, args? }` *(owner)* | |
+
+| Keeper → client | |
+|---|---|
+| `snapshot { session, info, data, seq, resync }` | the screen serialized: drawn into an empty terminal it reproduces scrollback (up to 1000 lines), the screen (normal or alternate), colours, cursor, modes, scroll region, mouse encoding and cursor visibility — never a replay of recorded bytes, so it asks the terminal nothing |
+| `delta { session, info, data, seq }` · `output { session, data, seq }` | `seq` counts output characters since the session started; a client keeps the last one to resume |
+| `resized { session, cols, rows }` · `exit { session, exit }` · `info { session, info }` | another client resized it (last active client wins) · it ended · the owner changed its title or actions |
+| `keeper-restarting { reconnectAfterMs }` | an update: reconnect and attach again with `since` |
+
+**Exit reasons** (`SessionExit.reason`): `exited` (status 0) · `crashed` (any other status, or a
+signal) · `stopped` (the owner) · `stopped-by-you` (an interrupt typed through a client within 5 s
+of the exit, or a viewer's Stop) · `time-limit` · `lost-in-keeper-crash`.
+
+**Rules a client follows.** The keeper's headless terminal is the terminal of record and answers
+the program's terminal queries (cursor position, device attributes, colours); a client never sends
+its own terminal's answers — only what the user did (keys, mouse, focus reports), and pastes as
+`paste`. Header actions a session carries are the owner's: a host calls back into the owner through
+its own channel (Pomade publishes `attachedTab.action` to the owner), never over the keeper socket.
+
+**Inside the keeper.**
+- Every session runs under a small shell shim that writes its exit status to the state folder, so a
+  keeper that is not the session's parent (after an update) still learns how it ended. Sessions get
+  a terminal's environment (`TERM=xterm-256color`, `TERM_PROGRAM=Apple_Terminal`, `LANG` when unset —
+  as in Pomade's own terminals) without the keeper's runtime switch and the app's identity
+  (`sessionEnv`); a `command` runs in the user's login shell, which brings the user's `PATH`.
+- A headless xterm per session parses every byte — the same xterm line (5.5) and Unicode 11 width
+  tables as Pomade's renderer, so both agree on every cell.
+- **Update** (`upgrade`): the keeper stops reading the PTYs (and drains what it already read — a
+  paused stream would lose it), writes the sessions' state to a hand-off file and starts the new
+  entry with the PTY masters as inherited fds; the new keeper adopts them and binds the socket.
+  Clients see a gap of tens of milliseconds and resume. When the new keeper does not answer within
+  15 s, the old one kills it and serves again.
+- **Flow control:** a client whose unsent bytes pass the high-water mark (default 4 MiB) has its
+  output dropped and gets a fresh snapshot (`resync: true`) once it catches up — the keeper's memory
+  stays bounded.
+- **Crash:** the kernel hangs up a dead keeper's PTYs, so its sessions end with it; the next keeper
+  reads their records and reports them `lost-in-keeper-crash`.
+- **One per socket:** a keeper refuses a socket another keeper serves; a stale socket file is replaced.
+- `node-pty` is a peer dependency of `pomade-kit/keeper` only. Its prebuilt `spawn-helper` sometimes
+  loses its executable bit on install; the keeper restores it before the first spawn.
+
 ## Example
 
 `examples/hello/` — the smallest app: tells once (and in its About view) where its shipped skill is, lists the active project's `docs/roadmap/` frontmatter rows,
 shows the project's git repos, and follows project, file and git events. On the bus it shows the
 last platform event it heard (Pomade ready, a project renamed) and publishes `greeted` from a
 button that is enabled only while another app listens; "Notify me" posts a notice whose click opens
-its roadmap tab. `npm run hello:build` writes the installable folder
+its roadmap tab. Its always-on backend (`public/backend/`) keeps the app's keeper running with a
+demo ticker in it; "Open the ticker" opens that session in an attached tab, and the tab's Restart
+action reaches the backend as `attachedTab.action`. `npm run hello:build` writes the installable folder
 `examples/hello/dist/` (`index.html`, `manifest.json`, assets).
 
 ## Develop this repo

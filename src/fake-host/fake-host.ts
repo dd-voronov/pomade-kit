@@ -197,7 +197,7 @@ export class FakeHost {
   readonly hostApi: number;
   /** Every `key` message received, in order. */
   readonly keys: KeyMessage[] = [];
-  /** Every tab the app opened (`tabs.openFile` / `tabs.openTerminal`), in order. */
+  /** Every tab the app opened (`tabs.openFile` / `tabs.openTerminal` / `tabs.openAttached` / `tabs.openApp`), in order. */
   readonly openedTabs: FakeOpenedTab[] = [];
   /** Every folder picker the app opened (`files.pickFolder`), in order. */
   readonly pickRequests: FakePickRequest[] = [];
@@ -723,6 +723,7 @@ export class FakeHost {
         return dispatchFileWrite(this.data, method, params);
       case "tabs.openFile":
       case "tabs.openTerminal":
+      case "tabs.openAttached":
       case "tabs.openApp":
         return dispatchTabs(this.data, method, params);
       case "project.list":

@@ -13,3 +13,18 @@ export {
   type StayConnectedOptions,
 } from "./socket.js";
 export { launchPomade, type LaunchOptions, type LaunchResult } from "./launch.js";
+export {
+  KeeperError,
+  connectKeeper,
+  followSession,
+  startKeeper,
+  type FollowHandlers,
+  type FollowOptions,
+  type FollowState,
+  type Follower,
+  type KeeperClient,
+  type KeeperConnectOptions,
+  type KeeperConnectResult,
+  type StartKeeperOptions,
+  type StartKeeperResult,
+} from "./keeper.js";

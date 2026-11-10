@@ -9,7 +9,9 @@
 // into the app state; it shows the project's git repos live. On the event bus it shows the last
 // platform event it heard (Pomade ready, a project renamed); its Greet button publishes a
 // `greeted` event and is enabled only while another app listens. "Notify me" posts a Pomade notice
-// whose click opens the roadmap in the app's own tab. Built only on pomade-kit's SDK.
+// whose click opens the roadmap in the app's own tab. Its always-on backend keeps a ticking demo
+// service in a keeper (`public/backend/`); "Open the ticker" opens it in an attached terminal tab,
+// whose Restart header action the backend serves. Built only on pomade-kit's SDK.
 
 import { joinPath } from "pomade-kit/protocol";
 import {
@@ -159,6 +161,8 @@ function startApp(host: HostClient): void {
   void countLaunches(host);
   void showSkills(host);
   void useEvents(host);
+  // The ticker is a session the backend's keeper runs, with or without Pomade: open it attached.
+  el("open-ticker").addEventListener("click", () => void host.tabs.openAttached({ session: { app: host.welcome.appId, session: "ticker" } }));
   el("notify").addEventListener(
     "click",
     () =>

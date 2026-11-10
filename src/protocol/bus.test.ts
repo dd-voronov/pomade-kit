@@ -20,6 +20,20 @@ describe("EventBus", () => {
     expect(b.got).toEqual([]);
   });
 
+  it("publishTo reaches one app's subscribed connections only", () => {
+    const bus = new EventBus();
+    const runner = conn("pomade-runner");
+    const runnerPanel = conn("pomade-runner");
+    const agents = conn("pomade-agents");
+    bus.open(runner).subscribe("attachedTab.action");
+    bus.open(runnerPanel);
+    bus.open(agents).subscribe("attachedTab.action");
+    bus.publishTo("pomade-runner", "attachedTab.action", { action: "restart" });
+    expect(runner.got).toEqual([["attachedTab.action", { action: "restart" }]]);
+    expect(runnerPanel.got).toEqual([]);
+    expect(agents.got).toEqual([]);
+  });
+
   it("starts a connection with initial subscriptions", () => {
     const bus = new EventBus();
     const a = conn("planner");

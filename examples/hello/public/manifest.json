@@ -44,7 +44,12 @@
     ],
     "subscribe": [
       "pomade.ready",
-      "project.renamed"
+      "project.renamed",
+      "attachedTab.action"
     ]
+  },
+  "backend": {
+    "entry": "backend/main.mjs",
+    "mode": "always-on"
   }
 }

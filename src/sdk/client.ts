@@ -28,6 +28,7 @@ import {
   type WriteFileParams,
   type OpenFileParams,
   type OpenTerminalParams,
+  type OpenAttachedParams,
   type ProjectListResult,
   type ProjectAgentsResult,
   type ProjectIdParams,
@@ -153,6 +154,8 @@ export interface HostClient {
     openFile(params: OpenFileParams): Promise<void>;
     /** Open a terminal tab in a folder, right of the active tab, optionally running a command. */
     openTerminal(params: OpenTerminalParams): Promise<void>;
+    /** Open (or focus) a terminal tab attached to a session an app's keeper holds (`tabs.open`). */
+    openAttached(params: OpenAttachedParams): Promise<void>;
     /** Open or focus this app's own tab at `route` (default ""), in `projectId` (default the active project). */
     openApp(params?: OpenAppParams): Promise<void>;
   };
@@ -295,6 +298,7 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
         case "project.renamed":
         case "project.opened":
         case "agentTab.exited":
+        case "attachedTab.action":
           break;
         default:
           break;
@@ -409,6 +413,9 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
     tabs: {
       async openFile(params) {
         await call("tabs.openFile", params);
+      },
+      async openAttached(params) {
+        await call("tabs.openAttached", params);
       },
       async openTerminal(params) {
         await call("tabs.openTerminal", params);

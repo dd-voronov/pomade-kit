@@ -11,6 +11,7 @@ import type {
   SubscribersChangedPayload,
 } from "./events.js";
 import type { NoticeParams } from "./notices.js";
+import type { AttachedTabActionPayload, SessionRef } from "./attach.js";
 
 /** The Host API version this kit speaks (HOST-API "Version"). */
 export const HOST_API_VERSION = 0;
@@ -270,6 +271,17 @@ export interface OpenTerminalParams {
   projectId?: string;
 }
 
+/** `tabs.openAttached` — open (or focus) a terminal tab attached to a session an app's keeper
+ *  holds (pomade:E-034). Any app may open any app's session by reference; the owner is not called. */
+export interface OpenAttachedParams {
+  /** The session: the app whose keeper holds it, and its id there. */
+  session: SessionRef;
+  /** The tab's title; default the session's own title from its keeper. */
+  title?: string;
+  /** The project whose tab strip gets the tab; default the active project. Pomade switches to it. */
+  projectId?: string;
+}
+
 // ── Workspace data: projects (pomade:E-030) ────────────────────────────────
 
 /** A sidebar group (groups nest). */
@@ -444,6 +456,7 @@ export interface HostMethods {
   "files.move": { params: MoveParams; result: Record<string, never> };
   "tabs.openFile": { params: OpenFileParams; result: Record<string, never> };
   "tabs.openTerminal": { params: OpenTerminalParams; result: Record<string, never> };
+  "tabs.openAttached": { params: OpenAttachedParams; result: Record<string, never> };
   "project.list": { params: Record<string, never>; result: ProjectListResult };
   "project.getSettings": { params: ProjectIdParams; result: ProjectSettingsResult };
   "project.setSettings": { params: SetProjectSettingsParams; result: ProjectSettingsResult };
@@ -489,6 +502,7 @@ export const METHOD_CAPABILITY: Readonly<Record<MethodName, MethodCapability>> =
   "files.move": "files.write",
   "tabs.openFile": "tabs.open",
   "tabs.openTerminal": "tabs.open",
+  "tabs.openAttached": "tabs.open",
   "project.list": "project.read",
   "project.getSettings": "project.read",
   "project.setSettings": "project.write",
@@ -547,6 +561,7 @@ export interface HostEvents {
   "project.renamed": ProjectRenamedPayload;
   "project.opened": ProjectRef;
   "agentTab.exited": AgentTabExitedPayload;
+  "attachedTab.action": AttachedTabActionPayload;
   "events.subscribersChanged": SubscribersChangedPayload;
 }
 export type EventName = keyof HostEvents;

@@ -217,6 +217,13 @@ test("posts a notice whose click opens its own tab at the roadmap", async ({ pag
   expect(await page.evaluate(() => window.fakeHost.openedTabs)).toEqual([{ kind: "app", route: "roadmap", projectId: "alpha" }]);
 });
 
+test("opens its backend's ticker in an attached terminal tab, by reference", async ({ page }) => {
+  await app(page).getByTestId("open-ticker").click();
+  await expect
+    .poll(() => page.evaluate(() => window.fakeHost.openedTabs))
+    .toEqual([{ kind: "attached", projectId: "alpha", session: { app: "hello", session: "ticker" } }]);
+});
+
 test("says once where its shipped skill is, and always in About", async ({ page }) => {
   const notice = app(page).getByTestId("skill-notice");
   await expect(notice).toBeVisible();

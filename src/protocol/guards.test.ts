@@ -257,6 +257,7 @@ describe("METHOD_CAPABILITY", () => {
       "files.move": "files.write",
       "tabs.openFile": "tabs.open",
       "tabs.openTerminal": "tabs.open",
+      "tabs.openAttached": "tabs.open",
       "project.list": "project.read",
       "project.getSettings": "project.read",
       "project.setSettings": "project.write",

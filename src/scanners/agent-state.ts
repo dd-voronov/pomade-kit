@@ -29,7 +29,7 @@
 // Probe evidence (claude 2.1.321, codex-cli 0.153.2, 2026-11-09) is in ./fixtures; the
 // provenance of each capture is recorded in the fixture itself.
 
-import { Terminal } from "@xterm/headless/lib-headless/xterm-headless.mjs";
+import { Terminal } from "./xterm-headless.js";
 
 export type AgentKind = "claude" | "codex";
 

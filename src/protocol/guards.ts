@@ -18,6 +18,7 @@ import {
 import { isJsonValue } from "./state.js";
 import { isGitRepoState } from "./git.js";
 import { AGENT_EXIT_REASONS, parseBusEventName, type AgentTabExitedPayload } from "./events.js";
+import { checkSessionRef } from "./attach.js";
 
 type Obj = Record<string, unknown>;
 
@@ -270,5 +271,12 @@ function parseBusEvent(name: unknown, payload: unknown): HostToAppMessage | null
             },
           }
         : null;
+    case "attachedTab.action": {
+      if (!isObj(payload) || typeof payload.action !== "string" || typeof payload.projectId !== "string") return null;
+      const ref = checkSessionRef(payload.session);
+      return ref.ok
+        ? { channel: CHANNEL, type: "event", name: bus.name, payload: { session: ref.value, action: payload.action, projectId: payload.projectId } }
+        : null;
+    }
   }
 }

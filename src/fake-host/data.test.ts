@@ -264,6 +264,32 @@ describe("tabs.openFile / tabs.openTerminal", () => {
     const f = raw(fake({ manifest: { id: "x1", name: "X", version: "1.0.0", hostApi: 0, capabilities: ["files.read"] } }));
     expect(f.errorOf("tabs.openFile", { path: "Projects/Pomade/notes/plain.txt" })).toBe("capability-denied");
     expect(f.errorOf("tabs.openTerminal", { cwd: "" })).toBe("capability-denied");
+    expect(f.errorOf("tabs.openAttached", { session: { app: "hello", session: "s" } })).toBe("capability-denied");
+  });
+});
+
+describe("tabs.openAttached", () => {
+  const PROJECTS = [{ id: "pomade", name: "Pomade", root: "Projects/Pomade" }];
+
+  it("records the attached tab — any app's session, by reference — in the target project and switches to it", async () => {
+    const fh = fake({ projects: PROJECTS });
+    const host = await client(fh);
+    await host.tabs.openAttached({ session: { app: "pomade-runner", session: "svc:coda-web" }, title: " Coda web ", projectId: "pomade" });
+    await host.tabs.openAttached({ session: { app: "hello", session: "ticker" } });
+    await flush();
+    expect(fh.openedTabs).toEqual([
+      { kind: "attached", projectId: "pomade", session: { app: "pomade-runner", session: "svc:coda-web" }, title: "Coda web" },
+      { kind: "attached", projectId: "pomade", session: { app: "hello", session: "ticker" } },
+    ]);
+  });
+
+  it("errors: a malformed reference, an empty title, an unknown project", () => {
+    const f = raw(fake({ projects: PROJECTS }));
+    expect(f.errorOf("tabs.openAttached", {})).toBe("invalid-params");
+    expect(f.errorOf("tabs.openAttached", { session: { app: "hello" } })).toBe("invalid-params");
+    expect(f.errorOf("tabs.openAttached", { session: { app: "Hello", session: "s" } })).toBe("invalid-params");
+    expect(f.errorOf("tabs.openAttached", { session: { app: "hello", session: "s" }, title: " " })).toBe("invalid-params");
+    expect(f.errorOf("tabs.openAttached", { session: { app: "hello", session: "s" }, projectId: "ghost" })).toBe("not-found");
   });
 });
 

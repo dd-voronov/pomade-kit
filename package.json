@@ -1,6 +1,6 @@
 {
   "name": "pomade-kit",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Shared library of the Pomade family: Host API protocol, app SDK, fake host",
   "private": true,
   "license": "UNLICENSED",
@@ -41,6 +41,10 @@
       "types": "./dist/scanners/index.d.ts",
       "default": "./dist/scanners/index.js"
     },
+    "./keeper": {
+      "types": "./dist/keeper/index.d.ts",
+      "default": "./dist/keeper/index.js"
+    },
     "./node": {
       "types": "./dist/node/index.d.ts",
       "default": "./dist/node/index.js"
@@ -60,8 +64,18 @@
     "hello:dev": "vite --config examples/hello/vite.config.ts"
   },
   "dependencies": {
-    "@xterm/headless": "^6.0.0",
+    "@xterm/addon-serialize": "0.13.0",
+    "@xterm/addon-unicode11": "0.9.0",
+    "@xterm/headless": "5.5.0",
     "js-yaml": "^4.1.0"
+  },
+  "peerDependencies": {
+    "node-pty": "^1.1.0"
+  },
+  "peerDependenciesMeta": {
+    "node-pty": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",
@@ -69,6 +83,7 @@
     "@types/node": "^24.0.0",
     "eslint": "^10.9.1",
     "eslint-plugin-playwright": "^2.11.0",
+    "node-pty": "1.1.0",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.68.0",
     "vite": "^5.4.21",

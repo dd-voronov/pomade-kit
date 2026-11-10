@@ -81,6 +81,14 @@ export class EventBus {
     this.deliver(name, payload, null);
   }
 
+  /** Publish a platform event to one app's subscribed connections only (`attachedTab.action`
+   *  goes to the app that owns the session). */
+  publishTo(appId: string, name: string, payload: JsonValue): void {
+    for (const m of [...this.members]) {
+      if (m.open && m.conn.appId === appId && m.subs.has(name)) m.conn.deliver(name, payload);
+    }
+  }
+
   /** Publish a platform event and keep it: a later subscription gets it at once, until `clearSticky`. */
   publishSticky(name: string, payload: JsonValue): void {
     this.sticky.set(name, payload);
