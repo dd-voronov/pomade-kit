@@ -22,10 +22,11 @@ import {
 import { CallError, entryParam, pathParam, stringParam, type Obj } from "./params.js";
 import type { Workspace } from "./workspace.js";
 
-/** A tab an app opened (`tabs.openFile` / `tabs.openTerminal`), as the fake host records it. */
+/** A tab an app opened (`tabs.openFile` / `tabs.openTerminal` / `tabs.openApp`), as the fake host records it. */
 export type FakeOpenedTab =
   | { kind: "file"; projectId: string; path: string }
-  | { kind: "terminal"; projectId: string; cwd: string; command?: string; title?: string };
+  | { kind: "terminal"; projectId: string; cwd: string; command?: string; title?: string }
+  | { kind: "app"; projectId: string; route: string };
 
 /** A sidebar group of the fake host (`FakeHostOptions.groups`). */
 export interface FakeGroup {
@@ -162,7 +163,7 @@ function ancestorIsFile(ws: Workspace, path: string): boolean {
 }
 
 /** The tab methods of pomade:E-030. */
-export type TabDataMethod = Extract<MethodName, "tabs.openFile" | "tabs.openTerminal">;
+export type TabDataMethod = Extract<MethodName, "tabs.openFile" | "tabs.openTerminal" | "tabs.openApp">;
 
 export function dispatchTabs(ctx: DataContext, method: TabDataMethod, p: Obj): unknown {
   const ws = ctx.workspace;
@@ -195,6 +196,13 @@ export function dispatchTabs(ctx: DataContext, method: TabDataMethod, p: Obj): u
         ...(command !== undefined ? { command } : {}),
         ...(title !== undefined ? { title: title.trim() } : {}),
       });
+      return {};
+    }
+    case "tabs.openApp": {
+      const route = optionalString(p, "route") ?? "";
+      const project = ctx.project(optionalString(p, "projectId"));
+      ctx.activate(project.id);
+      ctx.openedTabs.push({ kind: "app", projectId: project.id, route });
       return {};
     }
   }

@@ -10,8 +10,8 @@ export type Channel = typeof CHANNEL;
 /** How long an app waits for `welcome` before it treats itself as standalone (HOST-API §3). */
 export const HANDSHAKE_TIMEOUT_MS = 1500;
 
-/** Where a frame lives: a main-area tab or the side panel. */
-export type Surface = "tab" | "panel";
+/** Where a frame lives: a main-area tab, the side panel, or the overlay a shortcut opens. */
+export type Surface = "tab" | "panel" | "overlay";
 
 /** What a frame was opened for — carried by `welcome` and `host.info` (HOST-API §3). */
 export interface FrameTarget {
@@ -40,6 +40,25 @@ export interface StripIcon {
   route: string;
   /** `both` only: the panel's route when it differs from the tab's (`route`). */
   panelRoute?: string;
+}
+
+/** What an app shortcut does when pressed: open or focus the app's tab at the shortcut's route,
+ *  or open the app's overlay frame at it. */
+export type ShortcutAction = "tab" | "overlay";
+
+export const SHORTCUT_ACTIONS: readonly ShortcutAction[] = ["tab", "overlay"];
+
+/** One Pomade-wide shortcut an app declares (manifest `shortcuts[]`, HOST-API §1). */
+export interface AppShortcut {
+  /** `SHORTCUT_ID_RE`, unique within the app. */
+  id: string;
+  /** What it does, for people: shown in the install summary. Trimmed. */
+  title: string;
+  /** The chord in its canonical spelling (`formatChord`): `Cmd+Shift+K`. */
+  key: string;
+  action: ShortcutAction;
+  /** The route the opened surface renders; "" = the app's default view. */
+  route: string;
 }
 
 /** `ProjectRef.id` of the Workspace scope (Pomade's pseudo-project). */
@@ -314,6 +333,32 @@ export interface PickFolderResult {
   path: string | null;
 }
 
+// ── App state, own tab, overlay (pomade:E-027) ─────────────────────────────
+
+/** `state.get` — one key of the app's machine-local state. */
+export interface StateGetParams {
+  key: string;
+}
+
+/** `null` = the key is not set. */
+export interface StateGetResult {
+  value: JsonValue | null;
+}
+
+/** `state.set` — `value: null` removes the key. */
+export interface StateSetParams {
+  key: string;
+  value: JsonValue;
+}
+
+/** `tabs.openApp` — open or focus the calling app's tab at a route. */
+export interface OpenAppParams {
+  /** What the tab renders; default "" (the app's default view). */
+  route?: string;
+  /** The project whose tab strip gets the tab (a `ProjectRef.id`, the Workspace scope included); default the active project. Pomade switches to it. */
+  projectId?: string;
+}
+
 /** Method name → params and result. Methods without params take `{}`. */
 export interface HostMethods {
   "host.info": { params: Record<string, never>; result: HostInfo };
@@ -339,6 +384,10 @@ export interface HostMethods {
   "files.symlink": { params: SymlinkParams; result: Record<string, never> };
   "files.removeSymlink": { params: RemoveSymlinkParams; result: Record<string, never> };
   "files.pickFolder": { params: PickFolderParams; result: PickFolderResult };
+  "state.get": { params: StateGetParams; result: StateGetResult };
+  "state.set": { params: StateSetParams; result: Record<string, never> };
+  "tabs.openApp": { params: OpenAppParams; result: Record<string, never> };
+  "overlay.close": { params: Record<string, never>; result: Record<string, never> };
 }
 export type MethodName = keyof HostMethods;
 export type MethodParams<M extends MethodName> = HostMethods[M]["params"];
@@ -369,6 +418,10 @@ export const METHOD_CAPABILITY: Readonly<Record<MethodName, Capability | null>> 
   "files.symlink": "files.symlink",
   "files.removeSymlink": "files.symlink",
   "files.pickFolder": "files.read",
+  "state.get": null,
+  "state.set": null,
+  "tabs.openApp": null,
+  "overlay.close": null,
 };
 
 export const METHOD_NAMES = Object.keys(METHOD_CAPABILITY) as MethodName[];
@@ -380,10 +433,23 @@ export interface FilesChangedPayload {
   changes: FileChange[];
 }
 
+/** `state.changed` — another frame of the same app set a key (`value: null` = removed). */
+export interface StateChangedPayload {
+  key: string;
+  value: JsonValue | null;
+}
+
+/** `route.changed` — Pomade navigated this frame's tab to a new route (`tabs.openApp`, a shortcut). */
+export interface RouteChangedPayload {
+  route: string;
+}
+
 /** Event name → payload. */
 export interface HostEvents {
   "project.changed": ProjectRef;
   "files.changed": FilesChangedPayload;
+  "state.changed": StateChangedPayload;
+  "route.changed": RouteChangedPayload;
 }
 export type EventName = keyof HostEvents;
 

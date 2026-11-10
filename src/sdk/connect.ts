@@ -63,7 +63,8 @@ export function connect(options: ConnectOptions = {}): Promise<ConnectResult> {
       } else if (msg?.type === "welcome") {
         const { hostApi, pomadeVersion, appId, surface, icon, route, project } = msg;
         const welcome = { hostApi, pomadeVersion, appId, surface, ...(icon !== undefined ? { icon } : {}), route, project };
-        const stopKeys = keySource ? installKeyForwarder(keySource, (m) => transport.send(m)) : undefined;
+        const forward = { escape: surface === "overlay" };
+        const stopKeys = keySource ? installKeyForwarder(keySource, (m) => transport.send(m), forward) : undefined;
         const host = createClient(transport, welcome, stopKeys);
         settle({ status: "connected", host });
       }

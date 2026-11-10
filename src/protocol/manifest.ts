@@ -1,11 +1,15 @@
 // App manifest (HOST-API §1): the type and its validation, shared by Pomade's install and the
 // fake host.
 
+import { CHORD_FORMAT, formatChord, parseChord } from "./shortcuts.js";
 import {
   CAPABILITIES,
+  SHORTCUT_ACTIONS,
   STRIP_ACTIONS,
+  type AppShortcut,
   type Capability,
   type FrameTarget,
+  type ShortcutAction,
   type StripAction,
   type StripIcon,
   type Surface,
@@ -32,18 +36,48 @@ export interface Manifest {
    *  relative folders whose `*` segments match any one folder name (segments `Agents`, `*`,
    *  `skills` = every agent's skills folder); absent when the manifest declares none. */
   symlinks?: string[];
+  /** Load the app's launch panel (`launchPanelIcon`) hidden when Pomade starts. */
+  startOnLaunch?: boolean;
+  /** The app's Pomade-wide shortcuts, in manifest order; absent when the manifest declares none. */
+  shortcuts?: AppShortcut[];
+  /** Agent skills the app ships: folders inside the build, each holding a `SKILL.md`; absent when none. */
+  skills?: AppSkill[];
+}
+
+/** One agent skill an app ships (manifest `skills[]`, HOST-API §1). */
+export interface AppSkill {
+  /** The skill's name — the folder's last segment; agents see the skill under it. `SKILL_NAME_RE`. */
+  name: string;
+  /** The folder inside the build (relative), holding `SKILL.md`. */
+  path: string;
 }
 
 export const MANIFEST_FILE = "manifest.json";
 export const DEFAULT_ENTRY = "index.html";
 export const APP_ID_RE = /^[a-z][a-z0-9-]{1,63}$/;
 export const STRIP_ICON_ID_RE = /^[a-z][a-z0-9-]{0,31}$/;
+export const SHORTCUT_ID_RE = /^[a-z][a-z0-9-]{0,31}$/;
+/** A skill folder's name (its last path segment). */
+export const SKILL_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 // semver.org's reference regex.
 const SEMVER_RE =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
 
-const KNOWN_KEYS = new Set(["id", "name", "version", "hostApi", "entry", "icon", "capabilities", "strip", "symlinks"]);
+const KNOWN_KEYS = new Set([
+  "id",
+  "name",
+  "version",
+  "hostApi",
+  "entry",
+  "icon",
+  "capabilities",
+  "strip",
+  "symlinks",
+  "startOnLaunch",
+  "shortcuts",
+  "skills",
+]);
 
 /** One invalid field. */
 export interface ManifestError {
@@ -124,6 +158,15 @@ export function parseManifest(value: unknown): ManifestParseResult {
   }
   const strip = m.strip === undefined ? undefined : parseStrip(m.strip, errors);
   const symlinks = m.symlinks === undefined ? undefined : parseSymlinkScopes(m.symlinks, errors);
+  if (m.startOnLaunch !== undefined) {
+    if (typeof m.startOnLaunch !== "boolean") {
+      fail("startOnLaunch", "must be a boolean", m.startOnLaunch);
+    } else if (m.startOnLaunch && !hasPanelIconDeclared(m.strip)) {
+      errors.push({ field: "startOnLaunch", message: '"startOnLaunch" needs a strip icon with action "panel" or "both"' });
+    }
+  }
+  const shortcuts = m.shortcuts === undefined ? undefined : parseShortcuts(m.shortcuts, errors);
+  const skills = m.skills === undefined ? undefined : parseSkills(m.skills, errors);
 
   if (errors.length > 0) return { ok: false, errors, ...errors[0]! };
 
@@ -138,6 +181,9 @@ export function parseManifest(value: unknown): ManifestParseResult {
   if (m.icon !== undefined) manifest.icon = m.icon as string;
   if (strip !== undefined) manifest.strip = strip;
   if (symlinks !== undefined) manifest.symlinks = symlinks;
+  if (m.startOnLaunch !== undefined) manifest.startOnLaunch = m.startOnLaunch as boolean;
+  if (shortcuts !== undefined) manifest.shortcuts = shortcuts;
+  if (skills !== undefined) manifest.skills = skills;
   const unsupportedKeys = Object.keys(m).filter((k) => !KNOWN_KEYS.has(k));
   return { ok: true, manifest, unsupportedKeys };
 }
@@ -218,6 +264,63 @@ function parseSymlinkScopes(raw: unknown, errors: ManifestError[]): string[] {
   return out;
 }
 
+/** `shortcuts` (HOST-API §1): an array of shortcuts. Errors name the shortcut by index; keys a
+ *  shortcut carries beyond the known ones are ignored. A repeated id or chord is reported on the
+ *  later shortcut. */
+function parseShortcuts(raw: unknown, errors: ManifestError[]): AppShortcut[] {
+  if (!Array.isArray(raw)) {
+    errors.push({ field: "shortcuts", message: `"shortcuts" must be an array of shortcuts ${received(raw)}` });
+    return [];
+  }
+  const out: AppShortcut[] = [];
+  const ids = new Set<string>();
+  const chords = new Map<string, string>();
+  (raw as unknown[]).forEach((item, i) => {
+    const at = `shortcuts[${i}]`;
+    const fail = (key: string, rule: string, value: unknown): void => {
+      errors.push({ field: `${at}.${key}`, message: `"${at}.${key}" ${rule} ${received(value)}` });
+    };
+    if (!isObject(item)) {
+      errors.push({ field: at, message: `"${at}" must be an object ${received(item)}` });
+      return;
+    }
+    const before = errors.length;
+    if (typeof item.id !== "string" || !SHORTCUT_ID_RE.test(item.id)) {
+      fail("id", `must match ${SHORTCUT_ID_RE.source}`, item.id);
+    } else if (ids.has(item.id)) {
+      errors.push({ field: `${at}.id`, message: `"${at}.id" repeats the shortcut id ${JSON.stringify(item.id)}` });
+    } else {
+      ids.add(item.id);
+    }
+    if (typeof item.title !== "string" || item.title.trim() === "") fail("title", "must be a non-empty string", item.title);
+    const chord = parseChord(item.key);
+    if (!chord) {
+      fail("key", `must be a key chord: ${CHORD_FORMAT}`, item.key);
+    } else {
+      const canonical = formatChord(chord);
+      const first = chords.get(canonical);
+      if (first !== undefined) {
+        errors.push({ field: `${at}.key`, message: `"${at}.key" repeats ${canonical}, already used by ${first}` });
+      } else {
+        chords.set(canonical, at);
+      }
+    }
+    if (typeof item.action !== "string" || !SHORTCUT_ACTIONS.includes(item.action as ShortcutAction)) {
+      fail("action", `must be one of ${SHORTCUT_ACTIONS.join(", ")}`, item.action);
+    }
+    if (item.route !== undefined && typeof item.route !== "string") fail("route", "must be a string", item.route);
+    if (errors.length > before || !chord) return;
+    out.push({
+      id: item.id as string,
+      title: (item.title as string).trim(),
+      key: formatChord(chord),
+      action: item.action as ShortcutAction,
+      route: (item.route as string | undefined) ?? "",
+    });
+  });
+  return out;
+}
+
 function isSymlinkScope(p: string): boolean {
   if (!isInnerPath(p)) return false;
   return p.split("/").every((seg) => seg === "*" || !seg.includes("*"));
@@ -233,6 +336,60 @@ export function symlinkScopeCovers(scopes: readonly string[], linkPath: string):
     const pattern = scope.split("/");
     return pattern.length === parent.length && pattern.every((seg, i) => seg === "*" || seg === parent[i]);
   });
+}
+
+/** `skills` (HOST-API §1): folder paths inside the build. Each folder's last segment is the skill's
+ *  name and must be unique; errors name the entry by index. */
+function parseSkills(raw: unknown, errors: ManifestError[]): AppSkill[] {
+  if (!Array.isArray(raw)) {
+    errors.push({ field: "skills", message: `"skills" must be an array of folder paths ${received(raw)}` });
+    return [];
+  }
+  const out: AppSkill[] = [];
+  const names = new Map<string, string>();
+  (raw as unknown[]).forEach((item, i) => {
+    const at = `skills[${i}]`;
+    if (typeof item !== "string" || !isInnerPath(item)) {
+      errors.push({ field: at, message: `"${at}" must be a relative folder path inside the build folder ${received(item)}` });
+      return;
+    }
+    const name = item.split("/").at(-1)!;
+    if (!SKILL_NAME_RE.test(name)) {
+      errors.push({ field: at, message: `"${at}" must end in a skill name matching ${SKILL_NAME_RE.source} ${received(item)}` });
+      return;
+    }
+    const first = names.get(name);
+    if (first !== undefined) {
+      errors.push({ field: at, message: `"${at}" repeats the skill name ${JSON.stringify(name)}, already used by ${first}` });
+      return;
+    }
+    names.set(name, at);
+    out.push({ name, path: item });
+  });
+  return out;
+}
+
+function isPanelIcon(icon: { action: unknown }): boolean {
+  return icon.action === "panel" || icon.action === "both";
+}
+
+/** A raw `strip` declares a panel icon even when that icon has other errors (they are reported on their own). */
+function hasPanelIconDeclared(raw: unknown): boolean {
+  return Array.isArray(raw) && (raw as unknown[]).some((i) => isObject(i) && isPanelIcon({ action: i.action }));
+}
+
+/**
+ * The strip icon whose panel Pomade loads, hidden, at launch for a `startOnLaunch` app: its first
+ * icon with action `panel` or `both`. `undefined` when the app does not start on launch.
+ */
+export function launchPanelIcon(manifest: Pick<Manifest, "strip" | "startOnLaunch">): StripIcon | undefined {
+  return manifest.startOnLaunch ? manifest.strip?.find(isPanelIcon) : undefined;
+}
+
+/** The overlay frame a shortcut opens: `surface: "overlay"` at the shortcut's route; `""` for a
+ *  shortcut the manifest does not declare. */
+export function resolveOverlayTarget(shortcuts: readonly AppShortcut[], shortcut?: string): FrameTarget {
+  return { surface: "overlay", route: shortcuts.find((s) => s.id === shortcut)?.route ?? "" };
 }
 
 /**

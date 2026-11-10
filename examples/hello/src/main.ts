@@ -2,8 +2,11 @@
 // frontmatter (the folder is a per-project setting), shows the project's group path and visible
 // agents, lets the user pick its folder with Pomade's folder picker, links its skill into an
 // agent's skills folder, follows project switches and file changes, marks a ticket done with a
-// field-only frontmatter write, and opens a ticket in a Pomade editor tab. Built only on
-// pomade-kit's SDK.
+// field-only frontmatter write, and opens a ticket in a Pomade editor tab. It also counts its own
+// launches in the app state shared by all its frames, shows the route it renders and opens its
+// own tab at a route, and badges its strip icon with the number of tickets — it starts on launch,
+// so the badge is there before the panel is opened; its Cmd+Shift+J overlay takes a quick note
+// into the app state. Built only on pomade-kit's SDK.
 
 import { joinPath } from "pomade-kit/protocol";
 import { connect, HostError, type FileEntry, type FileWatch, type HostClient, type ProjectRef } from "pomade-kit/sdk";
@@ -43,7 +46,8 @@ interface RowActions {
   open(entry: FileEntry): void;
 }
 
-function renderRows(entries: FileEntry[], actions: RowActions): void {
+/** Draw the rows; returns how many tickets were listed. */
+function renderRows(entries: FileEntry[], actions: RowActions): number {
   const table = el("rows");
   table.replaceChildren();
   const head = document.createElement("tr");
@@ -68,9 +72,32 @@ function renderRows(entries: FileEntry[], actions: RowActions): void {
     }
     table.append(row);
   }
+  return table.querySelectorAll("tr[data-path]").length;
+}
+
+/** Every frame load counts one launch in the app state; other frames' counts arrive as `state.changed`. */
+async function countLaunches(host: HostClient): Promise<void> {
+  const show = (n: unknown): void => {
+    el("launches").textContent = `Launches: ${typeof n === "number" ? n : 0}`;
+  };
+  host.state.onChange((key, value) => {
+    if (key === "launches") show(value);
+  });
+  const launches = ((await host.state.get<number>("launches")) ?? 0) + 1;
+  await host.state.set("launches", launches);
+  show(launches);
 }
 
 function startApp(host: HostClient): void {
+  void countLaunches(host);
+  const showRoute = (route: string): void => {
+    el("route").textContent = `Route: ${route === "" ? "(default)" : route}`;
+  };
+  showRoute(host.welcome.route);
+  host.onRouteChange(showRoute);
+  const open = el("open-tab");
+  open.hidden = false;
+  open.addEventListener("click", () => void host.tabs.openApp({ route: "roadmap" }));
   let watch: FileWatch | null = null;
   let generation = 0;
   const actions: RowActions = {
@@ -92,7 +119,8 @@ function startApp(host: HostClient): void {
     void showAgents(project, mine);
     const reload = async (): Promise<void> => {
       const { entries } = await host.files.readFolder({ path: folder, frontmatter: true });
-      if (mine === generation) renderRows(entries, actions);
+      if (mine !== generation) return;
+      await host.strip.setBadge({ icon: "hello", count: renderRows(entries, actions) });
     };
     try {
       const next = await host.files.watch({ path: folder }, () => void reload().catch((err: unknown) => showError(folder, err)));
@@ -177,6 +205,7 @@ function startApp(host: HostClient): void {
 
   function showError(folder: string, err: unknown): void {
     el("rows").replaceChildren();
+    void host.strip.setBadge({ icon: "hello", count: 0 });
     const reason = err instanceof HostError && err.code === "not-found" ? "not found" : err instanceof Error ? err.message : String(err);
     el("folder").textContent = `${folder} — ${reason}`;
   }
@@ -185,11 +214,29 @@ function startApp(host: HostClient): void {
   void show(host.welcome.project);
 }
 
+/** The overlay (Cmd+Shift+J): one input; Enter stores the note and closes, Escape just closes. */
+function startQuickNote(host: HostClient): void {
+  document.body.replaceChildren();
+  document.body.className = "overlay";
+  const form = document.createElement("form");
+  const input = document.createElement("input");
+  input.dataset.testid = "note";
+  input.placeholder = "Quick note — Enter to save, Esc to cancel";
+  form.append(input);
+  document.body.append(form);
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    void host.state.set("lastNote", input.value).then(() => host.overlay.close());
+  });
+  input.focus();
+}
+
 async function main(): Promise<void> {
   const result = await connect();
   switch (result.status) {
     case "connected":
-      startApp(result.host);
+      if (result.host.welcome.surface === "overlay") startQuickNote(result.host);
+      else startApp(result.host);
       return;
     case "no-host":
       el("state").textContent = "No Pomade host — open this app inside Pomade.";

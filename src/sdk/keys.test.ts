@@ -30,6 +30,22 @@ describe("shouldForwardKey", () => {
   ])("%j → %s", (patch, expected) => {
     expect(shouldForwardKey({ ...base, ...patch })).toBe(expected);
   });
+
+  const esc = { ...base, key: "Escape", code: "Escape" };
+  it.each([
+    [{}, true],
+    [{ shiftKey: true }, false],
+    [{ altKey: true }, false],
+    [{ defaultPrevented: true }, false],
+    [{ metaKey: true }, true],
+  ])("with escape: plain Escape %j → %s", (patch, expected) => {
+    expect(shouldForwardKey({ ...esc, ...patch }, { escape: true })).toBe(expected);
+  });
+
+  it("without escape, a plain Escape is not forwarded", () => {
+    expect(shouldForwardKey(esc)).toBe(false);
+    expect(shouldForwardKey(esc, { escape: false })).toBe(false);
+  });
 });
 
 describe("installKeyForwarder", () => {
@@ -84,6 +100,23 @@ describe("installKeyForwarder", () => {
     expect(t.sent).toEqual([]);
   });
 
+  it("with escape: forwards an unhandled plain Escape, never a handled one", async () => {
+    const target = new EventTarget();
+    const sent: KeyMessage[] = [];
+    installKeyForwarder(target, (m) => sent.push(m), { escape: true });
+    target.dispatchEvent(new FakeKeyEvent({ key: "Escape", code: "Escape" }));
+    const handled = new FakeKeyEvent({ key: "Escape", code: "Escape" });
+    target.addEventListener("keydown", (e) => {
+      if (e === handled) e.preventDefault();
+    });
+    target.dispatchEvent(handled);
+    target.dispatchEvent(new FakeKeyEvent({ key: "Escape", code: "Escape", shiftKey: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sent).toEqual([
+      { channel: "pomade", type: "key", key: "Escape", code: "Escape", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false },
+    ]);
+  });
+
   it("stop() removes the listener and drops keys not yet forwarded", async () => {
     const t = setup();
     t.target.dispatchEvent(new FakeKeyEvent({ key: "w", code: "KeyW", metaKey: true }));
@@ -129,6 +162,19 @@ describe("connect installs key forwarding", () => {
     target.dispatchEvent(new FakeKeyEvent({ key: "w", code: "KeyW", metaKey: true }));
     await vi.advanceTimersByTimeAsync(0);
     expect(keys(mock.sent)).toEqual([]);
+  });
+
+  it("an overlay frame also forwards a plain Escape; a tab frame does not", async () => {
+    for (const surface of ["overlay", "tab"] as const) {
+      const target = new EventTarget();
+      const mock = mockTransport();
+      const p = connect({ transport: mock.transport, keySource: target });
+      mock.deliver({ ...WELCOME, surface });
+      await p;
+      target.dispatchEvent(new FakeKeyEvent({ key: "Escape", code: "Escape" }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(keys(mock.sent), surface).toHaveLength(surface === "overlay" ? 1 : 0);
+    }
   });
 
   it("keySource: null turns forwarding off", async () => {

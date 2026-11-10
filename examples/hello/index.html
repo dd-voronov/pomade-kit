@@ -9,6 +9,8 @@
       table { border-collapse: collapse; }
       th, td { text-align: left; padding: 2px 12px 2px 0; }
       .error { color: #b00; }
+      body.overlay { margin: 12px; }
+      body.overlay input { box-sizing: border-box; width: 100%; font: inherit; padding: 6px 8px; }
     </style>
   </head>
   <body>
@@ -24,6 +26,9 @@
       <span data-testid="skill"></span>
     </p>
     <p data-testid="folder"></p>
+    <p data-testid="launches"></p>
+    <p data-testid="route"></p>
+    <button type="button" data-testid="open-tab" hidden>Open the roadmap in a tab</button>
     <table data-testid="rows"></table>
     <script type="module" src="./src/main.ts"></script>
   </body>

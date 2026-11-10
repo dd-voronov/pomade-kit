@@ -184,6 +184,82 @@ describe("files.watch", () => {
   });
 });
 
+describe("state", () => {
+  it("get sends the key and resolves the stored value; null when unset", async () => {
+    const t = setup();
+    const a = t.host.state.get<{ view: string }>("view.p1");
+    expect(t.lastCall()).toMatchObject({ method: "state.get", params: { key: "view.p1" } });
+    t.ok(t.lastCall().id, { value: { view: "board" } });
+    expect(await a).toEqual({ view: "board" });
+    const b = t.host.state.get("missing");
+    t.ok(t.lastCall().id, { value: null });
+    expect(await b).toBeNull();
+  });
+
+  it("set sends key and value and resolves void; a refusal rejects with HostError", async () => {
+    const t = setup();
+    const p = t.host.state.set("pins", ["a", "b"]);
+    expect(t.lastCall()).toMatchObject({ method: "state.set", params: { key: "pins", value: ["a", "b"] } });
+    t.ok(t.lastCall().id, {});
+    expect(await p).toBeUndefined();
+    const q = t.host.state.set("", 1);
+    t.fail(t.lastCall().id, "invalid-params");
+    await expect(q).rejects.toMatchObject({ code: "invalid-params" });
+  });
+
+  it("onChange receives state.changed until unsubscribed", () => {
+    const t = setup();
+    const cb = vi.fn();
+    const off = t.host.state.onChange(cb);
+    t.mock.deliver({ channel: "pomade", type: "event", name: "state.changed", payload: { key: "pins", value: ["a"] } });
+    t.mock.deliver({ channel: "pomade", type: "event", name: "state.changed", payload: { key: "pins", value: null } });
+    off();
+    t.mock.deliver({ channel: "pomade", type: "event", name: "state.changed", payload: { key: "pins", value: 1 } });
+    expect(cb.mock.calls).toEqual([
+      ["pins", ["a"]],
+      ["pins", null],
+    ]);
+  });
+});
+
+describe("tabs.openApp and route changes", () => {
+  it("openApp sends {} by default, or the route and project, and resolves void", async () => {
+    const t = setup();
+    const a = t.host.tabs.openApp();
+    expect(t.lastCall()).toMatchObject({ method: "tabs.openApp", params: {} });
+    t.ok(t.lastCall().id, {});
+    expect(await a).toBeUndefined();
+    const b = t.host.tabs.openApp({ route: "planner/today", projectId: "p1" });
+    expect(t.lastCall()).toMatchObject({ method: "tabs.openApp", params: { route: "planner/today", projectId: "p1" } });
+    t.fail(t.lastCall().id, "not-found");
+    await expect(b).rejects.toMatchObject({ code: "not-found" });
+  });
+
+  it("onRouteChange receives route.changed until unsubscribed; welcome keeps the first route", () => {
+    const t = setup();
+    const cb = vi.fn();
+    const off = t.host.onRouteChange(cb);
+    t.mock.deliver({ channel: "pomade", type: "event", name: "route.changed", payload: { route: "board" } });
+    off();
+    t.mock.deliver({ channel: "pomade", type: "event", name: "route.changed", payload: { route: "x" } });
+    expect(cb.mock.calls).toEqual([["board"]]);
+    expect(t.host.welcome.route).toBe("");
+  });
+});
+
+describe("overlay.close", () => {
+  it("sends overlay.close with {} and resolves void; a refusal rejects", async () => {
+    const t = setup();
+    const p = t.host.overlay.close();
+    expect(t.lastCall()).toMatchObject({ method: "overlay.close", params: {} });
+    t.ok(t.lastCall().id, {});
+    expect(await p).toBeUndefined();
+    const q = t.host.overlay.close();
+    t.fail(t.lastCall().id, "invalid-params");
+    await expect(q).rejects.toMatchObject({ code: "invalid-params" });
+  });
+});
+
 describe("close", () => {
   it("rejects pending calls, stops events, detaches, runs onClose once", async () => {
     const t = setup();

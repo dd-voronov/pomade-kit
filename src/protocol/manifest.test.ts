@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { CAPABILITIES } from "./types.js";
-import { parseManifest, resolveFrameTarget, symlinkScopeCovers, type ManifestParseResult } from "./manifest.js";
+import {
+  launchPanelIcon,
+  parseManifest,
+  resolveFrameTarget,
+  resolveOverlayTarget,
+  symlinkScopeCovers,
+  type ManifestParseResult,
+} from "./manifest.js";
 import type { StripIcon } from "./types.js";
 
 const valid = { id: "pomade-planner", name: "Planner", version: "0.1.0", hostApi: 0, capabilities: ["project.read", "files.read"] };
@@ -16,8 +23,8 @@ describe("parseManifest", () => {
   });
 
   it("lists unknown top-level keys as unsupported, still valid", () => {
-    const r = parseManifest({ ...valid, sidePanels: [], shortcuts: {} });
-    expect(r).toMatchObject({ ok: true, unsupportedKeys: ["sidePanels", "shortcuts"] });
+    const r = parseManifest({ ...valid, sidePanels: [], commands: {} });
+    expect(r).toMatchObject({ ok: true, unsupportedKeys: ["sidePanels", "commands"] });
     expect(r.ok && r.manifest).not.toHaveProperty("sidePanels");
   });
 
@@ -204,6 +211,184 @@ describe("parseManifest — strip", () => {
 
   it("an invalid icon's id still counts for repeats only when the id itself is valid", () => {
     expect(errorFields(parseManifest({ ...valid, strip: [{ ...icon, action: "x" }, icon] }))).toEqual(["strip[0].action", "strip[1].id"]);
+  });
+});
+
+describe("parseManifest — startOnLaunch", () => {
+  const panel = { id: "planner", title: "Planner", action: "panel" };
+  const tab = { id: "log", title: "Log", action: "tab" };
+  const both = { id: "board", title: "Board", action: "both" };
+
+  it("absent: not on the manifest; false and true are kept", () => {
+    const absent = parseManifest({ ...valid, strip: [panel] });
+    expect(absent.ok && absent.manifest).not.toHaveProperty("startOnLaunch");
+    for (const v of [true, false]) {
+      const r = parseManifest({ ...valid, strip: [panel], startOnLaunch: v });
+      expect(r.ok && r.manifest.startOnLaunch).toBe(v);
+      expect(r.ok && r.unsupportedKeys).toEqual([]);
+    }
+  });
+
+  it.each([1, "yes", null, {}])("must be a boolean (%j)", (v) => {
+    const r = parseManifest({ ...valid, strip: [panel], startOnLaunch: v });
+    expect(r).toMatchObject({ ok: false, field: "startOnLaunch", message: `"startOnLaunch" must be a boolean (got ${JSON.stringify(v)})` });
+  });
+
+  it.each<[string, unknown]>([
+    ["no strip", undefined],
+    ["an empty strip", []],
+    ["only tab icons", [tab]],
+  ])("true needs a panel or both icon: %s", (_label, strip) => {
+    const r = parseManifest({ ...valid, ...(strip === undefined ? {} : { strip }), startOnLaunch: true });
+    expect(r).toMatchObject({ ok: false, field: "startOnLaunch", message: '"startOnLaunch" needs a strip icon with action "panel" or "both"' });
+  });
+
+  it("false never needs one", () => {
+    expect(parseManifest({ ...valid, startOnLaunch: false }).ok).toBe(true);
+  });
+
+  it("a panel icon with other errors does not add a startOnLaunch error", () => {
+    const r = parseManifest({ ...valid, strip: [{ id: "X", title: "", action: "panel" }], startOnLaunch: true });
+    expect(!r.ok && r.errors.map((e) => e.field)).toEqual(["strip[0].id", "strip[0].title"]);
+  });
+
+  it("is reported with every other invalid field, in key order", () => {
+    const r = parseManifest({ ...valid, name: "", strip: [tab], startOnLaunch: true });
+    expect(!r.ok && r.errors.map((e) => e.field)).toEqual(["name", "startOnLaunch"]);
+  });
+
+  it("launchPanelIcon: the first panel or both icon, only when startOnLaunch", () => {
+    const ok = (m: unknown) => {
+      const r = parseManifest(m);
+      if (!r.ok) throw new Error(r.message);
+      return r.manifest;
+    };
+    expect(launchPanelIcon(ok({ ...valid, strip: [tab, both, panel], startOnLaunch: true }))?.id).toBe("board");
+    expect(launchPanelIcon(ok({ ...valid, strip: [panel, both], startOnLaunch: true }))?.id).toBe("planner");
+    expect(launchPanelIcon(ok({ ...valid, strip: [panel], startOnLaunch: false }))).toBeUndefined();
+    expect(launchPanelIcon(ok({ ...valid, strip: [panel] }))).toBeUndefined();
+  });
+});
+
+describe("parseManifest — shortcuts", () => {
+  const quick = { id: "today", title: " Open Today ", key: "cmd + shift + t", action: "tab", route: "today", extra: 1 };
+
+  it("absent: not on the manifest; an empty list is kept", () => {
+    const absent = parseManifest(valid);
+    expect(absent.ok && absent.manifest).not.toHaveProperty("shortcuts");
+    const empty = parseManifest({ ...valid, shortcuts: [] });
+    expect(empty.ok && empty.manifest.shortcuts).toEqual([]);
+  });
+
+  it("reads shortcuts in order: trimmed title, canonical key, default route, unknown keys ignored", () => {
+    const r = parseManifest({ ...valid, shortcuts: [quick, { id: "board", title: "Board", key: "Cmd+Alt+2", action: "tab" }] });
+    expect(r.ok && r.manifest.shortcuts).toEqual([
+      { id: "today", title: "Open Today", key: "Cmd+Shift+T", action: "tab", route: "today" },
+      { id: "board", title: "Board", key: "Cmd+Alt+2", action: "tab", route: "" },
+    ]);
+    expect(r.ok && r.unsupportedKeys).toEqual([]);
+  });
+
+  it.each<[string, unknown, string]>([
+    ["not an array", { a: 1 }, "shortcuts"],
+    ["an item not an object", ["x"], "shortcuts[0]"],
+    ["id missing", [{ ...quick, id: undefined }], "shortcuts[0].id"],
+    ["id uppercase", [{ ...quick, id: "Today" }], "shortcuts[0].id"],
+    ["title empty", [{ ...quick, title: " " }], "shortcuts[0].title"],
+    ["key missing", [{ ...quick, key: undefined }], "shortcuts[0].key"],
+    ["key without Cmd", [{ ...quick, key: "Ctrl+K" }], "shortcuts[0].key"],
+    ["key without a key", [{ ...quick, key: "Cmd+Shift" }], "shortcuts[0].key"],
+    ["key a named key", [{ ...quick, key: "Cmd+Enter" }], "shortcuts[0].key"],
+    ["key a repeated modifier", [{ ...quick, key: "Cmd+Cmd+K" }], "shortcuts[0].key"],
+    ["key a number", [{ ...quick, key: 3 }], "shortcuts[0].key"],
+    ["action unknown", [{ ...quick, action: "popup" }], "shortcuts[0].action"],
+    ["action missing", [{ ...quick, action: undefined }], "shortcuts[0].action"],
+    ["route not a string", [{ ...quick, route: 1 }], "shortcuts[0].route"],
+  ])("rejects %s", (_label, shortcuts, field) => {
+    const r = parseManifest({ ...valid, shortcuts });
+    expect(!r.ok && r.errors.map((e) => e.field)).toEqual([field]);
+  });
+
+  it("messages name the rule and the value received", () => {
+    const r = parseManifest({ ...valid, shortcuts: [{ ...quick, key: "Ctrl+K", action: "popup" }] });
+    expect(!r.ok && r.errors.map((e) => e.message)).toEqual([
+      '"shortcuts[0].key" must be a key chord: Cmd, then any of Ctrl, Alt, Shift, then one letter or digit, joined by + (Cmd+Shift+K) (got "Ctrl+K")',
+      '"shortcuts[0].action" must be one of tab, overlay (got "popup")',
+    ]);
+  });
+
+  it("overlay is an action; resolveOverlayTarget gives the overlay surface at the shortcut's route", () => {
+    const r = parseManifest({ ...valid, shortcuts: [{ id: "quick-add", title: "Quick add", key: "Cmd+Shift+J", action: "overlay", route: "quick-add" }] });
+    if (!r.ok) throw new Error(r.message);
+    expect(r.manifest.shortcuts?.[0]?.action).toBe("overlay");
+    expect(resolveOverlayTarget(r.manifest.shortcuts ?? [], "quick-add")).toEqual({ surface: "overlay", route: "quick-add" });
+    expect(resolveOverlayTarget(r.manifest.shortcuts ?? [], "nope")).toEqual({ surface: "overlay", route: "" });
+    expect(resolveOverlayTarget([])).toEqual({ surface: "overlay", route: "" });
+  });
+
+  it("a repeated id or chord is reported on the later shortcut; chords compare canonically", () => {
+    const r = parseManifest({
+      ...valid,
+      shortcuts: [quick, { ...quick, key: "Cmd+K" }, { ...quick, id: "other", key: "Shift+Cmd+T" }],
+    });
+    expect(!r.ok && r.errors.map((e) => e.message)).toEqual([
+      '"shortcuts[1].id" repeats the shortcut id "today"',
+      '"shortcuts[2].key" repeats Cmd+Shift+T, already used by shortcuts[0]',
+    ]);
+  });
+
+  it("reports every invalid field of every shortcut, after the other fields", () => {
+    const r = parseManifest({ ...valid, name: "", shortcuts: [{ id: "X", title: "", key: "K", action: "x" }, quick] });
+    expect(!r.ok && r.errors.map((e) => e.field)).toEqual([
+      "name",
+      "shortcuts[0].id",
+      "shortcuts[0].title",
+      "shortcuts[0].key",
+      "shortcuts[0].action",
+    ]);
+  });
+});
+
+describe("parseManifest — skills", () => {
+  it("absent: not on the manifest; an empty list is kept", () => {
+    const absent = parseManifest(valid);
+    expect(absent.ok && absent.manifest).not.toHaveProperty("skills");
+    const empty = parseManifest({ ...valid, skills: [] });
+    expect(empty.ok && empty.manifest.skills).toEqual([]);
+  });
+
+  it("each folder's last segment is the skill name, in order", () => {
+    const r = parseManifest({ ...valid, skills: ["skills/pomade-runner-jobs", "agent.format_v2", "a/b/c"] });
+    expect(r.ok && r.manifest.skills).toEqual([
+      { name: "pomade-runner-jobs", path: "skills/pomade-runner-jobs" },
+      { name: "agent.format_v2", path: "agent.format_v2" },
+      { name: "c", path: "a/b/c" },
+    ]);
+    expect(r.ok && r.unsupportedKeys).toEqual([]);
+  });
+
+  it.each<[string, unknown, string]>([
+    ["not an array", "skills/x", "skills"],
+    ["not a string", [3], "skills[0]"],
+    ["empty", [""], "skills[0]"],
+    ["absolute", ["/skills/x"], "skills[0]"],
+    ["escaping", ["../x"], "skills[0]"],
+    ["a dot segment", ["skills/./x"], "skills[0]"],
+    ["a trailing slash", ["skills/x/"], "skills[0]"],
+    ["an uppercase name", ["skills/Jobs"], "skills[0]"],
+    ["a name starting with a dash", ["skills/-x"], "skills[0]"],
+  ])("rejects %s", (_label, skills, field) => {
+    const r = parseManifest({ ...valid, skills });
+    expect(!r.ok && r.errors.map((e) => e.field)).toEqual([field]);
+  });
+
+  it("messages: the rule, the value; a repeated name is reported on the later entry", () => {
+    const r = parseManifest({ ...valid, skills: ["a/jobs", "b/jobs", "../x", "skills/Jobs"] });
+    expect(!r.ok && r.errors.map((e) => e.message)).toEqual([
+      '"skills[1]" repeats the skill name "jobs", already used by skills[0]',
+      '"skills[2]" must be a relative folder path inside the build folder (got "../x")',
+      '"skills[3]" must end in a skill name matching ^[a-z0-9][a-z0-9._-]{0,63}$ (got "skills/Jobs")',
+    ]);
   });
 });
 

@@ -17,7 +17,7 @@ The package installs from a git tag: npm clones it, installs its dev dependencie
 
 | Import | What | Runs in |
 |---|---|---|
-| `pomade-kit/protocol` | Host API v0 in code: messages, `ProjectRef`, `FileEntry`, `FileChange`, error codes, `Manifest` + `parseManifest`, strip icons (`StripIcon`, `resolveFrameTarget`), `HOST_API_VERSION`, message guards, workspace path rules, `readFrontmatter` | browser and Node |
+| `pomade-kit/protocol` | Host API v0 in code: messages, `ProjectRef`, `FileEntry`, `FileChange`, error codes, `Manifest` + `parseManifest`, strip icons (`StripIcon`, `resolveFrameTarget`), shortcuts (`AppShortcut`, `parseChord`, `formatChord`, `chordMatches`), app state rules, `HOST_API_VERSION`, message guards, workspace path rules, `readFrontmatter` | browser and Node |
 | `pomade-kit/sdk` | `connect()` and the typed client | browser (any `Transport` elsewhere) |
 | `pomade-kit/fake-host` | the Host API in memory, for standalone runs and tests | browser and Node |
 | `pomade-kit/frontmatter` | field-only frontmatter writes: `setField`, `removeField`, body writes `setBody` / `getBody`, and the block core Pomade's editor uses | browser and Node |
@@ -56,6 +56,14 @@ else if (result.status === "rejected") {
   const { content } = await host.files.readFile({ path: "Projects/x/docs/roadmap/T-1.md" });
   await host.files.setField({ path: "Projects/x/docs/roadmap/T-1.md", key: "status", value: "done" });
 
+  await host.state.set("view.alpha", "board");  // any JSON value; null removes the key
+  await host.state.get("view.alpha");           // "board"; null when unset
+  host.state.onChange((key, value) => { /* another frame of this app set it */ });
+
+  await host.tabs.openApp({ route: "planner/today" });               // open or focus own tab at a route
+  await host.tabs.openApp({ route: "board", projectId: "<project id>" }); // …in another project (switches to it)
+  host.onRouteChange((route) => { /* Pomade navigated this tab: render `route` */ });
+
   try {
     await host.files.readFolder({ path: "../outside" });
   } catch (err) {
@@ -71,12 +79,26 @@ else if (result.status === "rejected") {
   working while the app has focus. The decision
   waits one task, so any keydown handler of the app can still claim a key with
   `preventDefault()`. `connect({ keySource: null })` turns it off.
-- One bundle serves every surface. `surface` is `"tab"` or `"panel"`; `icon` is the manifest
+- One bundle serves every surface. `surface` is `"tab"`, `"panel"` or `"overlay"`; `icon` is the manifest
   `strip` icon the frame was opened for (absent for a tab from the new-tab menu); `route` is that
   icon's `route` on a tab, its `panelRoute` (else `route`) on a panel, `""` without an icon.
 - `host.strip.setBadge` badges one of the app's own strip icons from any of its frames; an icon
   the manifest does not declare is `invalid-params`. Pomade clears an app's badges when its frames
   reload; the app sets them again.
+- `host.state` is the app's machine-local state (`<userData>/app-state/<id>/` in Pomade), one
+  store shared by all of the app's frames — tab, panel, overlay. Keys are non-empty strings of at
+  most 200 characters (`STATE_KEY_MAX_LENGTH`); values are plain JSON (`JsonValue`; finite
+  numbers, plain objects, nesting ≤ 64) of at most 1 MiB as JSON. A `set` is written atomically
+  before it resolves; every *other* frame of the app then gets `state.changed` (`onChange`), so a
+  panel sees what the overlay stored without re-reading. `checkStateKey` / `checkStateValue` /
+  `isJsonValue` (`pomade-kit/protocol`) are the rules both hosts apply.
+- `host.tabs.openApp({ route?, projectId? })` opens or focuses the app's own tab at `route`
+  (default `""`) in `projectId` (a `ProjectRef.id`, the Workspace scope included; default the active
+  project; an unknown id is `not-found`), and brings the user there. A route equal to a strip
+  icon's `route` (an icon with action `tab` or `both`) is that icon's tab; any other route is the
+  app's one icon-less tab, navigated to the route. A frame already showing that tab gets
+  `route.changed` (`host.onRouteChange`); `host.welcome.route` stays the route the frame opened
+  with, `host.info()` answers the current one.
 - `host.close()` detaches the client: no more events, pending calls reject.
 
 ## Read and write files
@@ -219,9 +241,12 @@ code, and the events. Test controls emit the events Pomade would:
 | `fake.symlink(path, target)` | `create` (a link listings report as its target's kind) |
 | `fake.isSymlink(path)` | — (true when a symlink is at `path`) |
 | `fake.answerPick(path \| null)` | — (queues the user's next folder-picker choice; a folder outside the root is refused and the next answer used; none left = cancel). `fake.pickRequests` logs `{ root, initial }` per picker |
-| `fake.openedTabs` | — (every `tabs.openFile` / `openTerminal`, in order: `{ kind: "file", projectId, path }` · `{ kind: "terminal", projectId, cwd, command?, title? }`; the call switches the active project like Pomade) |
+| `fake.openedTabs` | — (every `tabs.openFile` / `openTerminal` / `openApp`, in order: `{ kind: "file", projectId, path }` · `{ kind: "terminal", projectId, cwd, command?, title? }` · `{ kind: "app", projectId, route }`; the call switches the active project like Pomade) |
 
-`fake.keys` lists the forwarded keys; `fake.badges` holds the badges the app set
+A frame opened with `attach(post, { route })` / `mountApp(fake, { src, route })` starts at that route,
+and `connection.navigate(route)` / `mounted.navigate(route)` sends `route.changed` as Pomade
+does. `createFakeHost({ state: { pins: ["a"] } })` seeds the app state and `fake.state` reads it back
+(a snapshot; unset keys are absent); `fake.keys` lists the forwarded keys; `fake.badges` holds the badges the app set
 (`{ board: { count: 3, urgent: true } }`; a cleared icon is absent); `fake.createTransport()` gives
 another frame; `createFakeHost({ hostApi: 1 })` makes the handshake reject.
 
@@ -256,6 +281,51 @@ Strip icon rules follow HOST-API §1: `id` matches `^[a-z][a-z0-9-]{0,31}$` and 
 is reported on the later icon), `title` is non-empty (kept trimmed), `action` is `panel`, `tab` or
 `both`, `route` defaults to `""`, `panelRoute` only with `both`; other keys inside an icon are
 ignored. `resolveFrameTarget(strip, surface, icon)` is the route rule `welcome` uses.
+
+`shortcuts` declares the app's Pomade-wide shortcuts — they work from any tab, terminal and editor
+included, and from inside any app frame:
+
+```jsonc
+"shortcuts": [
+  { "id": "today", "title": "Open Today", "key": "Cmd+Shift+Y", "action": "tab", "route": "today" }
+]
+```
+
+`id` matches `^[a-z][a-z0-9-]{0,31}$` and is unique; `title` is non-empty (kept trimmed); `key` is a
+chord — `Cmd`, then any of `Ctrl`, `Alt`, `Shift`, then one letter or digit (`parseChord`,
+case-insensitive; kept in its canonical spelling `formatChord`: `Cmd+Ctrl+Alt+Shift+K`) — unique
+within the app; `action` `"tab"` opens or focuses the app's tab at `route` (default `""`) in the
+active project, exactly like `host.tabs.openApp({ route })`; `action` `"overlay"` opens a small
+frame of the app (about 420×220) centred over whatever tab is active — even when the app was never
+opened — on `surface: "overlay"` at `route` (a quick-add form). It closes on Escape (the SDK
+forwards an unhandled plain Escape from an overlay frame) or on `host.overlay.close()`, and focus
+returns exactly where it was; the next press opens a fresh frame. Keep anything it must remember
+in `host.state`. Pomade matches the physical key
+(`chordMatches`), so a chord works under any keyboard layout. A chord Pomade itself uses, or one
+another app took first, is reported at install and does nothing — Pomade wins. In the fake host a
+`tab` shortcut's target is a frame opened at its route: `fake.createTransport({ route })`; an
+overlay is `fake.createTransport({ surface: "overlay", shortcut: "quick-add", onClose })` (or
+`mountApp(fake, { src, surface: "overlay", shortcut })`, which removes the frame when it closes) —
+`onClose` runs after `overlay.close` is answered, or on a forwarded Escape.
+
+`skills` lists the agent skills the app ships — folders inside the build, each holding a
+`SKILL.md`; a folder's last segment is the skill's name (`SKILL_NAME_RE`, unique):
+
+```jsonc
+"skills": ["skills/pomade-runner-jobs"]
+```
+
+The skill's master copy lives in the app repo, versioned with the format it describes, and ships
+in the build. `pomade apps install` links each one into the skill folders of the agents Pomade
+runs — the built-in Claude and every workspace folder agent — and `pomade apps remove` takes
+exactly those links away (HOST-API §2). Validation reports every invalid entry as `"skills[i]"`.
+
+`startOnLaunch: true` makes Pomade load the app's panel frame — hidden — when it starts, so the
+app can set its badge (and later post notices) before the user opens it; the frame is the same one
+its icon shows, welcomed on `surface: "panel"`. It needs a strip icon with action `panel` or
+`both` (the first one is the launch panel: `launchPanelIcon(manifest)`); otherwise, and for a
+non-boolean value, the field is invalid. The fake host has no launch: open that panel frame with
+`fake.createTransport({ surface: "panel", icon })`.
 
 ## Write one frontmatter field
 

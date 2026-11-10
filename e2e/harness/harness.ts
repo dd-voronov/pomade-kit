@@ -1,13 +1,15 @@
 // The fake host as the parent window of an app frame: the page an app's Playwright e2e opens
 // instead of Pomade. `?app=<url>` is the app to load; the fake host is on `window.fakeHost` so
-// specs can drive it (writeFile, setActiveProject, …).
+// specs can drive it (writeFile, setActiveProject, …), and the mounted frame on `window.mounted`
+// (navigate). `?shortcut=<id>` mounts it as that shortcut's overlay.
 
-import { createFakeHost, mountApp, type FakeHost } from "pomade-kit/fake-host";
+import { createFakeHost, mountApp, type FakeHost, type MountedApp } from "pomade-kit/fake-host";
 import manifest from "../../examples/hello/public/manifest.json" with { type: "json" };
 
 declare global {
   interface Window {
     fakeHost: FakeHost;
+    mounted: MountedApp;
   }
 }
 
@@ -34,6 +36,9 @@ const fakeHost = createFakeHost({
 });
 window.fakeHost = fakeHost;
 
-const app = new URLSearchParams(location.search).get("app");
+const query = new URLSearchParams(location.search);
+const app = query.get("app");
 if (!app) throw new Error("harness: missing ?app=<url>");
-mountApp(fakeHost, { src: app });
+// `?shortcut=<id>` opens the app as the overlay that shortcut opens.
+const shortcut = query.get("shortcut");
+window.mounted = mountApp(fakeHost, { src: app, ...(shortcut ? { surface: "overlay", shortcut } : {}) });

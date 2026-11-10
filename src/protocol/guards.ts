@@ -12,6 +12,7 @@ import {
   type FileChange,
   type Surface,
 } from "./types.js";
+import { isJsonValue } from "./state.js";
 
 type Obj = Record<string, unknown>;
 
@@ -29,7 +30,7 @@ export function isErrorCode(v: unknown): v is ErrorCode {
 }
 
 export function isSurface(v: unknown): v is Surface {
-  return v === "tab" || v === "panel";
+  return v === "tab" || v === "panel" || v === "overlay";
 }
 
 export function isProjectRef(v: unknown): v is ProjectRef {
@@ -156,6 +157,12 @@ export function parseHostMessage(v: unknown): HostToAppMessage | null {
           name: "files.changed",
           payload: { watchId: m.payload.watchId, changes: m.payload.changes },
         };
+      }
+      if (m.name === "state.changed" && isObj(m.payload) && typeof m.payload.key === "string" && isJsonValue(m.payload.value)) {
+        return { channel: CHANNEL, type: "event", name: "state.changed", payload: { key: m.payload.key, value: m.payload.value } };
+      }
+      if (m.name === "route.changed" && isObj(m.payload) && typeof m.payload.route === "string") {
+        return { channel: CHANNEL, type: "event", name: "route.changed", payload: { route: m.payload.route } };
       }
       return null;
     default:

@@ -396,6 +396,208 @@ describe("strip.setBadge", () => {
   });
 });
 
+describe("state.get / state.set", () => {
+  it("needs no capability; set, get, overwrite, null removes", async () => {
+    const host = fake({ manifest: { id: "a1", name: "A", version: "1.0.0", hostApi: 0, capabilities: [] } });
+    const app = await client(host);
+    expect(await app.state.get("pins")).toBeNull();
+    await app.state.set("pins", ["a"]);
+    expect(await app.state.get("pins")).toEqual(["a"]);
+    await app.state.set("pins", { b: 1 });
+    expect(await app.state.get("pins")).toEqual({ b: 1 });
+    expect(host.state).toEqual({ pins: { b: 1 } });
+    await app.state.set("pins", null);
+    expect(await app.state.get("pins")).toBeNull();
+    expect(host.state).toEqual({});
+  });
+
+  it("stores a copy: mutating the value after set or after get changes nothing", async () => {
+    const host = fake();
+    const app = await client(host);
+    const value = { list: [1] };
+    await app.state.set("k", value);
+    value.list.push(2);
+    const got = await app.state.get<{ list: number[] }>("k");
+    got?.list.push(3);
+    expect(await app.state.get("k")).toEqual({ list: [1] });
+    const snapshot = host.state;
+    (snapshot.k as { list: number[] }).list.push(4);
+    expect(host.state).toEqual({ k: { list: [1] } });
+  });
+
+  it("is shared by every frame of the app; the other welcomed frames get state.changed, the setter does not", async () => {
+    const host = fake({ manifest: STRIP_MANIFEST });
+    const tab = await client(host);
+    const panel = await connect({ transport: host.createTransport({ surface: "panel", icon: "planner" }), keySource: null });
+    if (panel.status !== "connected") throw new Error(panel.status);
+    const unwelcomed = raw(host);
+    const onTab = vi.fn();
+    const onPanel = vi.fn();
+    tab.state.onChange(onTab);
+    panel.host.state.onChange(onPanel);
+    await tab.state.set("view", "board");
+    await flush();
+    expect(await panel.host.state.get("view")).toBe("board");
+    expect(onPanel.mock.calls).toEqual([["view", "board"]]);
+    expect(onTab).not.toHaveBeenCalled();
+    await panel.host.state.set("view", null);
+    await flush();
+    expect(onTab.mock.calls).toEqual([["view", null]]);
+    expect(unwelcomed.events()).toEqual([]);
+  });
+
+  it("starts from the state option and validates it", async () => {
+    const app = await client(fake({ state: { "last-summary": "2026-11-10", n: null } }));
+    expect(await app.state.get("last-summary")).toBe("2026-11-10");
+    expect(await app.state.get("n")).toBeNull();
+    expect(() => fake({ state: { "": 1 } })).toThrow(/invalid state "": "key" must be a non-empty string/);
+  });
+
+  it.each<[string, string, unknown]>([
+    ["get: no params", "state.get", undefined],
+    ["get: key missing", "state.get", {}],
+    ["get: key empty", "state.get", { key: "" }],
+    ["get: key not a string", "state.get", { key: 1 }],
+    ["set: key missing", "state.set", { value: 1 }],
+    ["set: value missing", "state.set", { key: "k" }],
+    ["set: value NaN", "state.set", { key: "k", value: Number.NaN }],
+    ["set: value a Date", "state.set", { key: "k", value: new Date(0) }],
+    ["set: key too long", "state.set", { key: "k".repeat(201), value: 1 }],
+  ])("invalid-params: %s", (_label, method, params) => {
+    const host = fake();
+    const f = raw(host);
+    f.hello();
+    expect(f.errorOf(method, params)).toBe("invalid-params");
+    expect(host.state).toEqual({});
+  });
+
+  it("is not-ready before welcome", () => {
+    const f = raw(fake());
+    expect(f.errorOf("state.get", { key: "k" })).toBe("not-ready");
+  });
+});
+
+describe("tabs.openApp and navigate", () => {
+  it("needs no capability; records the route and the target project (default the active one), and switches to it", async () => {
+    const host = fake({ activeProject: "pomade", manifest: { id: "a1", name: "A", version: "1.0.0", hostApi: 0, capabilities: [] } });
+    const app = await client(host);
+    await app.tabs.openApp();
+    await app.tabs.openApp({ route: "planner/today" });
+    await app.tabs.openApp({ route: "board", projectId: "kit" });
+    expect(host.activeProject.id).toBe("kit");
+    await app.tabs.openApp({ projectId: WORKSPACE_SCOPE.id });
+    expect(host.activeProject.id).toBe(WORKSPACE_SCOPE.id);
+    expect(host.openedTabs).toEqual([
+      { kind: "app", route: "", projectId: "pomade" },
+      { kind: "app", route: "planner/today", projectId: "pomade" },
+      { kind: "app", route: "board", projectId: "kit" },
+      { kind: "app", route: "", projectId: "__workspace__" },
+    ]);
+  });
+
+  it.each<[string, unknown, string]>([
+    ["route not a string", { route: 1 }, "invalid-params"],
+    ["projectId not a string", { projectId: 1 }, "invalid-params"],
+    ["params not an object", "x", "invalid-params"],
+    ["unknown project", { projectId: "nope" }, "not-found"],
+  ])("%s → %s", (_label, params, code) => {
+    const host = fake();
+    const f = raw(host);
+    f.hello();
+    expect(f.errorOf("tabs.openApp", params)).toBe(code);
+    expect(host.openedTabs).toEqual([]);
+  });
+
+  it("a frame opened at a route welcomes with it, over the icon's route", () => {
+    const host = fake({ manifest: STRIP_MANIFEST });
+    const got: HostToAppMessage[] = [];
+    host.attach((m) => got.push(m), { icon: "board", route: "board/T-1" }).receive({ channel: "pomade", type: "hello", hostApi: 0 });
+    expect(got[0]).toMatchObject({ type: "welcome", surface: "tab", icon: "board", route: "board/T-1" });
+  });
+
+  it("navigate posts route.changed when the route differs, and host.info and a reload follow it", async () => {
+    const host = fake();
+    const f = raw(host);
+    f.frame.navigate("before-welcome");
+    f.hello();
+    expect(f.got[0]).toMatchObject({ type: "welcome", route: "before-welcome" });
+    f.frame.navigate("planner/today");
+    f.frame.navigate("planner/today");
+    expect(f.events()).toEqual([{ channel: "pomade", type: "event", name: "route.changed", payload: { route: "planner/today" } }]);
+    const info = f.call("host.info");
+    expect(info.ok && info.value).toMatchObject({ route: "planner/today" });
+    f.hello();
+    expect(f.got.at(-1)).toMatchObject({ type: "welcome", route: "planner/today" });
+  });
+});
+
+describe("overlay frames", () => {
+  const OVERLAY_MANIFEST = {
+    id: "planner",
+    name: "Planner",
+    version: "0.1.0",
+    hostApi: 0,
+    capabilities: [],
+    shortcuts: [{ id: "quick-add", title: "Quick add", key: "Cmd+Shift+J", action: "overlay", route: "quick-add" }],
+  };
+
+  it("opens on the overlay surface at the shortcut's route; welcome and host.info say so", () => {
+    const host = fake({ manifest: OVERLAY_MANIFEST });
+    const got: HostToAppMessage[] = [];
+    const frame = host.attach((m) => got.push(m), { surface: "overlay", shortcut: "quick-add" });
+    frame.receive({ channel: "pomade", type: "hello", hostApi: 0 });
+    expect(got[0]).toMatchObject({ type: "welcome", surface: "overlay", route: "quick-add" });
+    expect(got[0]).not.toHaveProperty("icon");
+    frame.receive({ channel: "pomade", type: "call", id: "1", method: "host.info" });
+    expect(got[1]).toMatchObject({ ok: true, value: { surface: "overlay", route: "quick-add" } });
+  });
+
+  it("overlay.close answers {} and then calls onClose; any other surface is invalid-params", async () => {
+    const host = fake({ manifest: OVERLAY_MANIFEST });
+    const onClose = vi.fn();
+    const got: HostToAppMessage[] = [];
+    const frame = host.attach((m) => got.push(m), { surface: "overlay", shortcut: "quick-add", onClose });
+    frame.receive({ channel: "pomade", type: "hello", hostApi: 0 });
+    frame.receive({ channel: "pomade", type: "call", id: "1", method: "overlay.close" });
+    expect(got[1]).toEqual({ channel: "pomade", type: "result", id: "1", ok: true, value: {} });
+    expect(onClose).not.toHaveBeenCalled();
+    await flush();
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    const tab = raw(host);
+    tab.hello();
+    const r = tab.call("overlay.close");
+    expect(!r.ok && r.error).toEqual({ code: "invalid-params", message: "overlay.close is only for an overlay frame" });
+  });
+
+  it("a forwarded plain Escape closes an overlay frame, never a tab frame", () => {
+    const host = fake({ manifest: OVERLAY_MANIFEST });
+    const onOverlayClose = vi.fn();
+    const onTabClose = vi.fn();
+    const overlay = host.attach(() => undefined, { surface: "overlay", onClose: onOverlayClose });
+    const tab = host.attach(() => undefined, { onClose: onTabClose });
+    const esc = { channel: "pomade", type: "key", key: "Escape", code: "Escape", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false };
+    overlay.receive({ ...esc, shiftKey: true });
+    expect(onOverlayClose).not.toHaveBeenCalled();
+    overlay.receive(esc);
+    tab.receive(esc);
+    expect(onOverlayClose).toHaveBeenCalledTimes(1);
+    expect(onTabClose).not.toHaveBeenCalled();
+    expect(host.keys).toHaveLength(3);
+  });
+
+  it("the SDK closes its overlay", async () => {
+    const host = fake({ manifest: OVERLAY_MANIFEST });
+    const onClose = vi.fn();
+    const r = await connect({ transport: host.createTransport({ surface: "overlay", shortcut: "quick-add", onClose }), keySource: null });
+    if (r.status !== "connected") throw new Error(r.status);
+    expect(r.host.welcome).toMatchObject({ surface: "overlay", route: "quick-add" });
+    await r.host.overlay.close();
+    await flush();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("files.readFolder", () => {
   it("lists direct children, sorted by path, with kind, size (UTF-8 bytes) and mtime", async () => {
     const host = await client(fake());

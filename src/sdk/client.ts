@@ -14,6 +14,8 @@ import {
   type ReadFolderResult,
   type SetBadgeParams,
   type FrameTarget,
+  type JsonValue,
+  type OpenAppParams,
   type WatchParams,
   type CreateFileParams,
   type EditResult,
@@ -118,7 +120,23 @@ export interface HostClient {
     openFile(params: OpenFileParams): Promise<void>;
     /** Open a terminal tab in a folder, right of the active tab, optionally running a command. */
     openTerminal(params: OpenTerminalParams): Promise<void>;
+    /** Open or focus this app's own tab at `route` (default ""), in `projectId` (default the active project). */
+    openApp(params?: OpenAppParams): Promise<void>;
   };
+  readonly state: {
+    /** The value stored under `key`, or `null` when it is not set. Shared by all of the app's frames. */
+    get<T extends JsonValue = JsonValue>(key: string): Promise<T | null>;
+    /** Store `value` under `key` (`null` removes it); the app's other frames get `state.changed`. */
+    set(key: string, value: JsonValue): Promise<void>;
+    /** Called when another frame of the app sets a key; returns an unsubscribe function. */
+    onChange(callback: (key: string, value: JsonValue | null) => void): () => void;
+  };
+  readonly overlay: {
+    /** Close this overlay frame; focus returns where it was. Only for `welcome.surface === "overlay"`. */
+    close(): Promise<void>;
+  };
+  /** Called with the new route when Pomade navigates this frame's tab (`welcome.route` is the first); returns an unsubscribe function. */
+  onRouteChange(callback: (route: string) => void): () => void;
   /** Detach from the transport: no more events, pending calls reject. */
   close(): void;
 }
@@ -135,6 +153,8 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
   const pending = new Map<string, Pending>();
   const watches = new Map<string, (changes: FileChange[]) => void>();
   const projectListeners = new Set<(project: ProjectRef) => void>();
+  const stateListeners = new Set<(key: string, value: JsonValue | null) => void>();
+  const routeListeners = new Set<(route: string) => void>();
 
   const unlisten = transport.listen((data) => {
     const msg = parseHostMessage(data);
@@ -146,10 +166,19 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
       if (msg.ok) p.resolve(msg.value);
       else p.reject(new HostError(msg.error.code, msg.error.message));
     } else if (msg.type === "event") {
-      if (msg.name === "project.changed") {
-        for (const cb of [...projectListeners]) cb(msg.payload);
-      } else {
-        watches.get(msg.payload.watchId)?.(msg.payload.changes);
+      switch (msg.name) {
+        case "project.changed":
+          for (const cb of [...projectListeners]) cb(msg.payload);
+          break;
+        case "files.changed":
+          watches.get(msg.payload.watchId)?.(msg.payload.changes);
+          break;
+        case "state.changed":
+          for (const cb of [...stateListeners]) cb(msg.payload.key, msg.payload.value);
+          break;
+        case "route.changed":
+          for (const cb of [...routeListeners]) cb(msg.payload.route);
+          break;
       }
     }
   });
@@ -181,6 +210,8 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
     onClose?.();
     watches.clear();
     projectListeners.clear();
+    stateListeners.clear();
+    routeListeners.clear();
     const error = new Error("pomade-kit: client is closed");
     for (const p of pending.values()) p.reject(error);
     pending.clear();
@@ -252,6 +283,31 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
       async openTerminal(params) {
         await call("tabs.openTerminal", params);
       },
+      async openApp(params = {}) {
+        await call("tabs.openApp", params);
+      },
+    },
+    state: {
+      async get<T extends JsonValue = JsonValue>(key: string) {
+        const { value } = await call("state.get", { key });
+        return value as T | null;
+      },
+      async set(key, value) {
+        await call("state.set", { key, value });
+      },
+      onChange(callback) {
+        stateListeners.add(callback);
+        return () => stateListeners.delete(callback);
+      },
+    },
+    overlay: {
+      async close() {
+        await call("overlay.close", {});
+      },
+    },
+    onRouteChange(callback) {
+      routeListeners.add(callback);
+      return () => routeListeners.delete(callback);
     },
     close: dispose,
   };

@@ -3,7 +3,15 @@
 export { connect, type ConnectOptions, type ConnectResult } from "./connect.js";
 export { HostError, type FileWatch, type HostClient, type Welcome } from "./client.js";
 export { postMessageTransport, type MessageWindow, type Transport } from "./transport.js";
-export { installKeyForwarder, shouldForwardKey, toKeyMessage, type KeyLike, type KeySource } from "./keys.js";
+export {
+  installKeyForwarder,
+  isPlainEscape,
+  shouldForwardKey,
+  toKeyMessage,
+  type ForwardOptions,
+  type KeyLike,
+  type KeySource,
+} from "./keys.js";
 export type {
   FileChange,
   FileEntry,
@@ -41,4 +49,5 @@ export type {
   RemoveSymlinkParams,
   PickFolderParams,
   PickFolderResult,
+  OpenAppParams,
 } from "../protocol/index.js";

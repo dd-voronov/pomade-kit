@@ -21,6 +21,7 @@ test("lists the active project's tickets with their frontmatter", async ({ page 
   await expect(row(page, "Projects/alpha/docs/roadmap/E-001-first.md")).toHaveText(/E-001-first\.mdE-001plannedFirstDoneOpen/);
   await expect(row(page, "Projects/alpha/docs/roadmap/T-002-broken.md")).toContainText("can't read:");
   await expect(app(page).locator("tr[data-path]")).toHaveCount(2);
+  await expect.poll(() => page.evaluate(() => window.fakeHost.badges)).toEqual({ hello: { count: 2, urgent: false } });
 });
 
 test("follows file events: create, change, rename, delete", async ({ page }) => {
@@ -71,6 +72,42 @@ test("a frame reload starts a new handshake and keeps working", async ({ page })
   await expect(app(page).getByTestId("state")).toHaveText("Project: Alpha");
   await page.evaluate(() => window.fakeHost.writeFile("Projects/alpha/docs/roadmap/E-004.md", "---\nid: E-004\ntitle: After reload\n---\n"));
   await expect(row(page, "Projects/alpha/docs/roadmap/E-004.md")).toContainText("After reload");
+});
+
+test("counts launches in the shared app state; a reload counts again", async ({ page }) => {
+  await expect(app(page).getByTestId("launches")).toHaveText("Launches: 1");
+  await app(page).locator("body").evaluate(() => location.reload());
+  await expect(app(page).getByTestId("launches")).toHaveText("Launches: 2");
+  expect(await page.evaluate(() => window.fakeHost.state)).toEqual({ launches: 2 });
+});
+
+test("shows its route, follows route changes, and opens its own tab at a route", async ({ page }) => {
+  await expect(app(page).getByTestId("route")).toHaveText("Route: (default)");
+  await page.evaluate(() => window.mounted.navigate("roadmap"));
+  await expect(app(page).getByTestId("route")).toHaveText("Route: roadmap");
+  await app(page).getByTestId("open-tab").click();
+  await expect.poll(() => page.evaluate(() => window.fakeHost.openedTabs)).toEqual([{ kind: "app", route: "roadmap", projectId: "alpha" }]);
+});
+
+test.describe("the quick-note overlay", () => {
+  const OVERLAY = `${HARNESS}&shortcut=note`;
+
+  test("Enter stores the note in the app state and closes the overlay", async ({ page }) => {
+    await page.goto(OVERLAY);
+    const note = app(page).getByTestId("note");
+    await expect(note).toBeFocused();
+    await note.fill("call the bank");
+    await note.press("Enter");
+    await expect(page.locator("iframe")).toHaveCount(0);
+    expect(await page.evaluate(() => window.fakeHost.state)).toEqual({ lastNote: "call the bank" });
+  });
+
+  test("Escape closes it and stores nothing", async ({ page }) => {
+    await page.goto(OVERLAY);
+    await app(page).getByTestId("note").press("Escape");
+    await expect(page.locator("iframe")).toHaveCount(0);
+    expect(await page.evaluate(() => window.fakeHost.state)).toEqual({});
+  });
 });
 
 test("standalone (no host): shows the no-host state", async ({ page }) => {

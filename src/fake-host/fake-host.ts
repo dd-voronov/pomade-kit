@@ -8,10 +8,14 @@ import {
   HOST_API_VERSION,
   METHOD_CAPABILITY,
   WORKSPACE_PROJECT_ID,
+  checkStateKey,
+  checkStateValue,
   normalizeWorkspacePath,
   parseAppMessage,
   parseManifest,
   resolveFrameTarget,
+  resolveOverlayTarget,
+  type AppShortcut,
   type FileChange,
   type FrameTarget,
   type HostToAppMessage,
@@ -24,6 +28,7 @@ import {
   type StripIcon,
   type Surface,
 } from "../protocol/index.js";
+import { isPlainEscape } from "../sdk/keys.js";
 import type { Transport } from "../sdk/transport.js";
 import {
   dispatchFileWrite,
@@ -82,6 +87,8 @@ export interface FakeHostOptions {
   ignore?: readonly string[];
   /** Clock for `mtimeMs`. Default `Date.now`. */
   now?: () => number;
+  /** The app's machine-local state at start (`state.get` / `state.set`), key → value. */
+  state?: Record<string, JsonValue>;
 }
 
 /** What a frame is opened for, as Pomade opens it from the new-tab menu or a strip icon. */
@@ -90,6 +97,12 @@ export interface FrameOptions {
   surface?: Surface;
   /** The strip icon id; an id the manifest does not declare opens the default view (no icon, route `""`). */
   icon?: string;
+  /** `surface: "overlay"`: the shortcut that opened it; the frame renders its route. */
+  shortcut?: string;
+  /** Open at this route instead of the icon's or shortcut's — a tab Pomade opened for `tabs.openApp`. */
+  route?: string;
+  /** An overlay frame asked to close (`overlay.close`, or a forwarded Escape): close it here, as Pomade does. */
+  onClose?: () => void;
 }
 
 /** A strip icon's badge (`strip.setBadge`). */
@@ -105,7 +118,10 @@ export interface FrameConnection {
   receive(data: unknown): void;
   /** The frame is gone: drop its watches, stop sending to it. */
   detach(): void;
+  /** Navigate the frame's tab to `route`, as Pomade does for `tabs.openApp`: `route.changed` when it differs (after welcome), and `host.info` answers it. */
+  navigate(route: string): void;
 }
+
 
 interface Watch {
   path: string;
@@ -115,6 +131,7 @@ interface Watch {
 interface Frame {
   post(message: HostToAppMessage): void;
   target: FrameTarget;
+  onClose: (() => void) | undefined;
   welcomed: boolean;
   watches: Map<string, Watch>;
 }
@@ -147,8 +164,10 @@ export class FakeHost {
   private batched: FileChange[] | null = null;
   private defaultTransport: Transport | null = null;
   private readonly strip: readonly StripIcon[];
+  private readonly shortcuts: readonly AppShortcut[];
   private readonly badgeMap = new Map<string, FakeBadge>();
   private readonly data: DataContext;
+  private readonly stateMap = new Map<string, string>();
 
   constructor(options: FakeHostOptions = {}) {
     const parsed = parseManifest(
@@ -157,6 +176,7 @@ export class FakeHost {
     if (!parsed.ok) throw new Error(`fake host: invalid manifest: ${parsed.errors.map((e) => e.message).join("; ")}`);
     this.manifest = parsed.manifest;
     this.strip = parsed.manifest.strip ?? [];
+    this.shortcuts = parsed.manifest.shortcuts ?? [];
     this.pomadeVersion = options.pomadeVersion ?? "0.0.0-fake";
     this.hostApi = options.hostApi ?? HOST_API_VERSION;
     this.workspace = new Workspace(options.files ?? {}, options.ignore ?? DEFAULT_IGNORE, options.now ?? Date.now);
@@ -198,14 +218,22 @@ export class FakeHost {
       pickAnswers: this.pickAnswers,
       pickRequests: this.pickRequests,
     };
+    for (const [key, value] of Object.entries(options.state ?? {})) {
+      const bad = checkStateKey(key) ?? checkStateValue(value);
+      if (bad) throw new Error(`fake host: invalid state ${JSON.stringify(key)}: ${bad}`);
+      if (value !== null) this.stateMap.set(key, JSON.stringify(value));
+    }
   }
 
   // ── Frames and transports ────────────────────────────────────────────────
 
   /** Attach a frame opened for `open` (default: a tab from the new-tab menu); `post` delivers host → app messages to it. */
   attach(post: (message: HostToAppMessage) => void, open: FrameOptions = {}): FrameConnection {
-    const target = resolveFrameTarget(this.strip, open.surface ?? "tab", open.icon);
-    const frame: Frame = { post, target, welcomed: false, watches: new Map() };
+    const surface = open.surface ?? "tab";
+    const target =
+      surface === "overlay" ? resolveOverlayTarget(this.shortcuts, open.shortcut) : resolveFrameTarget(this.strip, surface, open.icon);
+    if (open.route !== undefined) target.route = open.route;
+    const frame: Frame = { post, target, onClose: open.onClose, welcomed: false, watches: new Map() };
     this.frames.add(frame);
     return {
       receive: (data) => {
@@ -214,6 +242,13 @@ export class FakeHost {
       detach: () => {
         this.frames.delete(frame);
         frame.watches.clear();
+      },
+      navigate: (route) => {
+        if (route === frame.target.route) return;
+        frame.target.route = route;
+        if (this.frames.has(frame) && frame.welcomed) {
+          frame.post({ channel: CHANNEL, type: "event", name: "route.changed", payload: { route } });
+        }
       },
     };
   }
@@ -345,6 +380,11 @@ export class FakeHost {
     return Object.fromEntries([...this.badgeMap].map(([icon, badge]) => [icon, { ...badge }]));
   }
 
+  /** The app's state as stored, key → value (a snapshot; unset keys are absent). */
+  get state(): Record<string, JsonValue> {
+    return Object.fromEntries([...this.stateMap].map(([key, text]) => [key, JSON.parse(text) as JsonValue]));
+  }
+
   // ── Protocol ─────────────────────────────────────────────────────────────
 
   private findScope(id: string | null): ProjectRef {
@@ -363,6 +403,7 @@ export class FakeHost {
         return;
       case "key":
         this.keys.push(msg);
+        if (frame.target.surface === "overlay" && isPlainEscape(msg)) frame.onClose?.();
         return;
       case "call":
         this.answer(frame, msg);
@@ -456,6 +497,7 @@ export class FakeHost {
         return dispatchFileWrite(this.data, method, params);
       case "tabs.openFile":
       case "tabs.openTerminal":
+      case "tabs.openApp":
         return dispatchTabs(this.data, method, params);
       case "project.list":
       case "project.getSettings":
@@ -468,6 +510,30 @@ export class FakeHost {
         return dispatchSymlinks(this.data, method, params);
       case "files.pickFolder":
         return dispatchPick(this.data, method, params);
+      case "state.get": {
+        const bad = checkStateKey(params.key);
+        if (bad) throw new CallError("invalid-params", bad);
+        const text = this.stateMap.get(params.key as string);
+        return { value: text === undefined ? null : (JSON.parse(text) as JsonValue) };
+      }
+      case "state.set": {
+        const bad = checkStateKey(params.key) ?? checkStateValue(params.value);
+        if (bad) throw new CallError("invalid-params", bad);
+        const key = params.key as string;
+        const value = params.value as JsonValue;
+        if (value === null) this.stateMap.delete(key);
+        else this.stateMap.set(key, JSON.stringify(value));
+        for (const other of this.frames) {
+          if (other === frame || !other.welcomed) continue;
+          other.post({ channel: CHANNEL, type: "event", name: "state.changed", payload: { key, value: structuredClone(value) } });
+        }
+        return {};
+      }
+      case "overlay.close":
+        if (frame.target.surface !== "overlay") throw new CallError("invalid-params", "overlay.close is only for an overlay frame");
+        // After the result is posted, like Pomade: the frame hears its answer, then goes away.
+        if (frame.onClose) setTimeout(frame.onClose, 0);
+        return {};
     }
   }
 

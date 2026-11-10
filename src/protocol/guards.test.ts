@@ -21,6 +21,7 @@ describe("isSurface", () => {
   it.each<[unknown, boolean]>([
     ["tab", true],
     ["panel", true],
+    ["overlay", true],
     ["Tab", false],
     ["both", false],
     ["", false],
@@ -156,6 +157,31 @@ describe("parseHostMessage", () => {
     expect(parseHostMessage({ channel: "pomade", type: "event", name: "future.event", payload: {} })).toBeNull();
   });
 
+  it("route.changed carries the new route", () => {
+    expect(parseHostMessage({ channel: "pomade", type: "event", name: "route.changed", payload: { route: "planner/today", x: 1 } })).toEqual({
+      channel: "pomade",
+      type: "event",
+      name: "route.changed",
+      payload: { route: "planner/today" },
+    });
+    expect(parseHostMessage({ channel: "pomade", type: "event", name: "route.changed", payload: { route: 1 } })).toBeNull();
+    expect(parseHostMessage({ channel: "pomade", type: "event", name: "route.changed", payload: {} })).toBeNull();
+  });
+
+  it("state.changed carries a key and a JSON value (null = removed)", () => {
+    for (const value of [null, 1, "x", [1, { a: true }], { pins: ["a"] }]) {
+      expect(parseHostMessage({ channel: "pomade", type: "event", name: "state.changed", payload: { key: "k", value } })).toEqual({
+        channel: "pomade",
+        type: "event",
+        name: "state.changed",
+        payload: { key: "k", value },
+      });
+    }
+    expect(parseHostMessage({ channel: "pomade", type: "event", name: "state.changed", payload: { key: 1, value: 1 } })).toBeNull();
+    expect(parseHostMessage({ channel: "pomade", type: "event", name: "state.changed", payload: { key: "k" } })).toBeNull();
+    expect(parseHostMessage({ channel: "pomade", type: "event", name: "state.changed", payload: { key: "k", value: new Date(0) } })).toBeNull();
+  });
+
   it("ignores app messages and foreign data", () => {
     expect(parseHostMessage({ channel: "pomade", type: "hello", hostApi: 0 })).toBeNull();
     expect(parseHostMessage({ channel: "vite", type: "welcome" })).toBeNull();
@@ -189,7 +215,11 @@ describe("METHOD_CAPABILITY", () => {
       "files.symlink": "files.symlink",
       "files.removeSymlink": "files.symlink",
       "files.pickFolder": "files.read",
+      "state.get": null,
+      "state.set": null,
+      "tabs.openApp": null,
+      "overlay.close": null,
     });
-    expect(METHOD_NAMES).toHaveLength(23);
+    expect(METHOD_NAMES).toHaveLength(27);
   });
 });
