@@ -13,6 +13,7 @@ import {
   type Surface,
 } from "./types.js";
 import { isJsonValue } from "./state.js";
+import { isGitRepoState } from "./git.js";
 
 type Obj = Record<string, unknown>;
 
@@ -163,6 +164,15 @@ export function parseHostMessage(v: unknown): HostToAppMessage | null {
       }
       if (m.name === "route.changed" && isObj(m.payload) && typeof m.payload.route === "string") {
         return { channel: CHANNEL, type: "event", name: "route.changed", payload: { route: m.payload.route } };
+      }
+      if (
+        m.name === "git.changed" &&
+        isObj(m.payload) &&
+        typeof m.payload.watchId === "string" &&
+        Array.isArray(m.payload.repos) &&
+        m.payload.repos.every(isGitRepoState)
+      ) {
+        return { channel: CHANNEL, type: "event", name: "git.changed", payload: { watchId: m.payload.watchId, repos: m.payload.repos } };
       }
       return null;
     default:

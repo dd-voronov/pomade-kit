@@ -38,6 +38,9 @@ import {
   type SymlinkParams,
   type PickFolderParams,
   type PickFolderResult,
+  type GitRepoState,
+  type GitStateParams,
+  type GitStateResult,
 } from "../protocol/index.js";
 import type { Transport } from "./transport.js";
 
@@ -63,6 +66,12 @@ export interface Welcome extends FrameTarget {
 }
 
 export interface FileWatch {
+  readonly watchId: string;
+  /** Stop delivering changes (immediately) and unwatch on the host. Idempotent. */
+  close(): Promise<void>;
+}
+
+export interface GitWatch {
   readonly watchId: string;
   /** Stop delivering changes (immediately) and unwatch on the host. Idempotent. */
   close(): Promise<void>;
@@ -137,6 +146,12 @@ export interface HostClient {
   };
   /** Called with the new route when Pomade navigates this frame's tab (`welcome.route` is the first); returns an unsubscribe function. */
   onRouteChange(callback: (route: string) => void): () => void;
+  readonly git: {
+    /** Every repo's state, or one project's repos (`projectId`). */
+    getState(params?: GitStateParams): Promise<GitStateResult>;
+    /** Resolves once the host accepted the watch; `onChange` receives the scope's repos after each change. */
+    watch(params: GitStateParams, onChange: (repos: GitRepoState[]) => void): Promise<GitWatch>;
+  };
   /** Detach from the transport: no more events, pending calls reject. */
   close(): void;
 }
@@ -155,6 +170,7 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
   const projectListeners = new Set<(project: ProjectRef) => void>();
   const stateListeners = new Set<(key: string, value: JsonValue | null) => void>();
   const routeListeners = new Set<(route: string) => void>();
+  const gitWatches = new Map<string, (repos: GitRepoState[]) => void>();
 
   const unlisten = transport.listen((data) => {
     const msg = parseHostMessage(data);
@@ -178,6 +194,9 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
           break;
         case "route.changed":
           for (const cb of [...routeListeners]) cb(msg.payload.route);
+          break;
+        case "git.changed":
+          gitWatches.get(msg.payload.watchId)?.(msg.payload.repos);
           break;
       }
     }
@@ -209,6 +228,7 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
     unlisten();
     onClose?.();
     watches.clear();
+    gitWatches.clear();
     projectListeners.clear();
     stateListeners.clear();
     routeListeners.clear();
@@ -308,6 +328,23 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
     onRouteChange(callback) {
       routeListeners.add(callback);
       return () => routeListeners.delete(callback);
+    },
+    git: {
+      getState: (params = {}) => call("git.getState", params),
+      async watch(params, onChange) {
+        const { watchId } = await call("git.watch", params, (v) => gitWatches.set(v.watchId, onChange));
+        let unwatched: Promise<void> | null = null;
+        return {
+          watchId,
+          close() {
+            unwatched ??= (async () => {
+              gitWatches.delete(watchId);
+              if (!closed) await call("git.unwatch", { watchId });
+            })();
+            return unwatched;
+          },
+        };
+      },
     },
     close: dispose,
   };

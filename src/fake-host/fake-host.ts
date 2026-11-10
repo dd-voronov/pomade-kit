@@ -18,6 +18,7 @@ import {
   type AppShortcut,
   type FileChange,
   type FrameTarget,
+  type GitRepoState,
   type HostToAppMessage,
   type IncomingCall,
   type JsonValue,
@@ -42,7 +43,8 @@ import {
   type FakeOpenedTab,
   type FakePickRequest,
 } from "./data.js";
-import { booleanParam, CallError, paramsObject, stringParam } from "./params.js";
+import { reposInScope, scriptedRepos, type GitWatchState } from "./git.js";
+import { booleanParam, CallError, paramsObject, requestPath, requireAllowedTarget, stringParam } from "./params.js";
 import { controlPath, Workspace } from "./workspace.js";
 
 /** Pomade's default tree ignore list. */
@@ -89,6 +91,8 @@ export interface FakeHostOptions {
   now?: () => number;
   /** The app's machine-local state at start (`state.get` / `state.set`), key → value. */
   state?: Record<string, JsonValue>;
+  /** The workspace's repos as `git.getState` serves them (any order; served sorted by root). Default none. */
+  git?: GitRepoState[];
 }
 
 /** What a frame is opened for, as Pomade opens it from the new-tab menu or a strip icon. */
@@ -134,6 +138,7 @@ interface Frame {
   onClose: (() => void) | undefined;
   welcomed: boolean;
   watches: Map<string, Watch>;
+  gitWatches: Map<string, GitWatchState>;
 }
 
 function isMethod(name: string): name is MethodName {
@@ -168,6 +173,7 @@ export class FakeHost {
   private readonly badgeMap = new Map<string, FakeBadge>();
   private readonly data: DataContext;
   private readonly stateMap = new Map<string, string>();
+  private gitRepos: GitRepoState[];
 
   constructor(options: FakeHostOptions = {}) {
     const parsed = parseManifest(
@@ -199,6 +205,7 @@ export class FakeHost {
       this.projectSettings.set(p.id, structuredClone(p.settings ?? {}));
     }
     this.active = this.findScope(options.activeProject ?? null);
+    this.gitRepos = scriptedRepos(options.git ?? []);
     this.data = {
       workspace: this.workspace,
       emit: (changes) => this.emit(changes),
@@ -233,7 +240,7 @@ export class FakeHost {
     const target =
       surface === "overlay" ? resolveOverlayTarget(this.shortcuts, open.shortcut) : resolveFrameTarget(this.strip, surface, open.icon);
     if (open.route !== undefined) target.route = open.route;
-    const frame: Frame = { post, target, onClose: open.onClose, welcomed: false, watches: new Map() };
+    const frame: Frame = { post, target, onClose: open.onClose, welcomed: false, watches: new Map(), gitWatches: new Map() };
     this.frames.add(frame);
     return {
       receive: (data) => {
@@ -242,6 +249,7 @@ export class FakeHost {
       detach: () => {
         this.frames.delete(frame);
         frame.watches.clear();
+        frame.gitWatches.clear();
       },
       navigate: (route) => {
         if (route === frame.target.route) return;
@@ -326,6 +334,13 @@ export class FakeHost {
     this.emit(this.workspace.rename(controlPath(from), controlPath(to)));
   }
 
+  /** Replace the workspace's repos (what Pomade's git state would read next); emits `git.changed` to
+   *  every watch whose scope's repos changed. */
+  setGitRepos(repos: GitRepoState[]): void {
+    this.gitRepos = scriptedRepos(repos);
+    this.refreshGitWatches();
+  }
+
   /** Switch the active project (`null` = Workspace); emits `project.changed` when it changes. */
   setActiveProject(id: string | null): void {
     const next = this.findScope(id);
@@ -348,6 +363,8 @@ export class FakeHost {
     if (patch.root !== undefined) project.root = controlPath(patch.root);
     if (patch.group === null) this.projectGroup.delete(id);
     else if (patch.group !== undefined) this.projectGroup.set(id, patch.group);
+    // A moved project's git scope follows its new root.
+    if (patch.root !== undefined) this.refreshGitWatches();
     if (this.active.id !== id || (patch.name === undefined && patch.root === undefined)) return;
     this.active = { ...project };
     for (const frame of this.frames) {
@@ -413,6 +430,7 @@ export class FakeHost {
 
   private handshake(frame: Frame, appHostApi: number): void {
     frame.watches.clear();
+    frame.gitWatches.clear();
     frame.welcomed = false;
     if (appHostApi !== this.hostApi) {
       const reason = appHostApi > this.hostApi ? "needs-newer-pomade" : "app-too-old";
@@ -534,15 +552,53 @@ export class FakeHost {
         // After the result is posted, like Pomade: the frame hears its answer, then goes away.
         if (frame.onClose) setTimeout(frame.onClose, 0);
         return {};
+      case "git.getState":
+        return { repos: this.gitScope(this.gitProjectParam(params)) };
+      case "git.watch": {
+        const projectId = this.gitProjectParam(params);
+        const watchId = `w${this.nextWatchId++}`;
+        frame.gitWatches.set(watchId, { ...(projectId !== undefined ? { projectId } : {}), seen: JSON.stringify(this.gitScope(projectId)) });
+        return { watchId };
+      }
+      case "git.unwatch":
+        frame.gitWatches.delete(stringParam(params, "watchId"));
+        return {};
+    }
+  }
+
+  /** `projectId` of a git call, checked to name a project; absent or the Workspace scope = the workspace. */
+  private gitProjectParam(params: Record<string, unknown>): string | undefined {
+    if (params.projectId === undefined) return undefined;
+    const id = stringParam(params, "projectId");
+    if (id === WORKSPACE_PROJECT_ID) return undefined;
+    return this.data.project(id).id;
+  }
+
+  /** The repos of a git scope; a project that no longer exists has none. */
+  private gitScope(projectId: string | undefined): GitRepoState[] {
+    if (projectId === undefined) return reposInScope(this.gitRepos, "");
+    const project = this.projects.find((p) => p.id === projectId);
+    return project ? reposInScope(this.gitRepos, project.root) : [];
+  }
+
+  private refreshGitWatches(): void {
+    for (const frame of this.frames) {
+      if (!frame.welcomed) continue;
+      for (const [watchId, watch] of frame.gitWatches) {
+        const repos = this.gitScope(watch.projectId);
+        const seen = JSON.stringify(repos);
+        if (seen === watch.seen) continue;
+        watch.seen = seen;
+        frame.post({ channel: CHANNEL, type: "event", name: "git.changed", payload: { watchId, repos } });
+      }
     }
   }
 
   /** Normalize a request path and require it to exist. */
   private existing(path: string): string {
-    const n = normalizeWorkspacePath(path);
-    if (!n.ok) throw new CallError("outside-workspace", `${JSON.stringify(path)} is outside the workspace`);
-    if (this.workspace.kindOf(n.path) === null) throw new CallError("not-found", `${JSON.stringify(path)} does not exist`);
-    return n.path;
+    const n = requestPath(path);
+    if (this.workspace.kindOf(n) === null) throw new CallError("not-found", `${JSON.stringify(path)} does not exist`);
+    return requireAllowedTarget(this.workspace, n);
   }
 
   private emit(changes: FileChange[]): void {

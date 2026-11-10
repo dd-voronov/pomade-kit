@@ -3,8 +3,7 @@
   "name": "Hello",
   "version": "0.1.0",
   "hostApi": 0,
-  "capabilities": ["project.read", "project.write", "files.read", "files.write", "files.symlink", "tabs.open"],
-  "symlinks": ["Agents/*/skills"],
+  "capabilities": ["project.read", "project.write", "files.read", "files.write", "tabs.open", "git.read"],
   "strip": [{ "id": "hello", "title": "Hello", "action": "panel" }],
   "startOnLaunch": true,
   "shortcuts": [

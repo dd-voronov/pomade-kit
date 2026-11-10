@@ -1,6 +1,7 @@
 // The fake host's call errors and params readers, shared by its method handlers.
 
-import { normalizeWorkspacePath, type ErrorCode } from "../protocol/index.js";
+import { isPomadeFolderPath, normalizeWorkspacePath, pomadeFolderMessage, type ErrorCode } from "../protocol/index.js";
+import type { Workspace } from "./workspace.js";
 
 export class CallError extends Error {
   constructor(
@@ -34,12 +35,24 @@ export function booleanParam(p: Obj, key: string): boolean {
   return v;
 }
 
-/** A workspace path param, normalized (`outside-workspace` for an escape). */
-export function pathParam(p: Obj, key: string): string {
-  const raw = stringParam(p, key);
+/** A request path, normalized: `outside-workspace` for an escape, `capability-denied` at or inside
+ *  the workspace's `.pomade` folder. */
+export function requestPath(raw: string): string {
   const n = normalizeWorkspacePath(raw);
   if (!n.ok) throw new CallError("outside-workspace", `${JSON.stringify(raw)} is outside the workspace`);
+  if (isPomadeFolderPath(n.path)) throw new CallError("capability-denied", pomadeFolderMessage(raw));
   return n.path;
+}
+
+/** A workspace path param, normalized by `requestPath`. */
+export function pathParam(p: Obj, key: string): string {
+  return requestPath(stringParam(p, key));
+}
+
+/** Refuse `path` when what it names — symlinks followed — is at or inside the workspace's `.pomade` folder. */
+export function requireAllowedTarget(ws: Workspace, path: string): string {
+  if (isPomadeFolderPath(ws.realPath(path))) throw new CallError("capability-denied", pomadeFolderMessage(path));
+  return path;
 }
 
 /** A path param naming an entry below the workspace root (never the root itself). */

@@ -1,5 +1,7 @@
 // Host API v0 — the data types and messages of Pomade's docs/HOST-API.md, transcribed.
 
+import type { GitChangedPayload, GitStateParams, GitStateResult } from "./git.js";
+
 /** The Host API version this kit speaks (HOST-API "Version"). */
 export const HOST_API_VERSION = 0;
 
@@ -115,7 +117,7 @@ export interface ErrorPayload {
   message: string;
 }
 
-export const CAPABILITIES = ["project.read", "files.read", "files.write", "tabs.open", "project.write", "files.symlink"] as const;
+export const CAPABILITIES = ["project.read", "files.read", "files.write", "tabs.open", "project.write", "files.symlink", "git.read"] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
 // ── Methods ─────────────────────────────────────────────────────────────────
@@ -388,6 +390,9 @@ export interface HostMethods {
   "state.set": { params: StateSetParams; result: Record<string, never> };
   "tabs.openApp": { params: OpenAppParams; result: Record<string, never> };
   "overlay.close": { params: Record<string, never>; result: Record<string, never> };
+  "git.getState": { params: GitStateParams; result: GitStateResult };
+  "git.watch": { params: GitStateParams; result: WatchResult };
+  "git.unwatch": { params: UnwatchParams; result: Record<string, never> };
 }
 export type MethodName = keyof HostMethods;
 export type MethodParams<M extends MethodName> = HostMethods[M]["params"];
@@ -422,6 +427,9 @@ export const METHOD_CAPABILITY: Readonly<Record<MethodName, Capability | null>> 
   "state.set": null,
   "tabs.openApp": null,
   "overlay.close": null,
+  "git.getState": "git.read",
+  "git.watch": "git.read",
+  "git.unwatch": "git.read",
 };
 
 export const METHOD_NAMES = Object.keys(METHOD_CAPABILITY) as MethodName[];
@@ -450,6 +458,7 @@ export interface HostEvents {
   "files.changed": FilesChangedPayload;
   "state.changed": StateChangedPayload;
   "route.changed": RouteChangedPayload;
+  "git.changed": GitChangedPayload;
 }
 export type EventName = keyof HostEvents;
 

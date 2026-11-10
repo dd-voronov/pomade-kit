@@ -9,3 +9,4 @@ export * from "./frontmatter.js";
 export * from "./project-data.js";
 export * from "./state.js";
 export * from "./shortcuts.js";
+export * from "./git.js";

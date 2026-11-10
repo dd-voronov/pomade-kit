@@ -1,20 +1,27 @@
 // Hello — the smallest Pomade app: lists the active project's docs/roadmap/ with each file's
 // frontmatter (the folder is a per-project setting), shows the project's group path and visible
-// agents, lets the user pick its folder with Pomade's folder picker, links its skill into an
-// agent's skills folder, follows project switches and file changes, marks a ticket done with a
-// field-only frontmatter write, and opens a ticket in a Pomade editor tab. It also counts its own
+// agents, lets the user pick its folder with Pomade's folder picker, follows project switches and
+// file changes, marks a ticket done with a field-only frontmatter write, and opens a ticket in a
+// Pomade editor tab. It also counts its own
 // launches in the app state shared by all its frames, shows the route it renders and opens its
 // own tab at a route, and badges its strip icon with the number of tickets — it starts on launch,
 // so the badge is there before the panel is opened; its Cmd+Shift+J overlay takes a quick note
-// into the app state. Built only on pomade-kit's SDK.
+// into the app state; it shows the project's git repos live. Built only on pomade-kit's SDK.
 
 import { joinPath } from "pomade-kit/protocol";
-import { connect, HostError, type FileEntry, type FileWatch, type HostClient, type ProjectRef } from "pomade-kit/sdk";
+import {
+  connect,
+  HostError,
+  type FileEntry,
+  type FileWatch,
+  type GitRepoState,
+  type GitWatch,
+  type HostClient,
+  type ProjectRef,
+} from "pomade-kit/sdk";
 
 const FOLDER = "docs/roadmap";
 const DONE_FOLDER = "docs/roadmap/done";
-const SKILL = "Apps/hello/skill";
-const SKILL_LINK = "Agents/claude/skills/hello";
 const COLUMNS = ["id", "status", "title"];
 
 function el(testId: string): HTMLElement {
@@ -88,6 +95,12 @@ async function countLaunches(host: HostClient): Promise<void> {
   show(launches);
 }
 
+/** One line per repo: name, branch, uncommitted files, unpushed commits, remote. */
+function describeGit(repos: GitRepoState[]): string {
+  if (repos.length === 0) return "Git: no repository";
+  return `Git: ${repos.map((r) => `${r.name} · ${r.branch ?? "detached"} · ● ${r.changes.length} ↑${r.ahead} · ${r.remoteUrl ?? "local only"}`).join("; ")}`;
+}
+
 function startApp(host: HostClient): void {
   void countLaunches(host);
   const showRoute = (route: string): void => {
@@ -99,6 +112,7 @@ function startApp(host: HostClient): void {
   open.hidden = false;
   open.addEventListener("click", () => void host.tabs.openApp({ route: "roadmap" }));
   let watch: FileWatch | null = null;
+  let gitWatch: GitWatch | null = null;
   let generation = 0;
   const actions: RowActions = {
     // One field changes; the watch re-renders the row.
@@ -117,6 +131,7 @@ function startApp(host: HostClient): void {
     el("folder").textContent = folder;
     void showGroup(project, mine);
     void showAgents(project, mine);
+    void showGit(project, mine);
     const reload = async (): Promise<void> => {
       const { entries } = await host.files.readFolder({ path: folder, frontmatter: true });
       if (mine !== generation) return;
@@ -140,6 +155,22 @@ function startApp(host: HostClient): void {
     if (project.kind === "workspace") return FOLDER;
     const { settings } = await host.project.getSettings({ projectId: project.id });
     return typeof settings.folder === "string" ? settings.folder : FOLDER;
+  }
+
+  /** The project's repos, kept live by a git watch scoped to the project. */
+  async function showGit(project: ProjectRef, mine: number): Promise<void> {
+    await gitWatch?.close();
+    gitWatch = null;
+    const render = (repos: GitRepoState[]): void => {
+      if (mine === generation) el("git").textContent = describeGit(repos);
+    };
+    const next = await host.git.watch({ projectId: project.id }, render);
+    if (mine !== generation) {
+      await next.close();
+      return;
+    }
+    gitWatch = next;
+    render((await host.git.getState({ projectId: project.id })).repos);
   }
 
   async function showAgents(project: ProjectRef, mine: number): Promise<void> {
@@ -178,20 +209,6 @@ function startApp(host: HostClient): void {
       const folder = path === project.root ? "" : path.slice(project.root.length + 1);
       await host.project.setSettings({ projectId: project.id, settings: { folder } });
       await show(project);
-    })();
-  });
-
-  // Link (or unlink) this app's skill for the claude agent — inside the manifest's `symlinks` folder.
-  el("link-skill").addEventListener("click", () => {
-    void (async () => {
-      try {
-        await host.files.symlink({ path: SKILL_LINK, target: SKILL });
-        el("skill").textContent = "Skill linked";
-      } catch (err) {
-        if (!(err instanceof HostError && err.code === "already-exists")) throw err;
-        await host.files.removeSymlink({ path: SKILL_LINK });
-        el("skill").textContent = "Skill unlinked";
-      }
     })();
   });
 

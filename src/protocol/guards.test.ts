@@ -219,7 +219,10 @@ describe("METHOD_CAPABILITY", () => {
       "state.set": null,
       "tabs.openApp": null,
       "overlay.close": null,
+      "git.getState": "git.read",
+      "git.watch": "git.read",
+      "git.unwatch": "git.read",
     });
-    expect(METHOD_NAMES).toHaveLength(27);
+    expect(METHOD_NAMES).toHaveLength(30);
   });
 });

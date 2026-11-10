@@ -42,3 +42,21 @@ export function parentPath(path: string): string {
 export function isInside(path: string, folder: string): boolean {
   return folder === "" || path === folder || path.startsWith(`${folder}/`);
 }
+
+/** The workspace's own Pomade folder (workspace config, per-project state). */
+export const POMADE_FOLDER = ".pomade";
+
+/**
+ * True when a normalized workspace-relative path is the workspace's `.pomade` folder or lies inside
+ * it — a path no Host API method accepts (HOST-API §4, `capability-denied`). Only the folder at the
+ * workspace root counts; the name is compared case-insensitively, as on macOS's default file system.
+ */
+export function isPomadeFolderPath(path: string): boolean {
+  const first = path.split("/", 1)[0] ?? "";
+  return first.toLowerCase() === POMADE_FOLDER;
+}
+
+/** The refusal message for a path inside the workspace's `.pomade` folder. */
+export function pomadeFolderMessage(path: string): string {
+  return `${JSON.stringify(path)} is inside the workspace's ${POMADE_FOLDER} folder, which apps cannot use`;
+}

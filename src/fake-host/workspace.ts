@@ -3,6 +3,7 @@
 import {
   baseName,
   isMarkdownPath,
+  isPomadeFolderPath,
   normalizeWorkspacePath,
   parentPath,
   readFrontmatter,
@@ -91,6 +92,22 @@ export class Workspace {
     return [{ kind: "delete", path }];
   }
 
+  /** The path `path` resolves to: a symlink's chain of targets followed (cycle-safe); `path` itself otherwise. */
+  realPath(path: string): string {
+    let current = path;
+    for (let hops = 0; hops < 40; hops++) {
+      const node = this.nodes.get(current);
+      if (node?.kind !== "link" || node.target === undefined) return current;
+      current = node.target;
+    }
+    return current;
+  }
+
+  /** True when an app may see `path`: neither it nor what it points to is in the workspace's `.pomade` folder. */
+  isVisible(path: string): boolean {
+    return !isPomadeFolderPath(path) && !isPomadeFolderPath(this.realPath(path));
+  }
+
   /** The node at `path` with symlinks followed (cycle-safe); `null` when missing or broken. */
   private resolve(path: string): Node | null {
     let node = this.nodes.get(path);
@@ -109,7 +126,7 @@ export class Workspace {
     const rel = relativeTo(path, folder);
     if (rel === "") return true;
     if (!recursive && rel.includes("/")) return false;
-    return !this.isIgnored(rel);
+    return !this.isIgnored(rel) && !isPomadeFolderPath(path);
   }
 
   list(folder: string, recursive: boolean, withFrontmatter: boolean): FileEntry[] {
@@ -117,7 +134,7 @@ export class Workspace {
     for (const [path, node] of this.nodes) {
       if (path === folder || !isUnder(path, folder)) continue;
       const rel = relativeTo(path, folder);
-      if ((!recursive && rel.includes("/")) || this.isIgnored(rel)) continue;
+      if ((!recursive && rel.includes("/")) || this.isIgnored(rel) || !this.isVisible(path)) continue;
       // A symlink reports what it points to (a broken one as a file), and is never descended into.
       const shown = node.kind === "link" ? (this.resolve(path) ?? { ...node, kind: "file" as const }) : node;
       const kind = shown.kind === "dir" ? "dir" : "file";

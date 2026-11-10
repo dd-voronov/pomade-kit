@@ -158,16 +158,6 @@ test("the listed folder is a per-project setting; the visible agents are the pro
   await expect(app(page).getByTestId("agents")).toHaveText("Agents: claude");
 });
 
-test("links its skill into an agent's skills folder and unlinks it", async ({ page }) => {
-  await app(page).getByTestId("link-skill").click();
-  await expect(app(page).getByTestId("skill")).toHaveText("Skill linked");
-  expect(await page.evaluate(() => window.fakeHost.isSymlink("Agents/claude/skills/hello"))).toBe(true);
-  await app(page).getByTestId("link-skill").click();
-  await expect(app(page).getByTestId("skill")).toHaveText("Skill unlinked");
-  expect(await page.evaluate(() => window.fakeHost.isSymlink("Agents/claude/skills/hello"))).toBe(false);
-  expect(await page.evaluate(() => window.fakeHost.readFile("Apps/hello/skill/SKILL.md"))).toBe("---\nname: hello\n---\n");
-});
-
 test("Choose folder… uses the host's folder picker, bounded by the project", async ({ page }) => {
   await page.evaluate(() => {
     window.fakeHost.answerPick("Projects/beta/docs/roadmap");
@@ -176,4 +166,16 @@ test("Choose folder… uses the host's folder picker, bounded by the project", a
   await app(page).getByTestId("pick-folder").click();
   await expect(app(page).getByTestId("folder")).toHaveText("Projects/alpha/docs/roadmap/done");
   expect(await page.evaluate(() => window.fakeHost.pickRequests)).toEqual([{ root: "Projects/alpha", initial: "Projects/alpha/docs/roadmap" }]);
+});
+
+test("shows the project's git repos and follows git changes and project switches", async ({ page }) => {
+  await expect(app(page).getByTestId("git")).toHaveText("Git: alpha · main · ● 1 ↑1 · git@github.com:me/alpha.git");
+  await page.evaluate(() =>
+    window.fakeHost.setGitRepos([
+      { name: "alpha", root: "Projects/alpha", absPath: "/Users/me/ws/Projects/alpha", remoteUrl: null, branch: "main", upstream: "origin/main", ahead: 0, behind: 0, hasCommits: true, changes: [] },
+    ]),
+  );
+  await expect(app(page).getByTestId("git")).toHaveText("Git: alpha · main · ● 0 ↑0 · local only");
+  await page.evaluate(() => window.fakeHost.setActiveProject("beta"));
+  await expect(app(page).getByTestId("git")).toHaveText("Git: no repository");
 });

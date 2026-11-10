@@ -127,6 +127,12 @@ await host.files.move({ from: path, to: "Projects/x/docs/roadmap/done/T-1.md" })
 - Refusals are `HostError`s: `unreadable-frontmatter` (invalid YAML or an unclosed `---` — nothing is
   written), `unsupported-key`, `invalid-params`, `outside-workspace` (also for a write that would
   leave the workspace through a symlink), `not-found`, `io-error`.
+- The workspace's `.pomade` folder (Pomade's own config and state) is out of reach: every path a
+  method takes — read, list, watch, write, both ends of a move, a symlink's location and target,
+  a picked folder, a file to open — is refused with `capability-denied` when it is at or inside
+  `.pomade`, by the path given and by its real path (a symlink into `.pomade` is refused too).
+  Listings leave it out and watches never report it. `isPomadeFolderPath(path)` in
+  `pomade-kit/protocol` is the rule.
 - Pomade's editor treats an app's write like any outside write: a doc open with unsaved edits
   shows "File changed since your edits" and nothing is overwritten.
 
@@ -170,17 +176,17 @@ root). `root` is a project id — absent or `"__workspace__"` for the whole work
 outside the root is refused in the dialog, which opens again until the user picks one inside or
 cancels.
 
-## Symlinks for agent skills
+## Symlinks
 
 Capability `files.symlink`, plus the folders in the manifest:
 
 ```jsonc
-{ "capabilities": ["files.symlink"], "symlinks": ["Agents/*/skills"] }   // "*" = any one folder name
+{ "capabilities": ["files.symlink"], "symlinks": ["Projects/*/links"] }   // "*" = any one folder name
 ```
 
 ```ts
-await host.files.symlink({ path: "Agents/claude-coder/skills/sessions", target: "Apps/pomade-agents/skill" });
-await host.files.removeSymlink({ path: "Agents/claude-coder/skills/sessions" });   // the link only, never its target
+await host.files.symlink({ path: "Projects/alpha/links/spec", target: "Knowledge/specs/alpha" });
+await host.files.removeSymlink({ path: "Projects/alpha/links/spec" });   // the link only, never its target
 ```
 
 The link must sit directly in a declared folder, reached without passing through a symlinked
@@ -204,6 +210,31 @@ await host.tabs.openTerminal({ cwd: "", projectId: "__workspace__" });          
 names the tab (default: the command). A missing path or folder is `not-found`, a folder passed as a
 file (or the reverse) `io-error`, an unknown project `not-found`.
 
+## Git state
+
+Capability `git.read`. Pomade serves its own git snapshot — the one its file tree and sidebar
+show — so a read runs no git command.
+
+```ts
+const { repos } = await host.git.getState();                          // every repo, sorted by root
+const mine = await host.git.getState({ projectId: project.id });      // the project's repos
+const watch = await host.git.watch({ projectId: project.id }, (repos) => render(repos));
+await watch.close();
+```
+
+Each `GitRepoState`: `name` (the folder name the Git panel shows — the name `pomade-git` accepts),
+`root` (workspace-relative, `""` = the workspace root), `absPath` (absolute), `remoteUrl` (the
+upstream's remote, else `origin`, else the first remote; `null` = local only), `branch` (`null` when detached), `upstream` (`null` when the branch
+tracks nothing), `ahead` / `behind` (0 without an upstream), `hasCommits`, `changes` (`{ path,
+status, from?, dir? }` — `modified` · `new` · `conflict` · `renamed` · `deleted`; `dir: true` = an
+untracked folder as one entry), and `error` when the repo could not be read.
+
+A project's repos are the repos at or below its folder plus the nearest repo holding the folder
+(`gitReposInScope(repos, root)` in `pomade-kit/protocol`); absent `projectId` or `"__workspace__"`
+= every repo. A watch delivers the scope's repos whenever they change (`git.changed`), follows a
+project that moves, and ends with the frame (a reload drops it). An unknown project is
+`not-found`.
+
 ## Develop and test without Pomade — the fake host
 
 ```ts
@@ -218,6 +249,9 @@ const fake = createFakeHost({
               settings: { backlog: "docs/roadmap" }, visibleAgents: ["claude"] }],   // both optional
   activeProject: "alpha",                       // omit for the Workspace scope
   files: { "Projects/alpha/docs/roadmap/E-001-x.md": "---\nid: E-001\nstatus: planned\n---\n" },
+  git: [{ name: "alpha", root: "Projects/alpha", absPath: "/Users/me/ws/Projects/alpha",
+          remoteUrl: "git@github.com:me/alpha.git", branch: "main", upstream: "origin/main",
+          ahead: 1, behind: 0, hasCommits: true, changes: [] }],               // optional; git.getState's repos
 });
 
 const result = await connect({ transport: fake.transport });   // in-process
@@ -241,6 +275,7 @@ code, and the events. Test controls emit the events Pomade would:
 | `fake.symlink(path, target)` | `create` (a link listings report as its target's kind) |
 | `fake.isSymlink(path)` | — (true when a symlink is at `path`) |
 | `fake.answerPick(path \| null)` | — (queues the user's next folder-picker choice; a folder outside the root is refused and the next answer used; none left = cancel). `fake.pickRequests` logs `{ root, initial }` per picker |
+| `fake.setGitRepos(repos)` | `git.changed` to each git watch whose scope's repos changed |
 | `fake.openedTabs` | — (every `tabs.openFile` / `openTerminal` / `openApp`, in order: `{ kind: "file", projectId, path }` · `{ kind: "terminal", projectId, cwd, command?, title? }` · `{ kind: "app", projectId, route }`; the call switches the active project like Pomade) |
 
 A frame opened with `attach(post, { route })` / `mountApp(fake, { src, route })` starts at that route,
@@ -316,9 +351,9 @@ overlay is `fake.createTransport({ surface: "overlay", shortcut: "quick-add", on
 ```
 
 The skill's master copy lives in the app repo, versioned with the format it describes, and ships
-in the build. `pomade apps install` links each one into the skill folders of the agents Pomade
-runs — the built-in Claude and every workspace folder agent — and `pomade apps remove` takes
-exactly those links away (HOST-API §2). Validation reports every invalid entry as `"skills[i]"`.
+in the build. Pomade links it nowhere: `pomade apps install` checks each folder holds a `SKILL.md`
+and reports where it is in the installed build, so the user can copy or link it into an agent's
+skills folder (HOST-API §2). Validation reports every invalid entry as `"skills[i]"`.
 
 `startOnLaunch: true` makes Pomade load the app's panel frame — hidden — when it starts, so the
 app can set its badge (and later post notices) before the user opens it; the frame is the same one
@@ -588,8 +623,8 @@ Reading the workspace pointer Pomade records joins with `pomade:E-028`.
 
 ## Example
 
-`examples/hello/` — the smallest app: lists the active project's `docs/roadmap/` frontmatter rows
-and follows project and file events. `npm run hello:build` writes the installable folder
+`examples/hello/` — the smallest app: lists the active project's `docs/roadmap/` frontmatter rows,
+shows the project's git repos, and follows project, file and git events. `npm run hello:build` writes the installable folder
 `examples/hello/dist/` (`index.html`, `manifest.json`, assets).
 
 ## Develop this repo

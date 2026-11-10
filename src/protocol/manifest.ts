@@ -33,8 +33,8 @@ export interface Manifest {
   /** The app's left-strip icons, in manifest order; absent when the manifest declares none. */
   strip?: StripIcon[];
   /** Folder patterns where the app may create and remove symlinks (`files.symlink`): workspace-
-   *  relative folders whose `*` segments match any one folder name (segments `Agents`, `*`,
-   *  `skills` = every agent's skills folder); absent when the manifest declares none. */
+   *  relative folders whose `*` segments match any one folder name (segments `Projects`, `*`,
+   *  `links` = the `links` folder of every folder in `Projects`); absent when the manifest declares none. */
   symlinks?: string[];
   /** Load the app's launch panel (`launchPanelIcon`) hidden when Pomade starts. */
   startOnLaunch?: boolean;

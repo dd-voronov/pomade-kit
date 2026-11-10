@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { baseName, isInside, joinPath, normalizeWorkspacePath, parentPath } from "./paths.js";
+import { baseName, isInside, isPomadeFolderPath, joinPath, normalizeWorkspacePath, parentPath } from "./paths.js";
 
 describe("normalizeWorkspacePath", () => {
   it.each([
@@ -47,5 +47,21 @@ describe("isInside", () => {
     ["", "", true],
   ])("%j inside %j → %s", (path, folder, inside) => {
     expect(isInside(path, folder)).toBe(inside);
+  });
+});
+
+describe("isPomadeFolderPath", () => {
+  it.each([".pomade", ".pomade/workspace.json", ".pomade/state/p1.json", ".Pomade", ".POMADE/x"])("%j is the workspace's .pomade", (path) => {
+    expect(isPomadeFolderPath(path)).toBe(true);
+  });
+  it.each(["", "pomade", ".pomaderc", ".pomade-old/x", "x/.pomade", "Projects/a/.pomade/workspace.json", "docs/.pomade.md"])(
+    "%j is not",
+    (path) => {
+      expect(isPomadeFolderPath(path)).toBe(false);
+    },
+  );
+  it("applies to normalized paths: an escape back into .pomade is caught after normalizing", () => {
+    const n = normalizeWorkspacePath("Projects/../.pomade/workspace.json");
+    expect(n.ok && isPomadeFolderPath(n.path)).toBe(true);
   });
 });

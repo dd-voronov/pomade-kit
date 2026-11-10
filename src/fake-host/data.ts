@@ -19,7 +19,7 @@ import {
   type ProjectRef,
   type JsonValue,
 } from "../protocol/index.js";
-import { CallError, entryParam, pathParam, stringParam, type Obj } from "./params.js";
+import { CallError, entryParam, pathParam, requireAllowedTarget, stringParam, type Obj } from "./params.js";
 import type { Workspace } from "./workspace.js";
 
 /** A tab an app opened (`tabs.openFile` / `tabs.openTerminal` / `tabs.openApp`), as the fake host records it. */
@@ -70,6 +70,7 @@ function optionalString(p: Obj, key: string): string | undefined {
 }
 
 function existingFile(ctx: DataContext, path: string): { content: string; size: number; mtimeMs: number } {
+  requireAllowedTarget(ctx.workspace, path);
   const file = ctx.workspace.file(path);
   if (file) return file;
   if (ctx.workspace.kindOf(path) === "dir") throw new CallError("io-error", `EISDIR: ${JSON.stringify(path)} is a folder`);
@@ -186,6 +187,7 @@ export function dispatchTabs(ctx: DataContext, method: TabDataMethod, p: Obj): u
       if (title !== undefined && title.trim() === "") throw new CallError("invalid-params", '"title" must not be empty');
       const kind = ws.kindOf(cwd);
       if (kind === null) throw new CallError("not-found", `${JSON.stringify(cwd)} does not exist`);
+      requireAllowedTarget(ws, cwd);
       if (kind !== "dir") throw new CallError("io-error", `${JSON.stringify(cwd)} is not a folder`);
       const project = ctx.project(optionalString(p, "projectId"));
       ctx.activate(project.id);
@@ -315,6 +317,7 @@ export function dispatchSymlinks(ctx: DataContext, method: SymlinkDataMethod, p:
       const target = entryParam(p, "target");
       if (ws.exists(path)) throw new CallError("already-exists", `${JSON.stringify(path)} already exists`);
       if (ws.kindOf(target) === null) throw new CallError("not-found", `${JSON.stringify(target)} does not exist`);
+      requireAllowedTarget(ws, target);
       if (ancestorIsFile(ws, path)) throw new CallError("io-error", `ENOTDIR: a parent of ${JSON.stringify(path)} is a file`);
       ctx.emit(ws.symlink(path, target));
       return {};
@@ -344,6 +347,6 @@ export function dispatchPick(ctx: DataContext, _method: PickDataMethod, p: Obj):
   for (;;) {
     const answer = ctx.pickAnswers.shift();
     if (answer === undefined || answer === null) return { path: null };
-    if (isInside(answer, root) && ctx.workspace.kindOf(answer) === "dir") return { path: answer };
+    if (isInside(answer, root) && ctx.workspace.kindOf(answer) === "dir" && ctx.workspace.isVisible(answer)) return { path: answer };
   }
 }

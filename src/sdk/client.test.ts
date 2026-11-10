@@ -260,6 +260,50 @@ describe("overlay.close", () => {
   });
 });
 
+describe("git", () => {
+  const repo = { name: "Pomade", root: "Projects/Pomade", absPath: "/ws/Projects/Pomade", remoteUrl: null, branch: "main", upstream: null, ahead: 0, behind: 0, hasCommits: true, changes: [] };
+  const gitChanged = (t: ReturnType<typeof setup>, watchId: string) =>
+    t.mock.deliver({ channel: "pomade", type: "event", name: "git.changed", payload: { watchId, repos: [repo] } });
+
+  it("getState sends {} without params and the project scope with one", async () => {
+    const t = setup();
+    const all = t.host.git.getState();
+    expect(t.lastCall()).toMatchObject({ method: "git.getState", params: {} });
+    t.ok(t.lastCall().id, { repos: [repo] });
+    expect(await all).toEqual({ repos: [repo] });
+    void t.host.git.getState({ projectId: "p1" });
+    expect(t.lastCall()).toMatchObject({ method: "git.getState", params: { projectId: "p1" } });
+  });
+
+  it("routes git.changed by watchId, apart from files.changed; close unwatches once", async () => {
+    const t = setup();
+    const cb = vi.fn();
+    const files = vi.fn();
+    const p = t.host.git.watch({ projectId: "p1" }, cb);
+    expect(t.lastCall()).toMatchObject({ method: "git.watch", params: { projectId: "p1" } });
+    t.ok(t.lastCall().id, { watchId: "g1" });
+    // Delivered before the promise continuation, like files.watch.
+    gitChanged(t, "g1");
+    const watch = await p;
+    const fp = t.host.files.watch({ path: "a" }, files);
+    t.ok(t.lastCall().id, { watchId: "w1" });
+    await fp;
+    gitChanged(t, "w1");
+    gitChanged(t, "nope");
+    t.changed("g1", [{ kind: "create", path: "a" }]);
+    expect(cb.mock.calls).toEqual([[[repo]]]);
+    expect(files).not.toHaveBeenCalled();
+    const closing = watch.close();
+    gitChanged(t, "g1");
+    expect(cb).toHaveBeenCalledTimes(1);
+    expect(t.lastCall()).toMatchObject({ method: "git.unwatch", params: { watchId: "g1" } });
+    t.ok(t.lastCall().id, {});
+    await closing;
+    await watch.close();
+    expect(t.calls().filter((c) => c.method === "git.unwatch")).toHaveLength(1);
+  });
+});
+
 describe("close", () => {
   it("rejects pending calls, stops events, detaches, runs onClose once", async () => {
     const t = setup();

@@ -25,11 +25,13 @@ const fakeHost = createFakeHost({
     { id: "beta", name: "Beta", root: "Projects/beta" },
   ],
   activeProject: "alpha",
+  git: [
+    { name: "alpha", root: "Projects/alpha", absPath: "/Users/me/ws/Projects/alpha", remoteUrl: "git@github.com:me/alpha.git", branch: "main", upstream: "origin/main", ahead: 1, behind: 0, hasCommits: true, changes: [{ path: "Projects/alpha/docs/roadmap/E-001-first.md", status: "modified" }] },
+  ],
   files: {
     "Projects/alpha/docs/roadmap/E-001-first.md": "---\nid: E-001\nstatus: planned\ntitle: First\n---\n",
     "Projects/alpha/docs/roadmap/T-002-broken.md": "---\nid: [oops\n---\n",
     "Projects/alpha/docs/roadmap/notes.txt": "not markdown",
-    "Apps/hello/skill/SKILL.md": "---\nname: hello\n---\n",
     "Projects/alpha/docs/roadmap/done/E-000-old.md": "---\nid: E-000\nstatus: done\ntitle: Old\n---\n",
     "Projects/beta/docs/roadmap/E-100-beta.md": "---\nid: E-100\nstatus: done\ntitle: Beta epic\n---\n",
   },
