@@ -5,6 +5,7 @@
 import { APP_ID_RE } from "./manifest.js";
 import { isJsonValue } from "./state.js";
 import type { AttachedTabActionPayload } from "./attach.js";
+import type { AgentTabChangedPayload } from "./agent-tabs.js";
 import type { JsonValue, ProjectRef } from "./types.js";
 
 /** The events Pomade itself publishes, in the order they are documented. */
@@ -15,6 +16,7 @@ export const PLATFORM_EVENTS = [
   "project.opened",
   "project.changed",
   "agentTab.exited",
+  "agentTab.changed",
   "attachedTab.action",
 ] as const;
 export type PlatformEventName = (typeof PLATFORM_EVENTS)[number];
@@ -56,6 +58,8 @@ export interface PlatformEvents {
   "project.opened": ProjectRef;
   "project.changed": ProjectRef;
   "agentTab.exited": AgentTabExitedPayload;
+  /** An agent tab joined or left the list, or its session, title, state or project changed (pomade:E-033). */
+  "agentTab.changed": AgentTabChangedPayload;
   /** A person clicked a header action the app contributed on an attached tab (pomade:E-034).
    *  Delivered only to the app that owns the session. */
   "attachedTab.action": AttachedTabActionPayload;

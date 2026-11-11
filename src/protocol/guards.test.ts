@@ -281,6 +281,11 @@ describe("METHOD_CAPABILITY", () => {
       "apps.call": null,
       "api.serve": null,
       "agents.liveIn": "platform",
+      "agentTabs.list": "agentTabs.read",
+      "agentTabs.setTitle": "agentTabs.write",
+      "agentTabs.focus": "tabs.open",
+      "agentTabs.launch": "tabs.open",
+      "agentTabs.resume": "tabs.open",
     });
     expect(METHOD_NAMES).toEqual(Object.keys(METHOD_CAPABILITY));
   });

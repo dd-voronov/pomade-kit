@@ -49,6 +49,11 @@ import {
   type ApiServeResult,
   type RequestMessage,
   type AgentsLiveInResult,
+  type AgentTabInfo,
+  type AgentTabsLaunchParams,
+  type AgentTabsListParams,
+  type AgentTabsOpenResult,
+  type AgentTabsResumeParams,
 } from "../protocol/index.js";
 import type { Transport } from "./transport.js";
 
@@ -181,6 +186,18 @@ export interface HostClient {
     /** Platform commands only (`pomade-git`): agents running in Pomade terminals inside `folder`. */
     liveIn(folder: string): Promise<AgentsLiveInResult>;
   };
+  readonly agentTabs: {
+    /** Every agent tab — bound to a session or not yet — or one project's (`agentTabs.read`). */
+    list(params?: AgentTabsListParams): Promise<AgentTabInfo[]>;
+    /** Name a tab, or mark its session unnamed with `null` (`agentTabs.write`). */
+    setTitle(tabId: string, title: string | null): Promise<void>;
+    /** Bring a tab to the front; its project becomes active (`tabs.open`). */
+    focus(tabId: string): Promise<void>;
+    /** Start an agent in a new tab (`tabs.open`); resolves with the tab's id. */
+    launch(params: AgentTabsLaunchParams): Promise<AgentTabsOpenResult>;
+    /** Resume a session in a new tab, or focus the tab it is bound to (`tabs.open`); resolves with the tab's id. */
+    resume(params: AgentTabsResumeParams): Promise<AgentTabsOpenResult>;
+  };
   readonly api: {
     /** Serve this app's API (the manifest's `api` methods) from this client; resolves with the
      *  declared methods. A method without a handler answers `unknown-method`. */
@@ -298,6 +315,7 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
         case "project.renamed":
         case "project.opened":
         case "agentTab.exited":
+        case "agentTab.changed":
         case "attachedTab.action":
           break;
         default:
@@ -455,6 +473,19 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
     },
     agents: {
       liveIn: (folder) => call("agents.liveIn", { folder }),
+    },
+    agentTabs: {
+      async list(params = {}) {
+        return (await call("agentTabs.list", params)).tabs;
+      },
+      async setTitle(tabId, title) {
+        await call("agentTabs.setTitle", { tabId, title });
+      },
+      async focus(tabId) {
+        await call("agentTabs.focus", { tabId });
+      },
+      launch: (params) => call("agentTabs.launch", params),
+      resume: (params) => call("agentTabs.resume", params),
     },
     api: {
       serve(handlers) {
