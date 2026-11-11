@@ -16,3 +16,4 @@ export * from "./notices.js";
 export * from "./socket.js";
 export * from "./broker.js";
 export * from "./attach.js";
+export * from "./agent-tabs.js";

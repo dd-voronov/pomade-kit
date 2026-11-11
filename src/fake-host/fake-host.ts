@@ -45,8 +45,11 @@ import {
   type Manifest,
   type MethodName,
   type ProjectRef,
+  type RosterAgent,
   type StripIcon,
   type Surface,
+  type AgentTabInfo,
+  type AgentTabState,
 } from "../protocol/index.js";
 import { isPlainEscape } from "../sdk/keys.js";
 import { HostError, type ApiHandler } from "../sdk/client.js";
@@ -64,6 +67,7 @@ import {
   type FakePickRequest,
 } from "./data.js";
 import { reposInScope, scriptedRepos, type GitWatchState } from "./git.js";
+import { DEFAULT_FAKE_ROSTER, FakeAgentTabs, type FakeAgentTabSeed, type FakeOpenedAgentTab, type FakeSession } from "./agent-tabs.js";
 import { booleanParam, CallError, paramsObject, requestPath, requireAllowedTarget, stringParam } from "./params.js";
 import { controlPath, Workspace } from "./workspace.js";
 
@@ -118,6 +122,14 @@ export interface FakeHostOptions {
   /** Other apps that are installed and running, by id: the API methods each serves (`apps.call`), or
    *  `"not-responding"` for one that never answers. An app absent here is not installed. */
   apps?: Record<string, FakeApi>;
+  /** Pomade's agent tabs at start (`agentTabs.list`), in tab order. Default none. */
+  agentTabs?: FakeAgentTabSeed[];
+  /** The roster `agentTabs.launch` / `resume` accept and the default titles come from. Default Pomade's built-ins (claude, codex). */
+  roster?: RosterAgent[];
+  /** The sessions `agentTabs.resume` finds. Default none. */
+  sessions?: FakeSession[];
+  /** The absolute folder the fake workspace stands for, in `AgentTabInfo.cwd`. Default `/fake/workspace`. */
+  workspaceRoot?: string;
 }
 
 /** Another app as `apps.call` reaches it in the fake host. */
@@ -228,6 +240,7 @@ export class FakeHost {
   private readonly apps: Record<string, FakeApi>;
   private readonly appFolder: string;
   private nextRequestId = 1;
+  private readonly agentTabModel: FakeAgentTabs;
   private readonly requests = new Map<string, { frame: Frame; settle(outcome: { ok: true; value: JsonValue } | { ok: false; error: ErrorPayload }): void }>();
 
   constructor(options: FakeHostOptions = {}) {
@@ -282,6 +295,19 @@ export class FakeHost {
       pickAnswers: this.pickAnswers,
       pickRequests: this.pickRequests,
     };
+    this.agentTabModel = new FakeAgentTabs(
+      {
+        workspace: this.workspace,
+        workspaceRoot: (options.workspaceRoot ?? "/fake/workspace").replace(/\/+$/, ""),
+        project: (id) => this.data.project(id),
+        activate: (id) => this.data.activate(id),
+        publish: (payload) => this.bus.publish("agentTab.changed", structuredClone(payload) as unknown as JsonValue),
+        now: options.now ?? Date.now,
+      },
+      options.roster ?? DEFAULT_FAKE_ROSTER,
+      options.sessions ?? [],
+      options.agentTabs ?? [],
+    );
     for (const [key, value] of Object.entries(options.state ?? {})) {
       const bad = checkStateKey(key) ?? checkStateValue(value);
       if (bad) throw new Error(`fake host: invalid state ${JSON.stringify(key)}: ${bad}`);
@@ -484,6 +510,36 @@ export class FakeHost {
     const { kind, ...params } = action;
     const method = kind === "openFile" ? "tabs.openFile" : kind === "openTerminal" ? "tabs.openTerminal" : "tabs.openApp";
     dispatchTabs(this.data, method, params as Record<string, unknown>);
+  }
+
+  /** Pomade's agent tabs now, in tab order (a snapshot). */
+  get agentTabs(): AgentTabInfo[] {
+    return this.agentTabModel.list();
+  }
+
+  /** Every agent tab the app opened (`agentTabs.launch` / `agentTabs.resume`), in order. */
+  get openedAgentTabs(): FakeOpenedAgentTab[] {
+    return structuredClone(this.agentTabModel.opened);
+  }
+
+  /** Every agent tab the app brought to the front (`agentTabs.focus`, or `resume` of a bound session), in order. */
+  get focusedAgentTabs(): string[] {
+    return [...this.agentTabModel.focused];
+  }
+
+  /** The user renames an agent tab: `agentTab.changed` with `titleSource: "user"`. */
+  renameAgentTab(tabId: string, title: string): void {
+    this.agentTabModel.rename(tabId, title);
+  }
+
+  /** Something happened in an agent tab — a session bound, a state change, a move: `agentTab.changed` names what changed. */
+  updateAgentTab(tabId: string, patch: Partial<Pick<AgentTabInfo, "sessionId" | "state" | "projectId" | "cwd" | "launchedAt">>): void {
+    this.agentTabModel.update(tabId, patch);
+  }
+
+  /** An agent tab closes, or its agent hands the shell back: it leaves the list (`agentTab.changed` with `closed`). */
+  closeAgentTab(tabId: string, state: AgentTabState = "exited"): void {
+    this.agentTabModel.close(tabId, state);
   }
 
   /** The bus event names the app's frames subscribe to now (each once), `project.changed` included. */
@@ -812,6 +868,12 @@ export class FakeHost {
       case "agents.liveIn":
         // An app is never the platform: the capability check above refused it.
         throw new CallError("capability-denied", "agents.liveIn is for Pomade's own commands");
+      case "agentTabs.list":
+      case "agentTabs.setTitle":
+      case "agentTabs.focus":
+      case "agentTabs.launch":
+      case "agentTabs.resume":
+        return this.agentTabModel.dispatch(method, call.params);
       case "api.serve": {
         const methods = this.manifest.api ?? [];
         if (methods.length === 0) throw new CallError("capability-denied", 'The manifest declares no "api"');

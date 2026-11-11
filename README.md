@@ -221,6 +221,27 @@ await host.tabs.openAttached({ session: { app: "hello", session: "ticker" }, tit
 session's own; the tab shows the owner's name after it ("Coda web · Runner"). A malformed reference
 is `invalid-params`.
 
+## Agent tabs
+
+Pomade's agent tabs (pomade:E-033; HOST-API §4 `agentTabs`): the session bound to each, its title,
+what the agent is doing — and focus, launch, resume.
+
+```ts
+const tabs = await host.agentTabs.list({ projectId: "p1" });   // AgentTabInfo[] (agentTabs.read)
+// { tabId, projectId, agentId, cwd /* absolute, the session-store key */, launchedAt, sessionId | null,
+//   title, titleSource: "default" | "user" | "app", unnamed, state: "working" | "needs-you" | "idle" | "exited" }
+await host.agentTabs.setTitle(tabs[0].tabId, "G4 tickets");     // agentTabs.write
+await host.agentTabs.setTitle(tabs[0].tabId, null);             // the session is unnamed: italic default title + dot
+await host.agentTabs.focus(tabs[0].tabId);                      // tabs.open
+const { tabId } = await host.agentTabs.launch({ agentId: "claude-pm", projectId: "p1", mode: "full-autonomy", prompt: "Triage the inbox" });
+await host.agentTabs.resume({ agentId: "claude", sessionId: "5f0c…", projectId: "p1" });  // focuses a live tab already on it
+await host.events.subscribe("agentTab.changed", ({ tab, changes }) => { /* opened · closed · session · title · state · project */ });
+```
+
+Inside a Pomade terminal `POMADE_TAB_ID` names the tab, so a command finds its own tab in the list.
+An agents app serves Pomade's roster as `roster.list` (`RosterListResult`, `checkRosterList`,
+`providerModes`); Pomade falls back to its own scan when the app is absent or not answering.
+
 ## Git state
 
 Capability `git.read`. Pomade serves its own git snapshot — the one its file tree and sidebar
@@ -362,6 +383,7 @@ code, and the events. Test controls emit the events Pomade would:
 | `fake.updateProject(id, { name?, root?, group? })` | `project.renamed` to its subscribers when the name or folder changed, and `project.changed` when it is the active project (rename / move / regroup; the id stays) |
 | `fake.clickNotice(index?)` | — (the user clicks a notice the app posted, default the last: its action runs as in Pomade, landing in `openedTabs`). `fake.notices` lists every `notices.post`, normalized |
 | `fake.ready()` | `pomade.ready` (sticky: later subscriptions get it at once) |
+| `fake.renameAgentTab(tabId, title)` / `fake.updateAgentTab(tabId, { sessionId?, state?, projectId?, … })` / `fake.closeAgentTab(tabId)` | `agentTab.changed` naming what changed (the user renamed it; a session bound, a state change, a move; it left the list). Seed tabs with `agentTabs`, the launchable roster with `roster` (default claude, codex), resumable sessions with `sessions`; `fake.agentTabs`, `fake.openedAgentTabs`, `fake.focusedAgentTabs` record what happened |
 | `fake.emitEvent(name, payload)` | a platform event or another app's `<appId>:<event>` to the frames subscribed to it |
 | `fake.subscribeAs(appId, name, heard?)` | — (another app subscribes to this app's event `name`: `hasSubscribers` turns true and `events.subscribersChanged` fires; what it hears is pushed to `heard`; returns its unsubscribe). `fake.published` lists every `events.publish` (`{ name, payload }`), `fake.subscriptions` the names the frames subscribe to |
 | `fake.readFile(path)` | — (returns the file's text: what the app's writes left) |

@@ -12,6 +12,16 @@ import type {
 } from "./events.js";
 import type { NoticeParams } from "./notices.js";
 import type { AttachedTabActionPayload, SessionRef } from "./attach.js";
+import type {
+  AgentTabChangedPayload,
+  AgentTabsFocusParams,
+  AgentTabsLaunchParams,
+  AgentTabsListParams,
+  AgentTabsListResult,
+  AgentTabsOpenResult,
+  AgentTabsResumeParams,
+  AgentTabsSetTitleParams,
+} from "./agent-tabs.js";
 
 /** The Host API version this kit speaks (HOST-API "Version"). */
 export const HOST_API_VERSION = 0;
@@ -137,7 +147,17 @@ export interface ErrorPayload {
   message: string;
 }
 
-export const CAPABILITIES = ["project.read", "files.read", "files.write", "tabs.open", "project.write", "files.symlink", "git.read"] as const;
+export const CAPABILITIES = [
+  "project.read",
+  "files.read",
+  "files.write",
+  "tabs.open",
+  "project.write",
+  "files.symlink",
+  "git.read",
+  "agentTabs.read",
+  "agentTabs.write",
+] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
 // ── Methods ─────────────────────────────────────────────────────────────────
@@ -480,6 +500,11 @@ export interface HostMethods {
   "apps.call": { params: AppsCallParams; result: JsonValue };
   "api.serve": { params: Record<string, never>; result: ApiServeResult };
   "agents.liveIn": { params: AgentsLiveInParams; result: AgentsLiveInResult };
+  "agentTabs.list": { params: AgentTabsListParams; result: AgentTabsListResult };
+  "agentTabs.setTitle": { params: AgentTabsSetTitleParams; result: Record<string, never> };
+  "agentTabs.focus": { params: AgentTabsFocusParams; result: Record<string, never> };
+  "agentTabs.launch": { params: AgentTabsLaunchParams; result: AgentTabsOpenResult };
+  "agentTabs.resume": { params: AgentTabsResumeParams; result: AgentTabsOpenResult };
 }
 export type MethodName = keyof HostMethods;
 export type MethodParams<M extends MethodName> = HostMethods[M]["params"];
@@ -526,6 +551,11 @@ export const METHOD_CAPABILITY: Readonly<Record<MethodName, MethodCapability>> =
   "apps.call": null,
   "api.serve": null,
   "agents.liveIn": PLATFORM_CAPABILITY,
+  "agentTabs.list": "agentTabs.read",
+  "agentTabs.setTitle": "agentTabs.write",
+  "agentTabs.focus": "tabs.open",
+  "agentTabs.launch": "tabs.open",
+  "agentTabs.resume": "tabs.open",
 };
 
 export const METHOD_NAMES = Object.keys(METHOD_CAPABILITY) as MethodName[];
@@ -561,6 +591,7 @@ export interface HostEvents {
   "project.renamed": ProjectRenamedPayload;
   "project.opened": ProjectRef;
   "agentTab.exited": AgentTabExitedPayload;
+  "agentTab.changed": AgentTabChangedPayload;
   "attachedTab.action": AttachedTabActionPayload;
   "events.subscribersChanged": SubscribersChangedPayload;
 }

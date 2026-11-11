@@ -19,6 +19,7 @@ import { isJsonValue } from "./state.js";
 import { isGitRepoState } from "./git.js";
 import { AGENT_EXIT_REASONS, parseBusEventName, type AgentTabExitedPayload } from "./events.js";
 import { checkSessionRef } from "./attach.js";
+import { isAgentTabChanged, pickAgentTabInfo } from "./agent-tabs.js";
 
 type Obj = Record<string, unknown>;
 
@@ -270,6 +271,10 @@ function parseBusEvent(name: unknown, payload: unknown): HostToAppMessage | null
               reason: payload.reason,
             },
           }
+        : null;
+    case "agentTab.changed":
+      return isAgentTabChanged(payload)
+        ? { channel: CHANNEL, type: "event", name: bus.name, payload: { tab: pickAgentTabInfo(payload.tab), changes: [...payload.changes] } }
         : null;
     case "attachedTab.action": {
       if (!isObj(payload) || typeof payload.action !== "string" || typeof payload.projectId !== "string") return null;
