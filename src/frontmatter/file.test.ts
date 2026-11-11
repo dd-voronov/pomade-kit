@@ -350,8 +350,10 @@ describe("splitFrontmatter", () => {
 
   it("agrees with readFrontmatter on what is a block", () => {
     for (const t of ["---\na: 1\n---\n", "---\na: 1\n---", "x\n---\na: 1\n---\n", "---\n\n---\n", "---\n---\n", "--- \na: 1\n---\n"]) {
-      const hasBlock = splitFrontmatter(t).frontmatter !== "";
-      expect(hasBlock).toBe((readFrontmatter(t) as { frontmatter?: unknown }).frontmatter !== null);
+      const read = readFrontmatter(t);
+      const kind = "frontmatterError" in read ? "unclosed" : read.frontmatter === null ? "none" : "block";
+      const split = splitFrontmatter(t).frontmatter !== "" ? "block" : getBody(t) === t && setBody(t, "").ok ? "none" : "unclosed";
+      expect(split).toBe(kind);
     }
   });
 });

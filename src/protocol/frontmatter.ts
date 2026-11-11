@@ -1,8 +1,9 @@
 // Frontmatter as `files.readFolder` reports it (HOST-API §4): the leading `---` YAML block, with
-// the same block detection as Pomade's editor, parsed with js-yaml's JSON_SCHEMA so values stay
+// the same block detection as Pomade's editor (`frontmatter-extent.ts`), parsed with js-yaml's JSON_SCHEMA so values stay
 // plain JSON (`created: 2026-11-09` is the string "2026-11-09", `.inf` the string ".inf").
 
 import yaml from "js-yaml";
+import { frontmatterExtent, UNCLOSED_FRONTMATTER } from "./frontmatter-extent.js";
 
 /** Markdown files — the extensions Pomade treats as first-class Markdown. */
 export const MARKDOWN_FILE_RE = /\.(md|markdown|mdown|mkd|mdx)$/i;
@@ -37,21 +38,20 @@ const SCHEMA = yaml.FAILSAFE_SCHEMA.extend({
   implicit: [builtin.null, builtin.bool, finiteOrSource(builtin.int), finiteOrSource(builtin.float)],
 });
 
-// Pomade's editor split (doc-io FRONTMATTER_RE + frontmatter-edit decompose), on LF-normalized text.
-const BLOCK_RE = /^---\n([\s\S]*?)\n---\n/;
-
 export type FrontmatterRead =
   | { frontmatter: Record<string, unknown> | null }
   | { frontmatterError: string };
 
 /**
  * Read a Markdown file's frontmatter. No block → `{ frontmatter: null }`; a block with no keys
- * → `{ frontmatter: {} }`; invalid YAML or a block that is not a mapping → `{ frontmatterError }`.
+ * → `{ frontmatter: {} }`; invalid YAML, a block that is not a mapping, or a first `---` line
+ * that never closes → `{ frontmatterError }`.
  */
 export function readFrontmatter(text: string): FrontmatterRead {
-  const m = BLOCK_RE.exec(text.replace(/\r\n/g, "\n"));
-  if (!m) return { frontmatter: null };
-  const inner = m[1] ?? "";
+  const extent = frontmatterExtent(text.replace(/\r\n/g, "\n"));
+  if (extent.kind === "none") return { frontmatter: null };
+  if (extent.kind === "unclosed") return { frontmatterError: UNCLOSED_FRONTMATTER };
+  const inner = extent.inner;
   if (inner.split("\n").every((line) => line.trim() === "" || line.trimStart().startsWith("#"))) {
     return { frontmatter: {} };
   }

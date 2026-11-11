@@ -4,6 +4,7 @@
 
 import yaml from "js-yaml";
 import { readFrontmatter } from "../protocol/frontmatter.js";
+import { frontmatterExtent, UNCLOSED_FRONTMATTER } from "../protocol/frontmatter-extent.js";
 import {
   addPropertyText,
   emitScalar,
@@ -15,14 +16,18 @@ import {
   setScalarText,
 } from "./block.js";
 
-/** Pomade's editor split (doc-io): the leading `---` block plus the blank lines after it, on LF text. */
-const FRONTMATTER_RE = /^---\n[\s\S]*?\n---\n(?:[^\S\n]*\n)*/;
+/** The blank lines after a block, which belong to the block in Pomade's editor split (doc-io). */
+const TRAILING_BLANK_LINES_RE = /^(?:[^\S\n]*\n)*/;
 
-/** Split LF text into the frontmatter block (`""` when none) and the body, as Pomade's editor does. */
+/**
+ * Split LF text into the frontmatter block plus the blank lines after it (`""` when none, an
+ * unclosed `---` block included) and the body, as Pomade's editor does.
+ */
 export function splitFrontmatter(text: string): { frontmatter: string; body: string } {
-  const m = FRONTMATTER_RE.exec(text);
-  if (!m) return { frontmatter: "", body: text };
-  return { frontmatter: m[0], body: text.slice(m[0].length) };
+  const extent = frontmatterExtent(text);
+  if (extent.kind !== "block") return { frontmatter: "", body: text };
+  const end = extent.end + (TRAILING_BLANK_LINES_RE.exec(text.slice(extent.end))?.[0].length ?? 0);
+  return { frontmatter: text.slice(0, end), body: text.slice(end) };
 }
 
 /** A value `setField` writes: text, a finite number, a boolean, a list of text, or `null` (`key:`). */
@@ -62,13 +67,9 @@ function rawIndex(raw: string, normIndex: number): number {
 
 function split(text: string): Parts | FieldWriteResult {
   const norm = text.replace(/\r\n/g, "\n");
+  if (frontmatterExtent(norm).kind === "unclosed") return fail("unreadable-frontmatter", UNCLOSED_FRONTMATTER);
   const { frontmatter } = splitFrontmatter(norm);
-  if (frontmatter === "") {
-    const nl = norm.indexOf("\n");
-    const firstLine = nl < 0 ? norm : norm.slice(0, nl);
-    if (firstLine.trimEnd() === "---") return fail("unreadable-frontmatter", "the leading --- block is not closed");
-    return { block: "", body: text, crlf: text.includes("\r\n") };
-  }
+  if (frontmatter === "") return { block: "", body: text, crlf: text.includes("\r\n") };
   const end = rawIndex(text, frontmatter.length);
   const rawBlock = text.slice(0, end);
   if (!parseFrontmatter(frontmatter).ok) return fail("unreadable-frontmatter", "the frontmatter is not a valid YAML mapping");
@@ -154,10 +155,8 @@ export function setField(text: string, key: string, value: FieldValue): FieldWri
  */
 function bodyStart(text: string): number | null {
   const norm = text.replace(/\r\n/g, "\n");
-  const { frontmatter } = splitFrontmatter(norm);
-  if (frontmatter !== "") return rawIndex(text, frontmatter.length);
-  const nl = norm.indexOf("\n");
-  return (nl < 0 ? norm : norm.slice(0, nl)).trimEnd() === "---" ? null : 0;
+  if (frontmatterExtent(norm).kind === "unclosed") return null;
+  return rawIndex(text, splitFrontmatter(norm).frontmatter.length);
 }
 
 /** A file's body as `setBody` replaces it — everything after the frontmatter block and the blank
@@ -174,7 +173,7 @@ export function getBody(text: string): string {
  */
 export function setBody(text: string, body: string): FieldWriteResult {
   const start = bodyStart(text);
-  if (start === null) return fail("unreadable-frontmatter", "the leading --- block is not closed");
+  if (start === null) return fail("unreadable-frontmatter", UNCLOSED_FRONTMATTER);
   const next = text.slice(0, start) + body;
   return { ok: true, text: next, changed: next !== text };
 }

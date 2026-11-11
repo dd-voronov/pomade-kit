@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { setBody } from "../frontmatter/file.js";
 import { isMarkdownPath, readFrontmatter } from "./frontmatter.js";
 
 describe("readFrontmatter", () => {
@@ -97,16 +98,28 @@ describe("readFrontmatter", () => {
     // `---` must be the very first line.
     expect(readFrontmatter("\n---\na: 1\n---\n")).toEqual({ frontmatter: null });
     expect(readFrontmatter(" ---\na: 1\n---\n")).toEqual({ frontmatter: null });
-    // The closing delimiter needs its own line and a newline after it.
-    expect(readFrontmatter("---\na: 1\n---")).toEqual({ frontmatter: null });
-    expect(readFrontmatter("---\na: 1\n")).toEqual({ frontmatter: null });
-    // Adjacent delimiters are not a block.
-    expect(readFrontmatter("---\n---\n")).toEqual({ frontmatter: null });
+    // The closing delimiter needs its own line and a newline after it; adjacent delimiters are
+    // not a block. A first `---` line without a closing delimiter is unclosed (next test).
     // The first closing delimiter ends the block.
     expect(readFrontmatter("---\na: 1\n---\nb: 2\n---\n")).toEqual({ frontmatter: { a: 1 } });
     // `----` or `--- x` is not a delimiter.
     expect(readFrontmatter("----\na: 1\n----\n")).toEqual({ frontmatter: null });
     expect(readFrontmatter("--- x\na: 1\n---\n")).toEqual({ frontmatter: null });
+  });
+
+  it("a first --- line that never closes → frontmatterError, as pomade-kit/frontmatter refuses it", () => {
+    const unclosed = { frontmatterError: "the leading --- block is not closed" };
+    expect(readFrontmatter("---\na: 1\n")).toEqual(unclosed);
+    expect(readFrontmatter("---\na: 1\n---")).toEqual(unclosed);
+    expect(readFrontmatter("---\nstatus: open\n\n# Title\nbody\n")).toEqual(unclosed);
+    expect(readFrontmatter("---\n---\n")).toEqual(unclosed);
+    expect(readFrontmatter("---")).toEqual(unclosed);
+    expect(readFrontmatter("---  \na: 1\n")).toEqual(unclosed);
+    expect(readFrontmatter("---\r\na: 1\r\n")).toEqual(unclosed);
+    // The same texts are refused by the file-level writers: one detection.
+    for (const t of ["---\na: 1\n", "---\na: 1\n---", "---\n---\n", "---"]) {
+      expect(setBody(t, "x")).toMatchObject({ ok: false, reason: "unreadable-frontmatter", message: unclosed.frontmatterError });
+    }
   });
 
   it("CRLF files are read like LF files", () => {
