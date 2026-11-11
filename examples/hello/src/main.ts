@@ -1,7 +1,7 @@
 // Hello — the smallest Pomade app: lists the active project's docs/roadmap/ with each file's
 // frontmatter (the folder is a per-project setting), shows the project's group path and visible
-// agents, lets the user pick its folder with Pomade's folder picker, follows project switches and
-// file changes, marks a ticket done with a field-only frontmatter write, and opens a ticket in a
+// agents and keeps them live (`project.updated`), lets the user pick its folder with Pomade's
+// folder picker, follows project switches and file changes, marks a ticket done with a field-only frontmatter write, and opens a ticket in a
 // Pomade editor tab. It also counts its own
 // launches in the app state shared by all its frames, shows the route it renders and opens its
 // own tab at a route, and badges its strip icon with the number of tickets — it starts on launch,
@@ -183,6 +183,7 @@ function startApp(host: HostClient): void {
   let watch: FileWatch | null = null;
   let gitWatch: GitWatch | null = null;
   let generation = 0;
+  let shown: ProjectRef = host.welcome.project;
   const actions: RowActions = {
     // One field changes; the watch re-renders the row.
     markDone: (entry) =>
@@ -192,6 +193,7 @@ function startApp(host: HostClient): void {
 
   async function show(project: ProjectRef): Promise<void> {
     const mine = ++generation;
+    shown = project;
     await watch?.close();
     watch = null;
     const folder = joinPath(project.root, await folderSetting(project));
@@ -248,7 +250,8 @@ function startApp(host: HostClient): void {
     el("agents").textContent = `Agents: ${visibleAgents.includes("*") ? "all" : visibleAgents.join(", ") || "none"}`;
   }
 
-  // Remember a different folder for this project, or offer only claude in its "+" menu.
+  // Remember a different folder for this project, or offer only claude in its "+" menu; the
+  // `project.updated` that follows redraws the lines.
   el("use-done").addEventListener("click", () => {
     void (async () => {
       const project = await host.project.getActive();
@@ -256,7 +259,6 @@ function startApp(host: HostClient): void {
       const { settings } = await host.project.getSettings({ projectId: project.id });
       const folder = settings.folder === DONE_FOLDER ? null : DONE_FOLDER;
       await host.project.setSettings({ projectId: project.id, settings: { folder } });
-      await show(project);
     })();
   });
   el("only-claude").addEventListener("click", () => {
@@ -264,7 +266,6 @@ function startApp(host: HostClient): void {
       const project = await host.project.getActive();
       if (project.kind === "workspace") return;
       await host.project.setAgents({ projectId: project.id, visibleAgents: ["claude"] });
-      await show(project);
     })();
   });
 
@@ -277,7 +278,6 @@ function startApp(host: HostClient): void {
       if (path === null) return;
       const folder = path === project.root ? "" : path.slice(project.root.length + 1);
       await host.project.setSettings({ projectId: project.id, settings: { folder } });
-      await show(project);
     })();
   });
 
@@ -296,6 +296,17 @@ function startApp(host: HostClient): void {
     el("folder").textContent = `${folder} — ${reason}`;
   }
 
+  // The shown project regrouped, its agents changed, or this app's settings for it (its folder)
+  // changed — here, in Pomade, or from another frame of this app: redraw what changed.
+  void host.events.subscribe("project.updated", ({ project, changes }) => {
+    if (project.id !== shown.id) return;
+    if (changes.includes("settings")) {
+      void show(shown);
+      return;
+    }
+    if (changes.includes("group")) void showGroup(shown, generation);
+    if (changes.includes("agents")) void showAgents(shown, generation);
+  });
   host.project.onChange((project) => void show(project));
   void show(host.welcome.project);
 }

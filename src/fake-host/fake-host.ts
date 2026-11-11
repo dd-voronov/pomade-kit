@@ -28,6 +28,7 @@ import {
   METHOD_CAPABILITY,
   WORKSPACE_PROJECT_ID,
   checkStateKey,
+  normalizeVisibleAgents,
   checkStateValue,
   normalizeWorkspacePath,
   parseAppMessage,
@@ -44,6 +45,7 @@ import {
   type KeyMessage,
   type Manifest,
   type MethodName,
+  type ProjectChange,
   type ProjectRef,
   type RosterAgent,
   type StripIcon,
@@ -61,6 +63,7 @@ import {
   dispatchSymlinks,
   dispatchTabs,
   listProjects,
+  sameList,
   type DataContext,
   type FakeGroup,
   type FakeOpenedTab,
@@ -291,6 +294,7 @@ export class FakeHost {
       listProjects: () => listProjects(this.groupList, this.projects, this.projectGroup),
       projectAgents: this.projectAgents,
       projectSettings: this.projectSettings,
+      projectUpdated: (id, changes) => this.publishProjectUpdated(id, changes),
       symlinkScopes: parsed.manifest.symlinks ?? [],
       pickAnswers: this.pickAnswers,
       pickRequests: this.pickRequests,
@@ -435,26 +439,50 @@ export class FakeHost {
     this.bus.publish("project.changed", { ...next });
   }
 
-  /** Rename or move a project (or regroup it); its id stays. Emits `project.changed` when it is
-   *  the active project, as Pomade does. */
-  updateProject(id: string, patch: { name?: string; root?: string; group?: string | null }): void {
+  /** Rename, move or regroup a project, or change its visible agents, as the user does in Pomade;
+   *  its id stays. Emits `project.renamed` for a new name or folder, `project.updated` for a new
+   *  group or agent list, and `project.changed` when it is the active project and its name or
+   *  folder changed — as Pomade does. */
+  updateProject(id: string, patch: { name?: string; root?: string; group?: string | null; visibleAgents?: string[] }): void {
     const project = this.projects.find((p) => p.id === id);
     if (!project) throw new Error(`fake host: no project ${JSON.stringify(id)}`);
     if (patch.group !== undefined && patch.group !== null && !this.groupList.some((g) => g.id === patch.group)) {
       throw new Error(`fake host: no group ${JSON.stringify(patch.group)}`);
     }
+    let agents: string[] | undefined;
+    if (patch.visibleAgents !== undefined) {
+      const normalized = normalizeVisibleAgents(patch.visibleAgents);
+      if (typeof normalized === "string") throw new Error(`fake host: ${normalized}`);
+      agents = normalized;
+    }
     const previous = { ...project };
+    const previousGroup = this.projectGroup.get(id) ?? null;
+    const previousAgents = this.projectAgents.get(id) ?? ["*"];
     if (patch.name !== undefined) project.name = patch.name;
     if (patch.root !== undefined) project.root = controlPath(patch.root);
     if (patch.group === null) this.projectGroup.delete(id);
     else if (patch.group !== undefined) this.projectGroup.set(id, patch.group);
+    if (agents !== undefined) this.projectAgents.set(id, agents);
     // A moved project's git scope follows its new root.
     if (patch.root !== undefined) this.refreshGitWatches();
-    if (project.name === previous.name && project.root === previous.root) return;
-    this.bus.publish("project.renamed", { project: { ...project }, previous });
-    if (this.active.id !== id) return;
+    const renamed = project.name !== previous.name || project.root !== previous.root;
+    if (renamed) this.bus.publish("project.renamed", { project: { ...project }, previous });
+    const changes: ProjectChange[] = [];
+    if ((this.projectGroup.get(id) ?? null) !== previousGroup) changes.push("group");
+    if (agents !== undefined && !sameList(previousAgents, agents)) changes.push("agents");
+    if (changes.length > 0) this.publishProjectUpdated(id, changes);
+    if (!renamed || this.active.id !== id) return;
     this.active = { ...project };
     this.bus.publish("project.changed", { ...project });
+  }
+
+  /** `project.updated` to its subscribers; a `settings` change reaches only this app (the fake host's one app). */
+  private publishProjectUpdated(id: string, changes: ProjectChange[]): void {
+    const project = this.data.listProjects().projects.find((p) => p.id === id);
+    if (!project) return;
+    const payload = { project, changes } as unknown as JsonValue;
+    if (changes.includes("settings")) this.bus.publishTo(this.manifest.id, "project.updated", payload);
+    else this.bus.publish("project.updated", payload);
   }
 
   /** Run several controls and deliver their file changes as one `files.changed` batch per watch. */

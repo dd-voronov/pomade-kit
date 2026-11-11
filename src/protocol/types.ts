@@ -6,6 +6,7 @@ import type {
   HasSubscribersParams,
   HasSubscribersResult,
   ProjectRenamedPayload,
+  ProjectUpdatedPayload,
   PublishParams,
   SubscribeParams,
   SubscribersChangedPayload,
@@ -590,6 +591,7 @@ export interface HostEvents {
   "project.created": ProjectRef;
   "project.renamed": ProjectRenamedPayload;
   "project.opened": ProjectRef;
+  "project.updated": ProjectUpdatedPayload;
   "agentTab.exited": AgentTabExitedPayload;
   "agentTab.changed": AgentTabChangedPayload;
   "attachedTab.action": AttachedTabActionPayload;

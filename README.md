@@ -46,6 +46,7 @@ else if (result.status === "rejected") {
   const off = host.project.onChange((project) => { /* switch */ });
 
   const { entries } = await host.files.readFolder({ path: "Projects/x/docs/roadmap", recursive: true, frontmatter: true });
+  // each Markdown entry: frontmatter (null = no block) or frontmatterError (invalid YAML, not a mapping, an unclosed --- block)
   const watch = await host.files.watch({ path: "Projects/x/docs/roadmap", recursive: true }, (changes) => {
     /* FileChange[] — one batch */
   });
@@ -164,6 +165,18 @@ Settings are plain JSON (`JsonValue`), at most 64 KiB per app per project
 workspace config, so they follow renames and moves. The Workspace scope (`"__workspace__"`) has no
 settings and offers every agent. `pomade-kit/protocol` exports the shared checks: `jsonProblem`,
 `mergeProjectSettings`, `settingsSizeProblem`, `normalizeVisibleAgents`.
+
+To follow a project's group, visible agents and settings as they change — in Pomade's sidebar,
+from another app or from this one — subscribe to `project.updated` (declared in the manifest's
+`events.subscribe`):
+
+```ts
+await host.events.subscribe("project.updated", ({ project, changes }) => {
+  if (changes.includes("group")) showGroup(project.groupPath);          // project is a ProjectInfo
+  if (changes.includes("agents")) void host.project.getAgents({ projectId: project.id }).then(showAgents);
+  if (changes.includes("settings")) void reloadSettings(project.id);    // this app's own settings only
+});
+```
 
 ## Choose a folder
 
@@ -300,6 +313,7 @@ host.events.onSubscribersChange((name, subscribed) => { /* first subscriber came
 | `project.renamed` | `{ project, previous }` (`ProjectRef`s) | a project's name or folder changed |
 | `project.opened` | `ProjectRef` | a project (or the Workspace scope) became active for the first time since Pomade started |
 | `project.changed` | `ProjectRef` | the active project changed; every frame gets it without subscribing |
+| `project.updated` | `{ project: ProjectInfo, changes }` — `changes` ⊆ `"group"` · `"agents"` · `"settings"` (`PROJECT_CHANGES` order) | a project moved to another group or its group path changed, its visible agents changed, or the app's own settings for it changed. `settings` goes **only to the app whose settings changed**; a write by the app itself is heard too |
 | `agentTab.exited` | `{ tabId, projectId, agentId, sessionId \| null, reason }` | an agent process in a tab ended — `reason` `exit` · `crash` · `tab-closed` · `quit` |
 | `attachedTab.action` | `{ session: { app, session }, action, projectId }` | a person clicked a header action the app contributed on an attached tab; delivered **only to the app that owns the session** (`EventBus.publishTo`) |
 
@@ -380,7 +394,7 @@ code, and the events. Test controls emit the events Pomade would:
 | `fake.rename(from, to)` | `rename` (file or folder) |
 | `fake.batch(() => …)` | the changes inside as one `files.changed` per watch |
 | `fake.setActiveProject(id \| null)` | `project.changed` |
-| `fake.updateProject(id, { name?, root?, group? })` | `project.renamed` to its subscribers when the name or folder changed, and `project.changed` when it is the active project (rename / move / regroup; the id stays) |
+| `fake.updateProject(id, { name?, root?, group?, visibleAgents? })` | `project.renamed` to its subscribers when the name or folder changed, `project.updated` when the group or the visible agents changed, and `project.changed` when it is the active project and its name or folder changed (the id stays) |
 | `fake.clickNotice(index?)` | — (the user clicks a notice the app posted, default the last: its action runs as in Pomade, landing in `openedTabs`). `fake.notices` lists every `notices.post`, normalized |
 | `fake.ready()` | `pomade.ready` (sticky: later subscriptions get it at once) |
 | `fake.renameAgentTab(tabId, title)` / `fake.updateAgentTab(tabId, { sessionId?, state?, projectId?, … })` / `fake.closeAgentTab(tabId)` | `agentTab.changed` naming what changed (the user renamed it; a session bound, a state change, a move; it left the list). Seed tabs with `agentTabs`, the launchable roster with `roster` (default claude, codex), resumable sessions with `sessions`; `fake.agentTabs`, `fake.openedAgentTabs`, `fake.focusedAgentTabs` record what happened |

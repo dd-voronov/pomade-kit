@@ -6,7 +6,7 @@ import { APP_ID_RE } from "./manifest.js";
 import { isJsonValue } from "./state.js";
 import type { AttachedTabActionPayload } from "./attach.js";
 import type { AgentTabChangedPayload } from "./agent-tabs.js";
-import type { JsonValue, ProjectRef } from "./types.js";
+import type { JsonValue, ProjectInfo, ProjectRef } from "./types.js";
 
 /** The events Pomade itself publishes, in the order they are documented. */
 export const PLATFORM_EVENTS = [
@@ -15,6 +15,7 @@ export const PLATFORM_EVENTS = [
   "project.renamed",
   "project.opened",
   "project.changed",
+  "project.updated",
   "agentTab.exited",
   "agentTab.changed",
   "attachedTab.action",
@@ -34,6 +35,22 @@ export interface ProjectRenamedPayload {
   project: ProjectRef;
   /** The project as it was before the change. */
   previous: ProjectRef;
+}
+
+/** What changed in a `project.updated` event. `group`: the project moved to another group, or its
+ *  group's path changed (a group renamed or moved); `agents`: its visible agents; `settings`: the
+ *  receiving app's own settings for the project. */
+export type ProjectChange = "group" | "agents" | "settings";
+
+export const PROJECT_CHANGES: readonly ProjectChange[] = ["group", "agents", "settings"];
+
+/** `project.updated` — a project's place in the sidebar, its visible agents or the app's settings
+ *  for it changed. `settings` reaches only the app whose settings changed. */
+export interface ProjectUpdatedPayload {
+  /** The project as it is now. */
+  project: ProjectInfo;
+  /** What changed: at least one entry, each once, in `PROJECT_CHANGES` order. */
+  changes: ProjectChange[];
 }
 
 /** `agentTab.exited` — an agent process in a Pomade tab ended, whatever ended it. */
@@ -57,6 +74,8 @@ export interface PlatformEvents {
   /** A project (or the Workspace scope) became active for the first time since Pomade started. */
   "project.opened": ProjectRef;
   "project.changed": ProjectRef;
+  /** A project's group, visible agents or this app's settings for it changed. */
+  "project.updated": ProjectUpdatedPayload;
   "agentTab.exited": AgentTabExitedPayload;
   /** An agent tab joined or left the list, or its session, title, state or project changed (pomade:E-033). */
   "agentTab.changed": AgentTabChangedPayload;

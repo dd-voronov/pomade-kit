@@ -314,6 +314,7 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
         case "project.created":
         case "project.renamed":
         case "project.opened":
+        case "project.updated":
         case "agentTab.exited":
         case "agentTab.changed":
         case "attachedTab.action":

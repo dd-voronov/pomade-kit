@@ -16,6 +16,7 @@ import {
   type GroupInfo,
   type MethodName,
   type ProjectInfo,
+  type ProjectChange,
   type ProjectListResult,
   type ProjectRef,
   type SessionRef,
@@ -52,6 +53,8 @@ export interface DataContext {
   /** Per project: its visible agents and this app's settings. */
   readonly projectAgents: Map<string, string[]>;
   readonly projectSettings: Map<string, Record<string, JsonValue>>;
+  /** A project's agents or this app's settings for it changed: `project.updated`. */
+  projectUpdated(id: string, changes: ProjectChange[]): void;
   /** The manifest's `symlinks` folder patterns. */
   readonly symlinkScopes: readonly string[];
   /** The folder picker's scripted answers (workspace-relative paths or `null` = cancel), in order. */
@@ -262,6 +265,10 @@ export function listProjects(
   };
 }
 
+export function sameList(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
 /** The project methods of pomade:E-030. */
 export type ProjectDataMethod = Extract<
   MethodName,
@@ -292,7 +299,9 @@ export function dispatchProjects(ctx: DataContext, method: ProjectDataMethod, p:
       const merged = mergeProjectSettings(ctx.projectSettings.get(id) ?? {}, structuredClone(patch as Record<string, JsonValue>));
       const tooBig = settingsSizeProblem(merged);
       if (tooBig) throw new CallError("invalid-params", tooBig);
+      const before = JSON.stringify(ctx.projectSettings.get(id) ?? {});
       ctx.projectSettings.set(id, merged);
+      if (JSON.stringify(merged) !== before) ctx.projectUpdated(id, ["settings"]);
       return { settings: structuredClone(merged) };
     }
     case "project.getAgents": {
@@ -304,7 +313,9 @@ export function dispatchProjects(ctx: DataContext, method: ProjectDataMethod, p:
       const id = projectParam(ctx, p, "agent list");
       const agents = normalizeVisibleAgents(p.visibleAgents);
       if (typeof agents === "string") throw new CallError("invalid-params", agents);
+      const before = ctx.projectAgents.get(id) ?? ["*"];
       ctx.projectAgents.set(id, agents);
+      if (!sameList(before, agents)) ctx.projectUpdated(id, ["agents"]);
       return {};
     }
   }

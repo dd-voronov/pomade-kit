@@ -408,6 +408,95 @@ describe("project settings and visible agents", () => {
   });
 });
 
+describe("project.updated — a project's group, visible agents or the app's settings changed", () => {
+  const GROUPS = [
+    { id: "g-build", name: "Building tools" },
+    { id: "g-life", name: "Life" },
+  ];
+  const PROJECTS = [
+    { id: "pomade", name: "Pomade", root: "Projects/Pomade", group: "g-build" },
+    { id: "kit", name: "pomade-kit", root: "Projects/pomade-kit" },
+  ];
+  const manifest = (id: string, subscribe: string[]) => ({
+    id,
+    name: "X",
+    version: "1.0.0",
+    hostApi: 0,
+    capabilities: ["project.read", "project.write"],
+    events: { publish: [], subscribe },
+  });
+  const updated = (r: ReturnType<typeof raw>) =>
+    r.got.flatMap((m) => (m.type === "event" && m.name === "project.updated" ? [m.payload] : []));
+
+  it("a regroup, an agent-list change and a settings write each reach the subscribed frames, with the project as it is now", async () => {
+    const fh = fake({ groups: GROUPS, projects: PROJECTS, manifest: manifest("hello", ["project.updated"]) });
+    const a = raw(fh);
+    const b = raw(fh);
+    const other = raw(fh);
+    expect(a.call("events.subscribe", { name: "project.updated" }).ok).toBe(true);
+    expect(b.call("events.subscribe", { name: "project.updated" }).ok).toBe(true);
+
+    fh.updateProject("pomade", { group: "g-life" });
+    const moved = { id: "pomade", kind: "project", name: "Pomade", root: "Projects/Pomade", groupId: "g-life", groupPath: ["Life"] };
+    fh.updateProject("pomade", { visibleAgents: ["claude", " claude"] });
+    a.call("project.setAgents", { projectId: "kit", visibleAgents: ["codex"] });
+    a.call("project.setSettings", { projectId: "kit", settings: { folder: "done" } });
+    const kit = { id: "kit", kind: "project", name: "pomade-kit", root: "Projects/pomade-kit", groupId: null, groupPath: [] };
+    const expected = [
+      { project: moved, changes: ["group"] },
+      { project: moved, changes: ["agents"] },
+      { project: kit, changes: ["agents"] },
+      { project: kit, changes: ["settings"] },
+    ];
+    expect(updated(a)).toEqual(expected);
+    expect(updated(b)).toEqual(expected);
+    expect(updated(other)).toEqual([]);
+
+    // Through the SDK, typed.
+    const host = await client(fh);
+    const seen: string[] = [];
+    await host.events.subscribe("project.updated", ({ project, changes }) => seen.push(`${project.id}:${project.groupPath.join("/")}:${changes.join(",")}`));
+    fh.updateProject("kit", { group: "g-build", visibleAgents: ["*"] });
+    await flush();
+    expect(seen).toEqual(["kit:Building tools:group,agents"]);
+  });
+
+  it("nothing is sent when nothing changed; a rename is project.renamed, not project.updated", () => {
+    const fh = fake({ groups: GROUPS, projects: PROJECTS, manifest: manifest("hello", ["project.updated"]) });
+    const a = raw(fh);
+    a.call("events.subscribe", { name: "project.updated" });
+    fh.updateProject("pomade", { group: "g-build", visibleAgents: ["*"] });
+    fh.updateProject("pomade", { name: "Pomade 2" });
+    a.call("project.setAgents", { projectId: "kit", visibleAgents: ["*"] });
+    a.call("project.setSettings", { projectId: "kit", settings: { gone: null } });
+    a.call("project.setSettings", { projectId: "kit", settings: { folder: "x" } });
+    a.call("project.setSettings", { projectId: "kit", settings: { folder: "x" } });
+    expect(updated(a)).toEqual([expect.objectContaining({ changes: ["settings"] })]);
+  });
+
+  it("a settings change reaches only the app whose settings changed", () => {
+    const fh = fake({ groups: GROUPS, projects: PROJECTS, manifest: manifest("hello", ["project.updated"]) });
+    const a = raw(fh);
+    a.call("events.subscribe", { name: "project.updated" });
+    const otherApp: unknown[] = [];
+    // Another app on the same bus (the fake host's own, reached for this check) subscribed to
+    // project.updated hears the group change but not this app's settings.
+    const bus = (fh as unknown as { bus: { open(c: unknown): { subscribe(n: string): void; close(): void } } }).bus;
+    const member = bus.open({ appId: "pomade-planner", deliver: (_n: string, p: unknown) => otherApp.push(p) });
+    member.subscribe("project.updated");
+    a.call("project.setSettings", { projectId: "kit", settings: { folder: "done" } });
+    fh.updateProject("kit", { group: "g-life" });
+    member.close();
+    expect(updated(a).map((p) => (p as { changes: string[] }).changes)).toEqual([["settings"], ["group"]]);
+    expect(otherApp.map((p) => (p as { changes: string[] }).changes)).toEqual([["group"]]);
+  });
+
+  it("subscribing needs the manifest's events.subscribe", () => {
+    const a = raw(fake({ projects: PROJECTS, groups: GROUPS, manifest: manifest("hello", []) }));
+    expect(a.errorOf("events.subscribe", { name: "project.updated" })).toBe("capability-denied");
+  });
+});
+
 describe("files.symlink / removeSymlink — scoped by the manifest", () => {
   const MANIFEST = {
     id: "pomade-agents",

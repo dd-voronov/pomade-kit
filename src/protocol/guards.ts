@@ -10,6 +10,7 @@ import {
   type HelloMessage,
   type HostToAppMessage,
   type KeyMessage,
+  type ProjectInfo,
   type ProjectRef,
   type FileChange,
   type SocketClient,
@@ -17,7 +18,7 @@ import {
 } from "./types.js";
 import { isJsonValue } from "./state.js";
 import { isGitRepoState } from "./git.js";
-import { AGENT_EXIT_REASONS, parseBusEventName, type AgentTabExitedPayload } from "./events.js";
+import { AGENT_EXIT_REASONS, PROJECT_CHANGES, parseBusEventName, type AgentTabExitedPayload, type ProjectUpdatedPayload } from "./events.js";
 import { checkSessionRef } from "./attach.js";
 import { isAgentTabChanged, pickAgentTabInfo } from "./agent-tabs.js";
 
@@ -57,6 +58,28 @@ export function isProjectRef(v: unknown): v is ProjectRef {
     (v.kind === "project" || v.kind === "workspace") &&
     typeof v.name === "string" &&
     typeof v.root === "string"
+  );
+}
+
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
+
+function isProjectInfo(v: unknown): v is ProjectInfo {
+  if (!isProjectRef(v) || v.kind !== "project") return false;
+  const o = v as unknown as Obj;
+  return (o.groupId === null || typeof o.groupId === "string") && isStringArray(o.groupPath);
+}
+
+/** A well-formed `project.updated` payload: a project and at least one known change, each once. */
+function isProjectUpdated(v: unknown): v is ProjectUpdatedPayload {
+  return (
+    isObj(v) &&
+    isProjectInfo(v.project) &&
+    Array.isArray(v.changes) &&
+    v.changes.length > 0 &&
+    new Set(v.changes).size === v.changes.length &&
+    v.changes.every((c) => (PROJECT_CHANGES as readonly unknown[]).includes(c))
   );
 }
 
@@ -257,6 +280,16 @@ function parseBusEvent(name: unknown, payload: unknown): HostToAppMessage | null
       return isObj(payload) && isProjectRef(payload.project) && isProjectRef(payload.previous)
         ? { channel: CHANNEL, type: "event", name: bus.name, payload: { project: payload.project, previous: payload.previous } }
         : null;
+    case "project.updated": {
+      if (!isProjectUpdated(payload)) return null;
+      const { id, kind, name, root, groupId, groupPath } = payload.project;
+      return {
+        channel: CHANNEL,
+        type: "event",
+        name: bus.name,
+        payload: { project: { id, kind, name, root, groupId, groupPath: [...groupPath] }, changes: [...payload.changes] },
+      };
+    }
     case "agentTab.exited":
       return isAgentTabExited(payload)
         ? {

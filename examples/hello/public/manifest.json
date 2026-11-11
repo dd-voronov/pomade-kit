@@ -45,6 +45,7 @@
     "subscribe": [
       "pomade.ready",
       "project.renamed",
+      "project.updated",
       "attachedTab.action"
     ]
   },

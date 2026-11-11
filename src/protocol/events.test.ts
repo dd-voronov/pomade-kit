@@ -20,13 +20,14 @@ const BASE = { id: "pomade-runner", name: "Runner", version: "0.1.0", hostApi: 0
 const DECLARED: ManifestEvents = { publish: ["run.started", "run.finished"], subscribe: ["project.renamed", "pomade-agents:session.closed"] };
 
 describe("event names", () => {
-  it("platform events are the documented eight", () => {
+  it("platform events are the documented nine", () => {
     expect(PLATFORM_EVENTS).toEqual([
       "pomade.ready",
       "project.created",
       "project.renamed",
       "project.opened",
       "project.changed",
+      "project.updated",
       "agentTab.exited",
       "agentTab.changed",
       "attachedTab.action",
@@ -155,6 +156,22 @@ describe("bus events on the wire", () => {
     expect(ev("project.renamed", { project, previous: { ...project, name: "Old" } })).toMatchObject({
       payload: { project, previous: { ...project, name: "Old" } },
     });
+    const info = { ...project, groupId: "g1", groupPath: ["Tools"] };
+    expect(ev("project.updated", { project: info, changes: ["group", "agents"] })).toMatchObject({
+      name: "project.updated",
+      payload: { project: info, changes: ["group", "agents"] },
+    });
+    expect(ev("project.updated", { project: { ...info, groupId: null, groupPath: [], extra: 1 }, changes: ["settings"] })).toEqual({
+      channel: "pomade",
+      type: "event",
+      name: "project.updated",
+      payload: { project: { ...info, groupId: null, groupPath: [] }, changes: ["settings"] },
+    });
+    expect(ev("project.updated", { project: info, changes: [] })).toBeNull();
+    expect(ev("project.updated", { project: info, changes: ["name"] })).toBeNull();
+    expect(ev("project.updated", { project: info, changes: ["group", "group"] })).toBeNull();
+    expect(ev("project.updated", { project, changes: ["group"] })).toBeNull();
+    expect(ev("project.updated", { project: { ...info, kind: "workspace" }, changes: ["group"] })).toBeNull();
     const exited = { tabId: "t1", projectId: "p1", agentId: "claude", sessionId: null, reason: "tab-closed" };
     expect(ev("agentTab.exited", exited)).toMatchObject({ payload: exited });
     expect(ev("agentTab.exited", { ...exited, reason: "killed" })).toBeNull();

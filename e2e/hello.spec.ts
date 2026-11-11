@@ -158,6 +158,45 @@ test("the listed folder is a per-project setting; the visible agents are the pro
   await expect(app(page).getByTestId("agents")).toHaveText("Agents: claude");
 });
 
+test("group, agents and folder lines follow project.updated without a project switch", async ({ page }) => {
+  await expect(app(page).getByTestId("group")).toHaveText("Building tools › Tools");
+  await expect(app(page).getByTestId("agents")).toHaveText("Agents: claude, codex");
+  // The user regroups the project and edits its agents in Pomade.
+  await page.evaluate(() => window.fakeHost.updateProject("alpha", { group: "build" }));
+  await expect(app(page).getByTestId("group")).toHaveText("Building tools");
+  await page.evaluate(() => window.fakeHost.updateProject("alpha", { group: null, visibleAgents: ["codex"] }));
+  await expect(app(page).getByTestId("group")).toHaveText("Ungrouped");
+  await expect(app(page).getByTestId("agents")).toHaveText("Agents: codex");
+  // Another frame of the app writes the folder setting: this one re-lists.
+  await setFolderFromAnotherFrame(page);
+  await expect(app(page).getByTestId("folder")).toHaveText("Projects/alpha/docs/roadmap/done");
+  await expect(row(page, "Projects/alpha/docs/roadmap/done/E-000-old.md")).toContainText("Old");
+  // A change to another project is not the shown one's.
+  await page.evaluate(() => window.fakeHost.updateProject("beta", { group: "tools", visibleAgents: ["claude"] }));
+  await expect(app(page).getByTestId("group")).toHaveText("Ungrouped");
+  await expect(app(page).getByTestId("agents")).toHaveText("Agents: codex");
+});
+
+/** A second, headless frame of the app writes Alpha's folder setting through the protocol. */
+async function setFolderFromAnotherFrame(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const frame = window.fakeHost.attach(() => {});
+    frame.receive({ channel: "pomade", type: "hello", hostApi: 0 });
+    frame.receive({
+      channel: "pomade",
+      type: "call",
+      id: "1",
+      method: "project.setSettings",
+      params: { projectId: "alpha", settings: { folder: "docs/roadmap/done" } },
+    });
+  });
+}
+
+test("a ticket whose --- block never closes is listed as unreadable", async ({ page }) => {
+  await page.evaluate(() => window.fakeHost.writeFile("Projects/alpha/docs/roadmap/T-009-unclosed.md", "---\nid: T-009\nstatus: open\n\n# Never closed\n"));
+  await expect(row(page, "Projects/alpha/docs/roadmap/T-009-unclosed.md")).toHaveText("T-009-unclosed.mdcan't read: the leading --- block is not closed");
+});
+
 test("Choose folder… uses the host's folder picker, bounded by the project", async ({ page }) => {
   await page.evaluate(() => {
     window.fakeHost.answerPick("Projects/beta/docs/roadmap");
@@ -181,7 +220,7 @@ test("shows the project's git repos and follows git changes and project switches
 });
 
 test("hears platform events it subscribes to: Pomade ready (sticky), a project renamed", async ({ page }) => {
-  await expect.poll(() => page.evaluate(() => window.fakeHost.subscriptions)).toEqual(["pomade.ready", "project.changed", "project.renamed"]);
+  await expect.poll(() => page.evaluate(() => window.fakeHost.subscriptions)).toEqual(["pomade.ready", "project.changed", "project.renamed", "project.updated"]);
   await page.evaluate(() => window.fakeHost.ready());
   await expect(app(page).getByTestId("events")).toHaveText("Last event: Pomade ready");
   await page.evaluate(() => window.fakeHost.updateProject("beta", { name: "Beta 2" }));
