@@ -984,7 +984,7 @@ its own channel (Pomade publishes `attachedTab.action` to the owner), never over
 shows the project's git repos, and follows project, file and git events. On the bus it shows the
 last platform event it heard (Pomade ready, a project renamed) and publishes `greeted` from a
 button that is enabled only while another app listens; "Notify me" posts a notice whose click opens
-its roadmap tab. Its always-on backend (`public/backend/`) keeps the app's keeper running with a
+its roadmap tab in the project the notice is about. Its always-on backend (`public/backend/`) keeps the app's keeper running with a
 demo ticker in it; "Open the ticker" opens that session in an attached tab, and the tab's Restart
 action reaches the backend as `attachedTab.action`. `npm run hello:build` writes the installable folder
 `examples/hello/dist/` (`index.html`, `manifest.json`, assets).

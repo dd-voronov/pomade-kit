@@ -246,12 +246,12 @@ test("publishes only while someone listens; subscribers hear it", async ({ page 
   await expect(app(page).getByTestId("greet")).toBeDisabled();
 });
 
-test("posts a notice whose click opens its own tab at the roadmap", async ({ page }) => {
+test("posts a notice, for its project, whose click opens its own tab at the roadmap", async ({ page }) => {
   await expect(app(page).locator("tr[data-path]")).toHaveCount(2);
   await app(page).getByTestId("notify").click();
   await expect
     .poll(() => page.evaluate(() => window.fakeHost.notices))
-    .toEqual([{ title: "Roadmap ready", body: "2 tickets in Projects/alpha/docs/roadmap", action: { kind: "openApp", route: "roadmap" } }]);
+    .toEqual([{ title: "Roadmap ready", body: "2 tickets in Projects/alpha/docs/roadmap", action: { kind: "openApp", route: "roadmap", projectId: "alpha" } }]);
   await page.evaluate(() => window.fakeHost.clickNotice());
   expect(await page.evaluate(() => window.fakeHost.openedTabs)).toEqual([{ kind: "app", route: "roadmap", projectId: "alpha" }]);
 });
