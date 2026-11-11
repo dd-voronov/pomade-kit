@@ -17,3 +17,5 @@ export * from "./socket.js";
 export * from "./broker.js";
 export * from "./attach.js";
 export * from "./agent-tabs.js";
+export * from "./agent-sessions.js";
+export * from "./git-runs.js";

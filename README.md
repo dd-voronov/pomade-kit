@@ -255,6 +255,21 @@ Inside a Pomade terminal `POMADE_TAB_ID` names the tab, so a command finds its o
 An agents app serves Pomade's roster as `roster.list` (`RosterListResult`, `checkRosterList`,
 `providerModes`); Pomade falls back to its own scan when the app is absent or not answering.
 
+It also answers Pomade's questions about sessions (pomade:E-043; `SESSIONS_APP_ID`):
+
+```ts
+// sessions.forRepo — the Git panel's branch ↔ session link: sessions started at or below a
+// repository / worktree folder, optionally on one branch. Newest activity first.
+{ folder: "/ws/Projects/app/.claude/worktrees/t1", branch?: "agent/t1" }
+  → { sessions: RepoSession[] }   // { id, agent, name | null, status, live, cwd, branch | null, project | null, startedAt, lastActiveAt }
+// sessions.liveIn — "is an agent live here?" (merge blocking, pomade-git's skip): agent tabs
+// (prompted or not) and Runner runs at or below the folder.
+{ folder: "/ws/Projects/app" } → { live: boolean, sessions: LiveSession[] }   // { sessionId | null, agent, cwd, source: "tab" | "run", job | null }
+```
+
+`checkRepoSessions` drops a malformed session (a malformed answer is no answer: no link);
+`checkLiveIn` refuses a malformed answer whole, and Pomade answers from its own terminals.
+
 ## Git state
 
 Capability `git.read`. Pomade serves its own git snapshot — the one its file tree and sidebar
@@ -279,6 +294,16 @@ A project's repos are the repos at or below its folder plus the nearest repo hol
 = every repo. A watch delivers the scope's repos whenever they change (`git.changed`), follows a
 project that moves, and ends with the frame (a reload drops it). An unknown project is
 `not-found`.
+
+### `pomade-git` runs and scheduled jobs
+
+Pomade's `pomade-git` command prints `GitRunOutput` with `--json` (`{ op, job, at, results:
+GitRunResult[] }`; each result `{ repo, path, op, status: "done" | "skipped" | "failed", reason,
+steps, commit }`; `isGitRunOutput` / `isGitRunResult` check one). A scheduler that targets repos
+serves `jobs.forRepo` (`REPO_JOBS_APP_ID` = `pomade-runner`, `REPO_JOBS_METHOD`): `{ repo: { name,
+path } }` → `{ jobs: RepoJob[] }` (`{ id, name, operation, schedule, nextRun, lastResult, route }`);
+Pomade's repo row reads it through the broker, `checkRepoJobs` drops a malformed job, and no
+answer means no row.
 
 ## Events
 
