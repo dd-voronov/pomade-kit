@@ -102,6 +102,17 @@ test.describe("the quick-note overlay", () => {
     expect(await page.evaluate(() => window.fakeHost.state)).toEqual({ lastNote: "call the bank" });
   });
 
+  test("the note field asks the host for more height as its text grows", async ({ page }) => {
+    await page.goto(OVERLAY);
+    const note = app(page).getByTestId("note");
+    await note.fill("one line");
+    const one = await page.evaluate(() => window.fakeHost.overlayResizes.at(-1));
+    await note.fill("a\nb\nc\nd\ne\nf");
+    const six = await page.evaluate(() => window.fakeHost.overlayResizes.at(-1));
+    expect(one).toBeGreaterThan(0);
+    expect(six).toBeGreaterThan(one!);
+  });
+
   test("Escape closes it and stores nothing", async ({ page }) => {
     await page.goto(OVERLAY);
     await app(page).getByTestId("note").press("Escape");
@@ -286,7 +297,7 @@ test("says once where its shipped skill is, and always in About", async ({ page 
 
 test("Quick note… opens its overlay from the frame (overlay.open); focus comes back to the button", async ({ page }) => {
   await app(page).getByTestId("open-overlay").click();
-  await expect.poll(() => page.evaluate(() => window.fakeHost.overlays)).toEqual([{ route: "note", anchor: "center" }]);
+  await expect.poll(() => page.evaluate(() => window.fakeHost.overlays)).toEqual([{ route: "note", anchor: "panel" }]);
   // The overlay takes focus into another frame (here: the harness page), then gives it back to this frame.
   await page.evaluate(() => {
     const away = document.createElement("input");

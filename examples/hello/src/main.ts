@@ -176,8 +176,9 @@ function startApp(host: HostClient): void {
       host.notices.post({ title: "Roadmap ready", body, action: { kind: "openApp", route: "roadmap", projectId: project.id } }),
     );
   });
-  // The overlay a shortcut opens, opened from this frame instead; focus comes back to the button.
-  el("open-overlay").addEventListener("click", () => void host.overlay.open({ route: "note" }));
+  // The overlay a shortcut opens, opened from this frame instead, beside the side panel unless the user
+  // has moved it; focus comes back to the button.
+  el("open-overlay").addEventListener("click", () => void host.overlay.open({ route: "note", anchor: "panel" }));
   useScratch(host);
   const showRoute = (route: string): void => {
     el("route").textContent = `Route: ${route === "" ? "(default)" : route}`;
@@ -348,21 +349,35 @@ function useScratch(host: HostClient): void {
   });
 }
 
-/** The overlay (Cmd+Shift+J, or "Quick note…"): one input; Enter stores the note and closes, Escape just closes. */
+/** The overlay (Cmd+Shift+J, or "Quick note…"): a note field that grows with its text (`overlay.resize`);
+ *  Enter stores the note and closes, Shift+Enter adds a line, Escape just closes. */
 function startQuickNote(host: HostClient): void {
   document.body.replaceChildren();
   document.body.className = "overlay";
   const form = document.createElement("form");
-  const input = document.createElement("input");
-  input.dataset.testid = "note";
-  input.placeholder = "Quick note — Enter to save, Esc to cancel";
-  form.append(input);
+  const note = document.createElement("textarea");
+  note.dataset.testid = "note";
+  note.rows = 3;
+  note.placeholder = "Quick note — Enter to save, Shift+Enter for a new line, Esc to cancel";
+  form.append(note);
   document.body.append(form);
+  const store = (): void => void host.state.set("lastNote", note.value).then(() => host.overlay.close());
   form.addEventListener("submit", (e) => {
     e.preventDefault();
-    void host.state.set("lastNote", input.value).then(() => host.overlay.close());
+    store();
   });
-  input.focus();
+  note.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+    e.preventDefault();
+    store();
+  });
+  // Room for the text plus the body's margin; Pomade clamps it.
+  note.addEventListener("input", () => {
+    note.style.height = "auto";
+    note.style.height = `${note.scrollHeight}px`;
+    void host.overlay.resize({ height: note.scrollHeight + 2 * 12 + 8 });
+  });
+  note.focus();
 }
 
 async function main(): Promise<void> {
