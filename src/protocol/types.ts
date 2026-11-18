@@ -444,10 +444,26 @@ export interface OpenAppParams {
   projectId?: string;
 }
 
+/** Where an overlay opens when the user has not moved it: `"center"` of the pane area, or
+ *  `"panel"` — beside the side panel. */
+export type OverlayAnchor = "center" | "panel";
+
+export const OVERLAY_ANCHORS: readonly OverlayAnchor[] = ["center", "panel"];
+
 /** `overlay.open` — open the calling app's overlay frame at a route, from a visible tab or panel frame. */
 export interface OpenOverlayParams {
   /** What the overlay renders; default "". */
   route?: string;
+  /** The frame's height in px, a positive number; Pomade rounds it and clamps it to its limits (at most 60% of the
+   *  pane area). Default 220. The width is always 420. */
+  height?: number;
+  /** Where it opens; default `"center"`. A position the user left it at wins over the anchor. */
+  anchor?: OverlayAnchor;
+}
+
+/** `overlay.resize` — the overlay frame asks for a new height; same rules as `OpenOverlayParams.height`. */
+export interface ResizeOverlayParams {
+  height: number;
 }
 
 // ── Broker (pomade:E-028) ──────────────────────────────────────────────────
@@ -519,6 +535,7 @@ export interface HostMethods {
   "state.set": { params: StateSetParams; result: Record<string, never> };
   "tabs.openApp": { params: OpenAppParams; result: Record<string, never> };
   "overlay.open": { params: OpenOverlayParams; result: Record<string, never> };
+  "overlay.resize": { params: ResizeOverlayParams; result: Record<string, never> };
   "overlay.close": { params: Record<string, never>; result: Record<string, never> };
   "git.getState": { params: GitStateParams; result: GitStateResult };
   "git.watch": { params: GitStateParams; result: WatchResult };
@@ -572,6 +589,7 @@ export const METHOD_CAPABILITY: Readonly<Record<MethodName, MethodCapability>> =
   "state.set": null,
   "tabs.openApp": null,
   "overlay.open": null,
+  "overlay.resize": null,
   "overlay.close": null,
   "git.getState": "git.read",
   "git.watch": "git.read",

@@ -440,7 +440,8 @@ code, and the events. Test controls emit the events Pomade would:
 | `fake.answerPick(path \| null)` | — (queues the user's next folder-picker choice; a folder outside the root is refused and the next answer used; none left = cancel). `fake.pickRequests` logs `{ root, initial }` per picker |
 | `fake.setGitRepos(repos)` | `git.changed` to each git watch whose scope's repos changed |
 | `fake.openedTabs` | — (every `tabs.openFile` / `openTerminal` / `openApp`, in order: `{ kind: "file", projectId, path }` · `{ kind: "terminal", projectId, cwd, command?, title? }` · `{ kind: "app", projectId, route }`; the call switches the active project like Pomade) |
-| `fake.overlays` | — (every `overlay.open`, in order: `{ route }`) |
+| `fake.overlays` | — (every `overlay.open`, in order: `{ route, height?, anchor }` — `height` as given, absent when none; `anchor` `"center"` when none) |
+| `fake.overlayResizes` | — (every height an overlay frame asked for with `overlay.resize`, in order, as given) |
 
 A frame opened with `attach(post, { route })` / `mountApp(fake, { src, route })` starts at that route,
 and `connection.navigate(route)` / `mounted.navigate(route)` sends `route.changed` as Pomade
@@ -507,14 +508,26 @@ overlay is `fake.createTransport({ surface: "overlay", shortcut: "quick-add", on
 `mountApp(fake, { src, surface: "overlay", shortcut })`, which removes the frame when it closes) —
 `onClose` runs after `overlay.close` is answered, or on a forwarded Escape.
 
-The app's own tab or panel frame opens the same overlay with `host.overlay.open({ route })` (route
-default `""`; no overlay shortcut needed) — the Planner panel's **+**. Only while that frame is
+The app's own tab or panel frame opens the same overlay with `host.overlay.open({ route, height?, anchor? })`
+(route default `""`; no overlay shortcut needed) — the Planner panel's **+**. Only while that frame is
 shown (the active tab, the shown panel): a hidden frame's call, and an overlay frame's, reject with
 `invalid-params`; over the socket it is `capability-denied`. Every call opens a fresh overlay frame
-at its route, replacing any open one. When it closes Pomade gives focus back to the calling frame,
-and the SDK puts it on the element that had it before the call (the button). In the fake host a
-frame opened with `{ hidden: true }` (or hidden later: `connection.setHidden(true)` /
-`mounted.setHidden(true)`) is refused, and `fake.overlays` records each open's `{ route }`.
+at its route, replacing any open one. When it closes Pomade gives focus back to the frame that called
+`overlay.open` (not to whatever frame had focus before it), and the SDK puts it on the element that had it before the
+call (the button). In the fake host a frame opened with `{ hidden: true }` (or hidden later:
+`connection.setHidden(true)` / `mounted.setHidden(true)`) is refused, and `fake.overlays` records each
+open's `{ route, height?, anchor }`.
+
+The frame is 420 px wide and 220 px high (`OVERLAY_WIDTH`, `OVERLAY_DEFAULT_HEIGHT`). The app sizes the
+height — `height` in `overlay.open`, or `host.overlay.resize({ height })` from the overlay frame as its
+form grows (`invalid-params` from a tab or a panel frame). A height is a positive number; Pomade rounds it
+and clamps it to its limits (at most 60% of the pane area), so read `window.innerHeight` for what the frame
+got; the width never changes (`checkOverlayHeight` / `checkOverlayAnchor` hold the param rules). `anchor`
+is `"center"` (default) or `"panel"` — beside the side panel, for an overlay asked for from a panel. The user
+can drag the overlay by its head; Pomade remembers where it was left, per app, and the app's next overlay
+opens there — a remembered position wins over `anchor`. The fake host records `height` and `anchor` in
+`fake.overlays` and each `overlay.resize` height in `fake.overlayResizes`; it does not mount, place or
+size the frame.
 
 `skills` lists the agent skills the app ships — folders inside the build, each holding a
 `SKILL.md`; a folder's last segment is the skill's name (`SKILL_NAME_RE`, unique):
@@ -893,7 +906,7 @@ if (up.status === "connected") up.host;      // up.launched: this call started i
   `rejected`. It throws only when the identity is not configured — no app id, no key.
 - Options override the environment: `socketPath`, `appId`, `key` / `keyFile`, `role`
   (`"backend"` | `"command"`, default `POMADE_CLIENT`, else `"command"`), `env`, `timeoutMs`.
-- Over the socket `files.pickFolder`, `git.watch`, `overlay.open` and `overlay.close` are `capability-denied`
+- Over the socket `files.pickFolder`, `git.watch`, `overlay.open`, `overlay.resize` and `overlay.close` are `capability-denied`
   (they need a frame); everything else is as for the app's frames, under its manifest.
 - `launchPomade()` connects when Pomade runs; otherwise it runs the launch Pomade recorded in
   `host.json` (`open -a` for the installed app), without `ELECTRON_RUN_AS_NODE`, and retries the

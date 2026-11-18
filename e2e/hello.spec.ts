@@ -286,7 +286,7 @@ test("says once where its shipped skill is, and always in About", async ({ page 
 
 test("Quick note… opens its overlay from the frame (overlay.open); focus comes back to the button", async ({ page }) => {
   await app(page).getByTestId("open-overlay").click();
-  await expect.poll(() => page.evaluate(() => window.fakeHost.overlays)).toEqual([{ route: "note" }]);
+  await expect.poll(() => page.evaluate(() => window.fakeHost.overlays)).toEqual([{ route: "note", anchor: "center" }]);
   // The overlay takes focus into another frame (here: the harness page), then gives it back to this frame.
   await page.evaluate(() => {
     const away = document.createElement("input");

@@ -8,6 +8,7 @@ export * from "./paths.js";
 export * from "./frontmatter.js";
 export * from "./project-data.js";
 export * from "./state.js";
+export * from "./overlay.js";
 export * from "./shortcuts.js";
 export * from "./git.js";
 export * from "./events.js";

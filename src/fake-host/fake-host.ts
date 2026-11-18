@@ -27,6 +27,8 @@ import {
   HOST_API_VERSION,
   METHOD_CAPABILITY,
   WORKSPACE_PROJECT_ID,
+  checkOverlayAnchor,
+  checkOverlayHeight,
   checkStateKey,
   normalizeVisibleAgents,
   checkStateValue,
@@ -45,6 +47,7 @@ import {
   type KeyMessage,
   type Manifest,
   type MethodName,
+  type OverlayAnchor,
   type ProjectChange,
   type ProjectRef,
   type RosterAgent,
@@ -165,6 +168,10 @@ export interface FrameOptions {
 /** An overlay the app opened (`overlay.open`), as the fake host records it. */
 export interface FakeOpenedOverlay {
   route: string;
+  /** The requested frame height, as given (absent when the call named none). */
+  height?: number;
+  /** The requested anchor; `"center"` when the call named none. */
+  anchor: OverlayAnchor;
 }
 
 /** A strip icon's badge (`strip.setBadge`). */
@@ -226,6 +233,8 @@ export class FakeHost {
   readonly openedTabs: FakeOpenedTab[] = [];
   /** Every overlay the app opened (`overlay.open`), in order. */
   readonly overlays: FakeOpenedOverlay[] = [];
+  /** Every height an overlay frame asked for with `overlay.resize`, in order, as given. */
+  readonly overlayResizes: number[] = [];
   /** Every folder picker the app opened (`files.pickFolder`), in order. */
   readonly pickRequests: FakePickRequest[] = [];
   private readonly pickAnswers: (string | null)[] = [];
@@ -860,7 +869,22 @@ export class FakeHost {
         if (frame.target.surface === "overlay") throw new CallError("invalid-params", "overlay.open is for a tab or a panel frame; an overlay is already open");
         if (frame.hidden) throw new CallError("invalid-params", "overlay.open needs a visible frame: an active tab or the shown panel");
         const route = params.route === undefined ? "" : stringParam(params, "route");
-        this.overlays.push({ route });
+        const heightProblem = params.height === undefined ? null : checkOverlayHeight(params.height);
+        if (heightProblem) throw new CallError("invalid-params", heightProblem);
+        const anchorProblem = params.anchor === undefined ? null : checkOverlayAnchor(params.anchor);
+        if (anchorProblem) throw new CallError("invalid-params", anchorProblem);
+        this.overlays.push({
+          route,
+          ...(params.height !== undefined ? { height: params.height as number } : {}),
+          anchor: (params.anchor as OverlayAnchor | undefined) ?? "center",
+        });
+        return {};
+      }
+      case "overlay.resize": {
+        if (frame.target.surface !== "overlay") throw new CallError("invalid-params", "overlay.resize is only for an overlay frame");
+        const problem = checkOverlayHeight(params.height);
+        if (problem) throw new CallError("invalid-params", problem);
+        this.overlayResizes.push(params.height as number);
         return {};
       }
       case "overlay.close":

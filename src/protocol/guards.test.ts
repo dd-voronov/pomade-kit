@@ -271,6 +271,7 @@ describe("METHOD_CAPABILITY", () => {
       "state.set": null,
       "tabs.openApp": null,
       "overlay.open": null,
+      "overlay.resize": null,
       "overlay.close": null,
       "git.getState": "git.read",
       "git.watch": "git.read",

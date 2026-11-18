@@ -55,6 +55,8 @@ export type {
   PickFolderResult,
   OpenAppParams,
   OpenOverlayParams,
+  OverlayAnchor,
+  ResizeOverlayParams,
   GitFileStatus,
   GitFileChange,
   GitRepoState,

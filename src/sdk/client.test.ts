@@ -260,6 +260,19 @@ describe("overlay.close", () => {
   });
 });
 
+describe("overlay.resize", () => {
+  it("sends { height } and resolves void; a refusal rejects", async () => {
+    const t = setup();
+    const p = t.host.overlay.resize({ height: 260 });
+    expect(t.lastCall()).toMatchObject({ method: "overlay.resize", params: { height: 260 } });
+    t.ok(t.lastCall().id, {});
+    expect(await p).toBeUndefined();
+    const q = t.host.overlay.resize({ height: 0 });
+    t.fail(t.lastCall().id, "invalid-params");
+    await expect(q).rejects.toMatchObject({ code: "invalid-params" });
+  });
+});
+
 describe("overlay.open", () => {
   it("sends the route (default {}) and resolves void; a refusal rejects", async () => {
     const t = setup();
@@ -267,6 +280,10 @@ describe("overlay.open", () => {
     expect(t.lastCall()).toMatchObject({ method: "overlay.open", params: { route: "quick-add" } });
     t.ok(t.lastCall().id, {});
     expect(await p).toBeUndefined();
+    const sized = t.host.overlay.open({ route: "quick-add", height: 260, anchor: "panel" });
+    expect(t.lastCall()).toMatchObject({ method: "overlay.open", params: { route: "quick-add", height: 260, anchor: "panel" } });
+    t.ok(t.lastCall().id, {});
+    await sized;
     const q = t.host.overlay.open();
     expect(t.lastCall()).toMatchObject({ method: "overlay.open", params: {} });
     t.fail(t.lastCall().id, "invalid-params");

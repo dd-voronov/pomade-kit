@@ -319,7 +319,7 @@ describe("surfaces, strip icons and routes", () => {
       if (r.status !== "connected") throw new Error(r.status);
       expect(r.host.welcome).toMatchObject({ surface, route: "" });
       await expect(r.host.info()).resolves.toMatchObject({ surface, route: "" });
-      for (const call of [() => r.host.files.pickFolder(), () => r.host.git.watch({}, () => undefined), () => r.host.overlay.open(), () => r.host.overlay.close()]) {
+      for (const call of [() => r.host.files.pickFolder(), () => r.host.git.watch({}, () => undefined), () => r.host.overlay.open(), () => r.host.overlay.resize({ height: 300 }), () => r.host.overlay.close()]) {
         await expect(call()).rejects.toMatchObject({ code: "capability-denied", message: expect.stringMatching(/needs an app frame/) });
       }
       await expect(r.host.files.readFolder({ path: "Projects/Pomade" })).resolves.toMatchObject({ entries: expect.any(Array) });
@@ -622,7 +622,41 @@ describe("overlay frames", () => {
     await expect(overlay.host.overlay.open({ route: "x" })).rejects.toMatchObject({ code: "invalid-params" });
     await expect(hidden.host.overlay.open({ route: "x" })).rejects.toMatchObject({ code: "invalid-params", message: expect.stringMatching(/visible/) });
     await expect(tab.host.overlay.open({ route: 7 as unknown as string })).rejects.toMatchObject({ code: "invalid-params" });
-    expect(host.overlays).toEqual([{ route: "quick-add" }, { route: "" }]);
+    expect(host.overlays).toEqual([
+      { route: "quick-add", anchor: "center" },
+      { route: "", anchor: "center" },
+    ]);
+  });
+
+  it("overlay.open records height and anchor as given; a bad height or anchor is invalid-params", async () => {
+    const host = fake({ manifest: OVERLAY_MANIFEST });
+    const panel = await connect({ transport: host.createTransport({ surface: "panel" }), keySource: null });
+    if (panel.status !== "connected") throw new Error("not connected");
+    await panel.host.overlay.open({ route: "quick-add", height: 260.5, anchor: "panel" });
+    await panel.host.overlay.open({ height: 300 });
+    for (const bad of [{ height: 0 }, { height: -5 }, { height: "tall" }, { height: Number.NaN }, { anchor: "left" }, { anchor: 3 }]) {
+      await expect(panel.host.overlay.open(bad as never)).rejects.toMatchObject({ code: "invalid-params" });
+    }
+    expect(host.overlays).toEqual([
+      { route: "quick-add", height: 260.5, anchor: "panel" },
+      { route: "", height: 300, anchor: "center" },
+    ]);
+  });
+
+  it("overlay.resize from an overlay frame records the height; from a tab or panel frame, or with a bad height, it is invalid-params", async () => {
+    const host = fake({ manifest: OVERLAY_MANIFEST });
+    const overlay = await connect({ transport: host.createTransport({ surface: "overlay", shortcut: "quick-add" }), keySource: null });
+    const tab = await connect({ transport: host.createTransport(), keySource: null });
+    if (overlay.status !== "connected" || tab.status !== "connected") throw new Error("not connected");
+    await overlay.host.overlay.resize({ height: 240 });
+    await overlay.host.overlay.resize({ height: 255.5 });
+    await expect(overlay.host.overlay.resize({ height: 0 })).rejects.toMatchObject({ code: "invalid-params" });
+    await expect(overlay.host.overlay.resize({} as never)).rejects.toMatchObject({ code: "invalid-params" });
+    await expect(tab.host.overlay.resize({ height: 240 })).rejects.toMatchObject({
+      code: "invalid-params",
+      message: "overlay.resize is only for an overlay frame",
+    });
+    expect(host.overlayResizes).toEqual([240, 255.5]);
   });
 
   it("a frame shown again may open the overlay (setHidden)", () => {
@@ -636,7 +670,7 @@ describe("overlay frames", () => {
     frame.setHidden(true);
     frame.receive({ channel: "pomade", type: "call", id: "3", method: "overlay.open", params: { route: "c" } });
     expect(got.slice(1).map((m) => m.type === "result" && m.ok)).toEqual([false, true, false]);
-    expect(host.overlays).toEqual([{ route: "b" }]);
+    expect(host.overlays).toEqual([{ route: "b", anchor: "center" }]);
   });
 
   it("the SDK closes its overlay", async () => {

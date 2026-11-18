@@ -22,6 +22,7 @@ import {
   type MoveParams,
   type DeleteFileResult,
   type OpenOverlayParams,
+  type ResizeOverlayParams,
   type ReadFileParams,
   type ReadFileResult,
   type RemoveFieldParams,
@@ -199,6 +200,9 @@ export interface HostClient {
     /** Open this app's overlay at `route` (default ""), as its overlay shortcut does. Only from a visible tab or panel frame.
      *  When the overlay closes, Pomade gives focus back to this frame and the element that had it (the button) is focused again. */
     open(params?: OpenOverlayParams): Promise<void>;
+    /** Ask for a new frame height (the width stays 420). Pomade rounds it and clamps it to its limits (at most 60% of the pane
+     *  area); read `window.innerHeight` for what the frame got. Only for `welcome.surface === "overlay"`. */
+    resize(params: ResizeOverlayParams): Promise<void>;
     /** Close this overlay frame; focus returns where it was. Only for `welcome.surface === "overlay"`. */
     close(): Promise<void>;
   };
@@ -491,6 +495,9 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
         const restore = rememberFocus();
         await call("overlay.open", params);
         restore();
+      },
+      async resize(params) {
+        await call("overlay.resize", params);
       },
       async close() {
         await call("overlay.close", {});
