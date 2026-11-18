@@ -60,6 +60,7 @@ describe("the workspace's .pomade folder is out of reach", () => {
     ["files.setBody", (path) => ({ path, body: "x" })],
     ["files.setField", (path) => ({ path, key: "k", value: "v" })],
     ["files.removeField", (path) => ({ path, key: "k" })],
+    ["files.setKeyLines", (path) => ({ path, key: "k", text: "k:\n  a: 1" })],
     ["files.move", (path) => ({ from: path, to: "Projects/a/moved" })],
     ["files.move", (path) => ({ from: "Projects/a/README.md", to: `${path}/README.md` })],
     ["files.symlink", (path) => ({ path: "Projects/a/links/l", target: path })],

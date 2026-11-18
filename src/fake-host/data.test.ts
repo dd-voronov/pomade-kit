@@ -127,6 +127,83 @@ describe("files.setField / removeField — field-only", () => {
   });
 });
 
+describe("files.readFile — frontmatter: true", () => {
+  it("adds a Markdown file's frontmatter record, as readFolder reports it; another file gets none", async () => {
+    const host = await client(fake());
+    const r = await host.files.readFile({ path: "Projects/Pomade/docs/roadmap/T-210.md", frontmatter: true });
+    const [entry] = (await host.files.readFolder({ path: "Projects/Pomade/docs/roadmap", frontmatter: true })).entries.filter((e) => e.name === "T-210.md");
+    expect(r.content).toBe(TICKET);
+    expect(r.frontmatter).toEqual(entry?.frontmatter);
+    expect(r.frontmatter).toMatchObject({ id: "T-210", status: "in-progress", created: "2026-11-10" });
+    expect(await host.files.readFile({ path: "Projects/Pomade/docs/roadmap/broken.md", frontmatter: true })).toMatchObject({ frontmatterError: expect.any(String) });
+    const plain = await host.files.readFile({ path: "Projects/Pomade/notes/plain.txt", frontmatter: true });
+    expect("frontmatter" in plain || "frontmatterError" in plain).toBe(false);
+    expect("frontmatter" in (await host.files.readFile({ path: "Projects/Pomade/docs/roadmap/T-210.md" }))).toBe(false);
+  });
+});
+
+describe("files.setKeyLines — one key as its own YAML lines", () => {
+  it("sets a mapping field-only, replaces it in place, reports an identical write as no change", async () => {
+    const host = await client(fake());
+    const path = "Projects/Pomade/docs/roadmap/T-210.md";
+    const repeat = "repeat:\n  every: { week: 1, on: [mon] }";
+    expect(await host.files.setKeyLines({ path, key: "repeat", text: repeat })).toEqual({ changed: true });
+    expect(await read(host, path)).toBe(TICKET.replace("created: 2026-11-10\n---", `created: 2026-11-10\n${repeat}\n---`));
+    expect(await host.files.setKeyLines({ path, key: "repeat", text: "repeat:\n  once: 2026-12-01" })).toEqual({ changed: true });
+    expect(await read(host, path)).toBe(TICKET.replace("created: 2026-11-10\n---", "created: 2026-11-10\nrepeat:\n  once: 2026-12-01\n---"));
+    expect(await host.files.setKeyLines({ path, key: "repeat", text: "repeat:\n  once: 2026-12-01" })).toEqual({ changed: false });
+    expect((await host.files.readFile({ path, frontmatter: true })).frontmatter).toMatchObject({ repeat: { once: "2026-12-01" } });
+  });
+
+  it("refusals: text that is not the key's own lines is invalid-params; an unreadable block, unreadable-frontmatter", () => {
+    const f = raw(fake());
+    const path = "Projects/Pomade/docs/roadmap/T-210.md";
+    expect(f.errorOf("files.setKeyLines", { path, key: "repeat", text: "other:\n  a: 1" })).toBe("invalid-params");
+    expect(f.errorOf("files.setKeyLines", { path, key: "repeat", text: "repeat:\n  a: [1" })).toBe("invalid-params");
+    expect(f.errorOf("files.setKeyLines", { path, key: "repeat" })).toBe("invalid-params");
+    expect(f.errorOf("files.setKeyLines", { path: "Projects/Pomade/docs/roadmap/broken.md", key: "r", text: "r: 1" })).toBe("unreadable-frontmatter");
+    const r = f.call("files.readFile", { path });
+    expect(r.ok && (r.value as { content: string }).content).toBe(TICKET);
+  });
+});
+
+describe("ifMtime — write only while the file is the one read", () => {
+  const path = "Projects/Pomade/docs/roadmap/T-210.md";
+  const writes: [string, Record<string, unknown>][] = [
+    ["files.write", { content: "x\n" }],
+    ["files.setBody", { body: "x\n" }],
+    ["files.setField", { key: "status", value: "done" }],
+    ["files.removeField", { key: "status" }],
+    ["files.setKeyLines", { key: "repeat", text: "repeat:\n  a: 1" }],
+  ];
+
+  it.each(writes)("%s: a stale mtime is changed-on-disk and the file is untouched; the fresh one writes", (method, params) => {
+    const f = raw(fake());
+    const read1 = f.call("files.readFile", { path });
+    const { mtimeMs } = (read1.ok ? read1.value : {}) as { mtimeMs: number };
+    expect(f.errorOf(method, { path, ...params, ifMtime: mtimeMs - 1 })).toBe("changed-on-disk");
+    const after = f.call("files.readFile", { path });
+    expect(after.ok && after.value).toEqual(read1.ok && read1.value);
+    expect(f.errorOf(method, { path, ...params, ifMtime: mtimeMs })).toBeNull();
+  });
+
+  it("two writes within one clock tick: the second write's mtime moves on, so the first read is stale", async () => {
+    const fh = createFakeHost({ files: FILES, now: () => 5000 });
+    const host = await client(fh);
+    const { mtimeMs } = await host.files.readFile({ path });
+    await host.files.setField({ path, key: "status", value: "done", ifMtime: mtimeMs });
+    await expect(host.files.setField({ path, key: "status", value: "x", ifMtime: mtimeMs })).rejects.toMatchObject({ code: "changed-on-disk" });
+    expect((await host.files.readFile({ path })).mtimeMs).toBeGreaterThan(mtimeMs);
+  });
+
+  it("a stale no-op write is refused too; a non-number ifMtime is invalid-params", () => {
+    const f = raw(fake());
+    expect(f.errorOf("files.setField", { path, key: "kind", value: "task", ifMtime: 1 })).toBe("changed-on-disk");
+    expect(f.errorOf("files.setField", { path, key: "kind", value: "task", ifMtime: "1" })).toBe("invalid-params");
+    expect(f.errorOf("files.write", { path, content: "x", ifMtime: Number.NaN })).toBe("invalid-params");
+  });
+});
+
 describe("files.setBody", () => {
   it("replaces the body and keeps the frontmatter bytes (CRLF block included)", async () => {
     const host = await client(fake());
@@ -265,7 +342,7 @@ describe("capabilities", () => {
   it("every write needs files.write; readFile needs files.read", () => {
     const f = raw(fake({ manifest: { id: "ro", name: "RO", version: "1.0.0", hostApi: 0, capabilities: ["files.read"] } }));
     expect(f.errorOf("files.readFile", { path: "Projects/Pomade/notes/plain.txt" })).toBeNull();
-    for (const m of ["files.create", "files.write", "files.setBody", "files.setField", "files.removeField", "files.move", "files.delete"]) {
+    for (const m of ["files.create", "files.write", "files.setBody", "files.setField", "files.removeField", "files.setKeyLines", "files.move", "files.delete"]) {
       expect(f.errorOf(m, {})).toBe("capability-denied");
     }
     const wo = raw(fake({ manifest: { id: "wo", name: "WO", version: "1.0.0", hostApi: 0, capabilities: ["files.write"] } }));

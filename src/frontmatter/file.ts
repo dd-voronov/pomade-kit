@@ -7,13 +7,16 @@ import { readFrontmatter } from "../protocol/frontmatter.js";
 import { frontmatterExtent, UNCLOSED_FRONTMATTER } from "../protocol/frontmatter-extent.js";
 import {
   addPropertyText,
+  appendKeyLines,
   emitScalar,
   hasKeyLine,
   parseMapping,
   parseFrontmatter,
   removeProperty,
+  setComplexKeyLines,
   setListText,
   setScalarText,
+  topLevelKey,
 } from "./block.js";
 
 /** The blank lines after a block, which belong to the block in Pomade's editor split (doc-io). */
@@ -144,6 +147,45 @@ export function setField(text: string, key: string, value: FieldValue): FieldWri
     block = setScalarText(block, key, scalar);
   } else {
     block = addPropertyText(block, key, scalar);
+  }
+  return join(text, parts, block);
+}
+
+/** Why `text` cannot be `key`'s own lines, or `null` when it can (`setKeyLines`). */
+function keyLinesProblem(key: string, text: string): string | null {
+  const lines = text.split("\n");
+  if (topLevelKey(lines[0] ?? "") !== key) return `the text must start with the line "${key}:" at column 0`;
+  if (lines.slice(1).some((line) => !/^\s/.test(line))) return "every line after the first must be indented (no blank or column-0 lines)";
+  const read = readFrontmatter(`---\n${text}\n---\n`);
+  if ("frontmatterError" in read) return `the text is not valid YAML: ${read.frontmatterError}`;
+  const keys = Object.keys(read.frontmatter ?? {});
+  if (keys.length !== 1 || keys[0] !== key) return `the text must hold exactly one key, "${key}"`;
+  return null;
+}
+
+/**
+ * Set `key` to the YAML in `text` — the key's own lines, verbatim: `key:` at column 0 and its
+ * indented continuation lines (a nested mapping, a list of mappings, a block scalar). Replaces the
+ * key's lines when it exists, else appends them at the end of the block (creating the block when
+ * the file has none). Every other byte of the file stays. `text` may use CRLF or LF and end with
+ * one line break; it is written with the file's own line endings. Refused (`invalid-value`) when
+ * `text` is not exactly that key's lines as valid YAML.
+ */
+export function setKeyLines(text: string, key: string, keyText: string): FieldWriteResult {
+  if (key === "" || /[\r\n]/.test(key)) return fail("invalid-value", "the key must be non-empty and on one line");
+  const lines = keyText.replace(/\r\n/g, "\n").replace(/\n$/, "");
+  const problem = keyLinesProblem(key, lines);
+  if (problem) return fail("invalid-value", problem);
+
+  const parts = split(text);
+  if (!("block" in parts)) return parts;
+  const refused = checkKey(parts, key);
+  if (refused) return refused;
+
+  const exists = parts.block !== "" && hasKeyLine(parts.block, key);
+  const block = exists ? setComplexKeyLines(parts.block, key, lines) : appendKeyLines(parts.block, lines);
+  if (!parseFrontmatter(block).ok || "frontmatterError" in readFrontmatter(block)) {
+    return fail("invalid-value", "the frontmatter would not stay a valid YAML mapping");
   }
   return join(text, parts, block);
 }

@@ -322,16 +322,7 @@ export function addProperty(block: string, key: string, value: string): string {
 
 /** `addProperty` with the value already emitted as YAML scalar text; `null` → `key:`. */
 export function addPropertyText(block: string, key: string, text: string | null): string {
-  const newLine = text === null ? `${emitKey(key)}:` : `${emitKey(key)}: ${text}`;
-  if (!block) return `---\n${newLine}\n---\n\n`;
-  const d = decompose(block);
-  if (!d) return block;
-  const lines = d.inner.split("\n");
-  // Insert after the last non-blank inner line so a trailing blank never separates the new key.
-  let last = lines.length - 1;
-  while (last >= 0 && (lines[last] ?? "").trim() === "") last--;
-  lines.splice(last + 1, lines.length - (last + 1), newLine);
-  return reassemble(d, lines);
+  return appendKeyLines(block, text === null ? `${emitKey(key)}:` : `${emitKey(key)}: ${text}`);
 }
 
 function emitKey(key: string): string {
@@ -392,6 +383,25 @@ export function getKeyLines(block: string, key: string): string {
   if (i < 0) return "";
   const [, end] = keySpan(lines, i);
   return lines.slice(i, end).join("\n");
+}
+
+/** The key a line opens at the top level of a block (`key:` at column 0, quotes removed), else `null`. */
+export function topLevelKey(line: string): string | null {
+  const m = TOP_KEY_RE.exec(line);
+  return m ? unquoteKey(m[1] ?? "") : null;
+}
+
+/** Append whole key lines at the end of the block — after its last non-blank inner line, so a
+ *  trailing blank never separates them; `""` block → a new block `---\n<lines>\n---\n\n`. */
+export function appendKeyLines(block: string, text: string): string {
+  if (!block) return `---\n${text}\n---\n\n`;
+  const d = decompose(block);
+  if (!d) return block;
+  const lines = d.inner.split("\n");
+  let last = lines.length - 1;
+  while (last >= 0 && (lines[last] ?? "").trim() === "") last--;
+  lines.splice(last + 1, lines.length - (last + 1), ...text.split("\n"));
+  return reassemble(d, lines);
 }
 
 /** Replace `key`'s lines with `text` VERBATIM. The caller validates `text` first (`validateYaml`). */

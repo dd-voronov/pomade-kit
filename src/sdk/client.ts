@@ -26,6 +26,7 @@ import {
   type ReadFileParams,
   type ReadFileResult,
   type RemoveFieldParams,
+  type SetKeyLinesParams,
   type SetBodyParams,
   type SetFieldParams,
   type WriteFileParams,
@@ -151,11 +152,12 @@ export interface HostClient {
     readFolder(params: ReadFolderParams): Promise<ReadFolderResult>;
     /** Resolves once the host accepted the watch; `onChanges` receives each batch. */
     watch(params: WatchParams, onChanges: (changes: FileChange[]) => void): Promise<FileWatch>;
-    /** The file's text (UTF-8), size and mtime. */
+    /** The file's text (UTF-8), size and mtime; with `frontmatter: true` also its frontmatter record (Markdown files). */
     readFile(params: ReadFileParams): Promise<ReadFileResult>;
     /** A new file (parent folders created); `already-exists` when the path exists. */
     create(params: CreateFileParams): Promise<void>;
-    /** Replace an existing file's whole text. */
+    /** Replace an existing file's whole text. Every write takes `ifMtime` (the `mtimeMs` read):
+     *  `changed-on-disk` and nothing written when the file changed since. */
     write(params: WriteFileParams): Promise<void>;
     /** Replace the body after the frontmatter block; the block's bytes stay. */
     setBody(params: SetBodyParams): Promise<EditResult>;
@@ -163,6 +165,8 @@ export interface HostClient {
     setField(params: SetFieldParams): Promise<EditResult>;
     /** Remove one frontmatter field; every other byte of the file stays. */
     removeField(params: RemoveFieldParams): Promise<EditResult>;
+    /** Set one frontmatter key to its own YAML lines, verbatim (a mapping, a list of mappings); every other byte stays. */
+    setKeyLines(params: SetKeyLinesParams): Promise<EditResult>;
     /** Move or rename a file or folder (parent folders created); `already-exists` when `to` exists. */
     move(params: MoveParams): Promise<void>;
     /** Move files to the Trash (`files.write`); one result per path, in order — a missing file or a folder fails only its own entry. */
@@ -443,6 +447,7 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
       setBody: (params) => call("files.setBody", params),
       setField: (params) => call("files.setField", params),
       removeField: (params) => call("files.removeField", params),
+      setKeyLines: (params) => call("files.setKeyLines", params),
       async move(params) {
         await call("files.move", params);
       },

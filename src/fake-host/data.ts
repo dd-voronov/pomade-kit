@@ -1,10 +1,12 @@
 // The fake host's workspace-data methods (pomade:E-030): file reads and writes. Same checks,
 // same error codes and the same field-only frontmatter code as Pomade.
 
-import { removeField, setBody, setField, type FieldWriteResult } from "../frontmatter/index.js";
+import { removeField, setBody, setField, setKeyLines, type FieldWriteResult } from "../frontmatter/index.js";
 import {
   checkSessionRef,
   isInside,
+  isMarkdownPath,
+  readFrontmatter,
   jsonProblem,
   mergeProjectSettings,
   normalizeVisibleAgents,
@@ -24,7 +26,7 @@ import {
   type SessionRef,
   type JsonValue,
 } from "../protocol/index.js";
-import { CallError, entryParam, pathParam, requestPath, requireAllowedTarget, stringParam, type Obj } from "./params.js";
+import { booleanParam, CallError, entryParam, pathParam, requestPath, requireAllowedTarget, stringParam, type Obj } from "./params.js";
 import type { Workspace } from "./workspace.js";
 
 /** A tab an app opened (`tabs.openFile` / `tabs.openTerminal` / `tabs.openAttached` / `tabs.openApp`), as the fake host records it. */
@@ -85,15 +87,34 @@ function existingFile(ctx: DataContext, path: string): { content: string; size: 
   throw new CallError("not-found", `${JSON.stringify(path)} does not exist`);
 }
 
+/** The optional `ifMtime` param: the `mtimeMs` the app read. */
+function ifMtimeParam(p: Obj): number | undefined {
+  const v = p.ifMtime;
+  if (v === undefined) return undefined;
+  if (typeof v !== "number" || !Number.isFinite(v)) throw new CallError("invalid-params", '"ifMtime" must be a finite number');
+  return v;
+}
+
+/** Refuse a conditional write when the file's mtime is not the one the app read. */
+function requireMtime(path: string, mtimeMs: number, ifMtime: number | undefined): void {
+  if (ifMtime !== undefined && mtimeMs !== ifMtime) {
+    throw new CallError("changed-on-disk", `${JSON.stringify(path)} changed on disk since it was read; nothing was written`);
+  }
+}
+
 function frontmatterValue(v: unknown): string | number | boolean | null | string[] {
   if (v === null || typeof v === "string" || typeof v === "number" || typeof v === "boolean") return v;
   if (Array.isArray(v) && v.every((x) => typeof x === "string")) return v as string[];
   throw new CallError("invalid-params", '"value" must be a string, a number, a boolean, null or a list of strings');
 }
 
-/** Apply a kit edit to a file and write it when the bytes changed. */
-function edit(ctx: DataContext, path: string, run: (text: string) => FieldWriteResult): { changed: boolean } {
-  const r = run(existingFile(ctx, path).content);
+/** Apply a kit edit to a file and write it when the bytes changed — refused first when the file
+ *  is not the one read at `ifMtime`. */
+function edit(ctx: DataContext, path: string, p: Obj, run: (text: string) => FieldWriteResult): { changed: boolean } {
+  const ifMtime = ifMtimeParam(p);
+  const file = existingFile(ctx, path);
+  requireMtime(path, file.mtimeMs, ifMtime);
+  const r = run(file.content);
   if (!r.ok) {
     throw new CallError(r.reason === "invalid-value" ? "invalid-params" : r.reason, `${JSON.stringify(path)}: ${r.message}`);
   }
@@ -108,14 +129,18 @@ function isUnder(path: string, folder: string): boolean {
 /** The file methods of pomade:E-030 (`files.readFile` and the `files.write` group). */
 export type FileDataMethod = Extract<
   MethodName,
-  "files.readFile" | "files.create" | "files.write" | "files.setBody" | "files.setField" | "files.removeField" | "files.move" | "files.delete"
+  "files.readFile" | "files.create" | "files.write" | "files.setBody" | "files.setField" | "files.removeField" | "files.setKeyLines" | "files.move" | "files.delete"
 >;
 
 export function dispatchFileWrite(ctx: DataContext, method: FileDataMethod, p: Obj): unknown {
   const ws = ctx.workspace;
   switch (method) {
-    case "files.readFile":
-      return existingFile(ctx, entryParam(p, "path"));
+    case "files.readFile": {
+      const path = entryParam(p, "path");
+      const withFrontmatter = booleanParam(p, "frontmatter");
+      const file = existingFile(ctx, path);
+      return withFrontmatter && isMarkdownPath(path) ? { ...file, ...readFrontmatter(file.content) } : file;
+    }
     case "files.create": {
       const path = entryParam(p, "path");
       const content = p.content === undefined ? "" : stringParam(p, "content");
@@ -129,26 +154,33 @@ export function dispatchFileWrite(ctx: DataContext, method: FileDataMethod, p: O
     case "files.write": {
       const path = entryParam(p, "path");
       const content = stringParam(p, "content");
-      existingFile(ctx, path);
+      const ifMtime = ifMtimeParam(p);
+      requireMtime(path, existingFile(ctx, path).mtimeMs, ifMtime);
       ctx.emit(ws.writeFile(path, content));
       return {};
     }
     case "files.setBody": {
       const path = entryParam(p, "path");
       const body = stringParam(p, "body");
-      return edit(ctx, path, (text) => setBody(text, body));
+      return edit(ctx, path, p, (text) => setBody(text, body));
     }
     case "files.setField": {
       const path = entryParam(p, "path");
       const key = stringParam(p, "key");
       if (!("value" in p)) throw new CallError("invalid-params", '"value" is required');
       const value = frontmatterValue(p.value);
-      return edit(ctx, path, (text) => setField(text, key, value));
+      return edit(ctx, path, p, (text) => setField(text, key, value));
     }
     case "files.removeField": {
       const path = entryParam(p, "path");
       const key = stringParam(p, "key");
-      return edit(ctx, path, (text) => removeField(text, key));
+      return edit(ctx, path, p, (text) => removeField(text, key));
+    }
+    case "files.setKeyLines": {
+      const path = entryParam(p, "path");
+      const key = stringParam(p, "key");
+      const lines = stringParam(p, "text");
+      return edit(ctx, path, p, (text) => setKeyLines(text, key, lines));
     }
     case "files.move": {
       const from = entryParam(p, "from");

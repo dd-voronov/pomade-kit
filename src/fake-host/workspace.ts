@@ -156,7 +156,10 @@ export class Workspace {
     if (existing?.kind === "dir") throw new Error(`fake host: ${path} is a folder`);
     const changes = this.ensureFolder(parentPath(path));
     const time = this.now();
-    this.nodes.set(path, { kind: "file", content, size: encoder.encode(content).length, mtimeMs: time });
+    // A rewrite always moves the file's mtime forward (as a real disk's nanosecond clock does), so
+    // a conditional write (`ifMtime`) can tell two writes within one tick of the clock apart.
+    const mtimeMs = existing?.kind === "file" && time <= existing.mtimeMs ? existing.mtimeMs + 0.001 : time;
+    this.nodes.set(path, { kind: "file", content, size: encoder.encode(content).length, mtimeMs });
     if (!existing) this.touch(parentPath(path), time);
     changes.push({ kind: existing ? "change" : "create", path });
     return changes;

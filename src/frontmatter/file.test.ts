@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { readFrontmatter } from "../protocol/frontmatter.js";
 import { setScalarValue } from "./block.js";
-import { getBody, removeField, setBody, setField, splitFrontmatter, type FieldWriteResult } from "./file.js";
+import { getBody, removeField, setBody, setField, setKeyLines, splitFrontmatter, type FieldWriteResult } from "./file.js";
 
 const fixture = (name: string) => readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
 const FIXTURES = ["E-029-side-panels.md", "E-017-icon-library-picker-redesign.md", "T-100-link-picker-scroll.md", "E-001-editor-context-menus.md"];
@@ -410,5 +410,78 @@ describe("getBody / setBody on a real-shaped ticket (comments, quotes, lists, wi
   it("a block with invalid YAML keeps its bytes (the body write does not parse it)", () => {
     const broken = "---\nid: [unclosed\n---\n\nBody.\n";
     expect(text(setBody(broken, "New.\n"))).toBe("---\nid: [unclosed\n---\n\nNew.\n");
+  });
+});
+
+describe("setKeyLines: one key as its own YAML lines (a mapping)", () => {
+  const T210 = fixture("T-210-board-drag-mixed.md");
+  const REPEAT = "repeat:\n  every: { week: 1, on: [mon, wed] }\n  start: 2026-11-02";
+  const REPEAT2 = "repeat:\n  every: { day: 3 }\n  lead-days: 2";
+
+  /** The text with `key`'s lines cut out — what must stay byte-identical. */
+  function without(t: string, lines: string): string {
+    expect(t).toContain(lines);
+    return t.replace(lines, "");
+  }
+
+  it("adds a mapping at the end of the block; every other byte stays; reads back", () => {
+    const after = text(setKeyLines(T210, "repeat", REPEAT));
+    expect(without(after, `${REPEAT}\n`)).toBe(T210);
+    expect(after.indexOf(REPEAT)).toBe(T210.indexOf("---\n\n# T-210"));
+    expect(fm(after)).toEqual({ ...fm(T210), repeat: { every: { week: 1, on: ["mon", "wed"] }, start: "2026-11-02" } });
+  });
+
+  it("replaces a mapping's lines in place; other keys, comments and the body are byte-identical", () => {
+    const withRepeat = text(setKeyLines(T210, "repeat", REPEAT));
+    const replaced = text(setKeyLines(withRepeat, "repeat", REPEAT2));
+    expect(replaced).toBe(withRepeat.replace(REPEAT, REPEAT2));
+    expect(fm(replaced).repeat).toEqual({ every: { day: 3 }, "lead-days": 2 });
+    expect(setKeyLines(replaced, "repeat", REPEAT2)).toEqual({ ok: true, text: replaced, changed: false });
+  });
+
+  it("replaces a key in the middle — a block list becomes a mapping; the keys around it keep their bytes", () => {
+    const seams = "seams:\n  - workspace-data\n  - frontmatter-write   # the kit's block";
+    const lines = "seams:\n  data: workspace-data   # one seam per area\n  write: frontmatter-write";
+    const after = text(setKeyLines(T210, "seams", lines));
+    expect(after).toBe(T210.replace(seams, lines));
+    expect(fm(after)).toEqual({ ...fm(T210), seams: { data: "workspace-data", write: "frontmatter-write" } });
+  });
+
+  it.each(FIXTURES)("%s: a mapping set then replaced round-trips; every other key reads back and keeps its bytes", (name) => {
+    const before = fixture(name);
+    const set = text(setKeyLines(before, "schedule", "schedule:\n  once: 2026-12-01"));
+    const replaced = text(setKeyLines(set, "schedule", "schedule:\n  every: { month: 1 }\n  end: 2027-06-30"));
+    expect(without(replaced, "schedule:\n  every: { month: 1 }\n  end: 2027-06-30\n")).toBe(before);
+    expect(fm(replaced)).toEqual({ ...fm(before), schedule: { every: { month: 1 }, end: "2027-06-30" } });
+  });
+
+  it("CRLF: the lines are written with the file's CRLF; given CRLF or a trailing line break, the same", () => {
+    const CRLF = T210.replace(/\n/g, "\r\n");
+    const after = text(setKeyLines(CRLF, "repeat", `${REPEAT}\n`));
+    expect(after).toBe(text(setKeyLines(T210, "repeat", REPEAT)).replace(/\n/g, "\r\n"));
+    expect(text(setKeyLines(T210, "repeat", REPEAT.replace(/\n/g, "\r\n")))).toBe(text(setKeyLines(T210, "repeat", REPEAT)));
+  });
+
+  it("a file without frontmatter gets a block on top", () => {
+    expect(text(setKeyLines("# Note\n", "repeat", REPEAT))).toBe(`---\n${REPEAT}\n---\n\n# Note\n`);
+  });
+
+  it("refuses text that is not exactly the key's own valid lines; nothing changes", () => {
+    for (const bad of [
+      "other:\n  a: 1",                   // another key
+      "  repeat:\n  a: 1",                // not at column 0
+      "repeat:\n  a: 1\nextra: 2",        // a second key
+      "repeat:\n  a: 1\n\n  b: 2",        // a blank line would end the key's lines
+      "repeat:\n  a: [1",                 // invalid YAML
+      "repeat:\n  a: 1\n  a: 2",          // a duplicate nested key
+    ]) {
+      expect(setKeyLines(T210, "repeat", bad), bad).toMatchObject({ ok: false, reason: "invalid-value" });
+    }
+    expect(setKeyLines(T210, "", "x: 1")).toMatchObject({ ok: false, reason: "invalid-value" });
+  });
+
+  it("refuses an unreadable block and a key with no line of its own, as setField does", () => {
+    expect(setKeyLines("---\nid: [x\n---\n", "repeat", REPEAT)).toMatchObject({ ok: false, reason: "unreadable-frontmatter" });
+    expect(setKeyLines("---\n? repeat\n: 1\n---\n", "repeat", REPEAT)).toMatchObject({ ok: false, reason: "unsupported-key" });
   });
 });

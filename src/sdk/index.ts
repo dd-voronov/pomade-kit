@@ -31,6 +31,8 @@ export type {
   SetBodyParams,
   SetFieldParams,
   RemoveFieldParams,
+  SetKeyLinesParams,
+  IfMtime,
   FrontmatterValue,
   EditResult,
   MoveParams,

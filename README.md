@@ -110,9 +110,12 @@ workspace-relative and name an entry below the root.
 
 ```ts
 await host.files.readFile({ path });                       // { content, size, mtimeMs } — UTF-8 text
+await host.files.readFile({ path, frontmatter: true });    // + { frontmatter } or { frontmatterError } (Markdown files)
 await host.files.setField({ path, key: "status", value: "done" });   // { changed }
 await host.files.setField({ path, key: "tags", value: ["a", "b"] }); // value: string | number | boolean | null | string[]
 await host.files.removeField({ path, key: "parked" });     // { changed }
+await host.files.setKeyLines({ path, key: "repeat", text: formatSchedule("repeat", schedule) });   // { changed } — a mapping
+await host.files.setField({ path, key: "status", value: "done", ifMtime: read.mtimeMs });   // every write takes ifMtime
 await host.files.setBody({ path, body: "New body\n" });    // { changed } — the frontmatter block's bytes stay
 await host.files.create({ path: "Projects/x/docs/roadmap/T-9.md", content: "---\nid: T-9\n---\n" });
 await host.files.write({ path, content });                 // replace an existing file's text
@@ -125,6 +128,18 @@ const results = await host.files.delete([path, "Projects/x/docs/roadmap/T-2.md"]
   file: only the key's lines change, every other byte stays (see "Write one frontmatter field").
   `setBody` keeps the frontmatter block and the blank lines after it, and replaces the rest.
   `changed: false` = the bytes were identical; nothing was written and no watch event fires.
+- `setKeyLines` writes one key as its own YAML lines, verbatim — for a value `setField` does not
+  take (a mapping, a list of mappings, a block scalar): `text` is `key:` at column 0 plus indented
+  lines, as `formatSchedule` returns it. It replaces the key's lines (or appends them at the end of
+  the block) and every other byte stays (the kit's `setKeyLines`). `text` that is not exactly that
+  key's lines as valid YAML is `invalid-params`.
+- `ifMtime` (on `write`, `setBody`, `setField`, `removeField`, `setKeyLines`): the `mtimeMs` the app
+  read. When the file's mtime differs at the moment of the write, nothing is written and the call
+  fails with `changed-on-disk` — a Board drag or a Planner tick never lands on a file an agent
+  rewrote since the read. Pomade checks it immediately before the atomic rename, under its own
+  per-file write lock (HOST-API §4 "Conditional writes").
+- `readFile({ frontmatter: true })` adds the file's frontmatter record exactly as `readFolder`
+  reports it (Markdown files only), from the same read as `content` and `mtimeMs`.
 - `create` makes missing parent folders and refuses a taken path (`already-exists`); `write` needs
   an existing file (`not-found`); `move` creates missing parent folders and refuses a taken `to`
   (`already-exists`).
@@ -136,7 +151,7 @@ const results = await host.files.delete([path, "Projects/x/docs/roadmap/T-2.md"]
   call (`invalid-params`). Watches hear each delete; a file open in Pomade keeps its buffer and says
   it no longer exists on disk.
 - Refusals are `HostError`s: `unreadable-frontmatter` (invalid YAML or an unclosed `---` — nothing is
-  written), `unsupported-key`, `invalid-params`, `outside-workspace` (also for a write that would
+  written), `unsupported-key`, `changed-on-disk` (`ifMtime`), `invalid-params`, `outside-workspace` (also for a write that would
   leave the workspace through a symlink), `not-found`, `io-error`.
 - The workspace's `.pomade` folder (Pomade's own config and state) is out of reach: every path a
   method takes — read, list, watch, write, both ends of a move, a symlink's location and target,
@@ -582,12 +597,13 @@ running: it reaches its app's API through `connectSocket()` and finds the worksp
 ## Write one frontmatter field
 
 ```ts
-import { setField, removeField } from "pomade-kit/frontmatter";
+import { setField, setKeyLines, removeField, setBody } from "pomade-kit/frontmatter";
 
 const r = setField(fileText, "status", "done");   // FieldValue: string | number | boolean | null | string[]
 if (r.ok) save(r.text);                           // r.changed: false when the bytes are identical
 else showError(r.reason);                         // "unreadable-frontmatter" | "unsupported-key" | "invalid-value"
 removeField(fileText, "parked");
+setKeyLines(fileText, "repeat", "repeat:\n  every: { week: 1 }");   // one key as its own YAML lines (a mapping)
 setBody(fileText, "New body\n");                  // keeps the frontmatter block's bytes; getBody(fileText) reads it
 ```
 
@@ -598,7 +614,10 @@ is written plain when it reads back as the same string, otherwise double-quoted 
 `"3"`); dates stay plain (`2026-11-09`). A string with a control character (tab and line
 breaks included, DEL, C1, U+FFFE/U+FFFF) or a lone surrogate is always double-quoted with JSON
 escapes, by `emitScalar` as by `setField`, so a written block always parses. A block that is not a valid YAML mapping, or a first
-`---` line that never closes, is refused — never rewritten.
+`---` line that never closes, is refused — never rewritten. `setKeyLines` takes the key's lines
+verbatim (`key:` at column 0, every further line indented, one key, valid YAML — else
+`invalid-value`; CRLF or one trailing line break is fine) and writes them with the file's line
+endings.
 
 Exceptions on the edited key itself (Pomade's editor has the same ones): a quoted value is
 re-emitted plain when safe; a list edit rewrites all of the list's item lines (comments between

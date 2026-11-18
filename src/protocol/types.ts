@@ -137,6 +137,7 @@ export const ERROR_CODES = [
   "already-exists",
   "unreadable-frontmatter",
   "unsupported-key",
+  "changed-on-disk",
   "app-absent",
   "app-not-responding",
   "app-error",
@@ -214,6 +215,8 @@ export interface SetBadgeParams {
 
 export interface ReadFileParams {
   path: string;
+  /** Also answer the file's frontmatter record, as `files.readFolder` reports it. */
+  frontmatter?: boolean;
 }
 
 /** `files.readFile` — the file's text, decoded as UTF-8. */
@@ -221,7 +224,18 @@ export interface ReadFileResult {
   content: string;
   /** Bytes. */
   size: number;
+  /** Pass it back as `ifMtime` to write only while the file is still the one read. */
   mtimeMs: number;
+  /** Only with `frontmatter: true`, only for Markdown files. `null` = no frontmatter block. */
+  frontmatter?: Record<string, unknown> | null;
+  /** The block exists but is not valid YAML, not a mapping, or never closes. */
+  frontmatterError?: string;
+}
+
+/** A conditional write: the `mtimeMs` the app read. When the file's mtime differs at the moment
+ *  of the write, nothing is written and the call fails with `changed-on-disk`. */
+export interface IfMtime {
+  ifMtime?: number;
 }
 
 /** `files.create` — a new file; missing parent folders are created. Refused when the path exists. */
@@ -232,13 +246,13 @@ export interface CreateFileParams {
 }
 
 /** `files.write` — replace an existing file's whole text. */
-export interface WriteFileParams {
+export interface WriteFileParams extends IfMtime {
   path: string;
   content: string;
 }
 
 /** `files.setBody` — replace everything after the frontmatter block; the block's bytes stay. */
-export interface SetBodyParams {
+export interface SetBodyParams extends IfMtime {
   path: string;
   body: string;
 }
@@ -247,16 +261,25 @@ export interface SetBodyParams {
 export type FrontmatterValue = string | number | boolean | null | string[];
 
 /** `files.setField` — one frontmatter field; every other byte of the file stays. */
-export interface SetFieldParams {
+export interface SetFieldParams extends IfMtime {
   path: string;
   key: string;
   value: FrontmatterValue;
 }
 
 /** `files.removeField` — remove one frontmatter field; every other byte of the file stays. */
-export interface RemoveFieldParams {
+export interface RemoveFieldParams extends IfMtime {
   path: string;
   key: string;
+}
+
+/** `files.setKeyLines` — one frontmatter key written as its own YAML lines, verbatim (a mapping, a
+ *  list of mappings, a block scalar): `key:` at column 0 and its indented lines. Every other byte
+ *  of the file stays. */
+export interface SetKeyLinesParams extends IfMtime {
+  path: string;
+  key: string;
+  text: string;
 }
 
 /** Field and body writes: `changed: false` when the bytes were already identical (nothing is written). */
@@ -518,6 +541,7 @@ export interface HostMethods {
   "files.setBody": { params: SetBodyParams; result: EditResult };
   "files.setField": { params: SetFieldParams; result: EditResult };
   "files.removeField": { params: RemoveFieldParams; result: EditResult };
+  "files.setKeyLines": { params: SetKeyLinesParams; result: EditResult };
   "files.move": { params: MoveParams; result: Record<string, never> };
   "files.delete": { params: DeleteFilesParams; result: DeleteFilesResult };
   "tabs.openFile": { params: OpenFileParams; result: Record<string, never> };
@@ -572,6 +596,7 @@ export const METHOD_CAPABILITY: Readonly<Record<MethodName, MethodCapability>> =
   "files.setBody": "files.write",
   "files.setField": "files.write",
   "files.removeField": "files.write",
+  "files.setKeyLines": "files.write",
   "files.move": "files.write",
   "files.delete": "files.write",
   "tabs.openFile": "tabs.open",

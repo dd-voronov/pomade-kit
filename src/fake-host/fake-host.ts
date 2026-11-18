@@ -827,6 +827,7 @@ export class FakeHost {
       case "files.setBody":
       case "files.setField":
       case "files.removeField":
+      case "files.setKeyLines":
       case "files.move":
       case "files.delete":
         return dispatchFileWrite(this.data, method, params);

@@ -254,6 +254,7 @@ describe("METHOD_CAPABILITY", () => {
       "files.setBody": "files.write",
       "files.setField": "files.write",
       "files.removeField": "files.write",
+      "files.setKeyLines": "files.write",
       "files.move": "files.write",
       "files.delete": "files.write",
       "tabs.openFile": "tabs.open",
