@@ -117,6 +117,8 @@ await host.files.setBody({ path, body: "New body\n" });    // { changed } — th
 await host.files.create({ path: "Projects/x/docs/roadmap/T-9.md", content: "---\nid: T-9\n---\n" });
 await host.files.write({ path, content });                 // replace an existing file's text
 await host.files.move({ from: path, to: "Projects/x/docs/roadmap/done/T-1.md" });   // move or rename
+const results = await host.files.delete([path, "Projects/x/docs/roadmap/T-2.md"]);  // to the Trash
+// [{ path, ok: true }, { path: "Projects/x/docs/roadmap/T-2.md", ok: false, error: { code: "not-found", message } }]
 ```
 
 - `setField` / `removeField` are the kit's own `setField` / `removeField` run by the host on the
@@ -126,6 +128,13 @@ await host.files.move({ from: path, to: "Projects/x/docs/roadmap/done/T-1.md" })
 - `create` makes missing parent folders and refuses a taken path (`already-exists`); `write` needs
   an existing file (`not-found`); `move` creates missing parent folders and refuses a taken `to`
   (`already-exists`).
+- `delete(paths)` moves files to the macOS Trash (Finder can put them back) and resolves with one
+  `{ path, ok, error? }` per path, in order (`path` as passed). Each path fails only its own entry:
+  `not-found`, `invalid-params` (a folder, the root), `capability-denied` (`.pomade`),
+  `outside-workspace`, `io-error`; the others still go. A symlink goes as the link itself. Only a
+  `paths` that is not a list of strings, or longer than `FILES_DELETE_MAX_PATHS` (1000), rejects the
+  call (`invalid-params`). Watches hear each delete; a file open in Pomade keeps its buffer and says
+  it no longer exists on disk.
 - Refusals are `HostError`s: `unreadable-frontmatter` (invalid YAML or an unclosed `---` — nothing is
   written), `unsupported-key`, `invalid-params`, `outside-workspace` (also for a write that would
   leave the workspace through a symlink), `not-found`, `io-error`.
@@ -431,6 +440,7 @@ code, and the events. Test controls emit the events Pomade would:
 | `fake.answerPick(path \| null)` | — (queues the user's next folder-picker choice; a folder outside the root is refused and the next answer used; none left = cancel). `fake.pickRequests` logs `{ root, initial }` per picker |
 | `fake.setGitRepos(repos)` | `git.changed` to each git watch whose scope's repos changed |
 | `fake.openedTabs` | — (every `tabs.openFile` / `openTerminal` / `openApp`, in order: `{ kind: "file", projectId, path }` · `{ kind: "terminal", projectId, cwd, command?, title? }` · `{ kind: "app", projectId, route }`; the call switches the active project like Pomade) |
+| `fake.overlays` | — (every `overlay.open`, in order: `{ route }`) |
 
 A frame opened with `attach(post, { route })` / `mountApp(fake, { src, route })` starts at that route,
 and `connection.navigate(route)` / `mounted.navigate(route)` sends `route.changed` as Pomade
@@ -496,6 +506,15 @@ another app took first, is reported at install and does nothing — Pomade wins.
 overlay is `fake.createTransport({ surface: "overlay", shortcut: "quick-add", onClose })` (or
 `mountApp(fake, { src, surface: "overlay", shortcut })`, which removes the frame when it closes) —
 `onClose` runs after `overlay.close` is answered, or on a forwarded Escape.
+
+The app's own tab or panel frame opens the same overlay with `host.overlay.open({ route })` (route
+default `""`; no overlay shortcut needed) — the Planner panel's **+**. Only while that frame is
+shown (the active tab, the shown panel): a hidden frame's call, and an overlay frame's, reject with
+`invalid-params`; over the socket it is `capability-denied`. Every call opens a fresh overlay frame
+at its route, replacing any open one. When it closes Pomade gives focus back to the calling frame,
+and the SDK puts it on the element that had it before the call (the button). In the fake host a
+frame opened with `{ hidden: true }` (or hidden later: `connection.setHidden(true)` /
+`mounted.setHidden(true)`) is refused, and `fake.overlays` records each open's `{ route }`.
 
 `skills` lists the agent skills the app ships — folders inside the build, each holding a
 `SKILL.md`; a folder's last segment is the skill's name (`SKILL_NAME_RE`, unique):
@@ -874,7 +893,7 @@ if (up.status === "connected") up.host;      // up.launched: this call started i
   `rejected`. It throws only when the identity is not configured — no app id, no key.
 - Options override the environment: `socketPath`, `appId`, `key` / `keyFile`, `role`
   (`"backend"` | `"command"`, default `POMADE_CLIENT`, else `"command"`), `env`, `timeoutMs`.
-- Over the socket `files.pickFolder`, `git.watch` and `overlay.close` are `capability-denied`
+- Over the socket `files.pickFolder`, `git.watch`, `overlay.open` and `overlay.close` are `capability-denied`
   (they need a frame); everything else is as for the app's frames, under its manifest.
 - `launchPomade()` connects when Pomade runs; otherwise it runs the launch Pomade recorded in
   `host.json` (`open -a` for the installed app), without `ELECTRON_RUN_AS_NODE`, and retries the
@@ -1009,7 +1028,9 @@ its own channel (Pomade publishes `attachedTab.action` to the owner), never over
 shows the project's git repos, and follows project, file and git events. On the bus it shows the
 last platform event it heard (Pomade ready, a project renamed) and publishes `greeted` from a
 button that is enabled only while another app listens; "Notify me" posts a notice whose click opens
-its roadmap tab in the project the notice is about. Its always-on backend (`public/backend/`) keeps the app's keeper running with a
+its roadmap tab in the project the notice is about. "Quick note…" opens its Cmd+Shift+J overlay
+from the panel or tab (`overlay.open`); "New scratch file" / "Trash scratch files" make files in the
+project's `scratch/` folder and move them all to the Trash in one `files.delete`. Its always-on backend (`public/backend/`) keeps the app's keeper running with a
 demo ticker in it; "Open the ticker" opens that session in an attached tab, and the tab's Restart
 action reaches the backend as `attachedTab.action`. `npm run hello:build` writes the installable folder
 `examples/hello/dist/` (`index.html`, `manifest.json`, assets).

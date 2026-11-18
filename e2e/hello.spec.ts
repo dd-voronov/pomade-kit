@@ -283,3 +283,31 @@ test("says once where its shipped skill is, and always in About", async ({ page 
   );
   if (process.env.HELLO_SHOTS) await page.screenshot({ path: `${process.env.HELLO_SHOTS}/about.png` });
 });
+
+test("Quick note… opens its overlay from the frame (overlay.open); focus comes back to the button", async ({ page }) => {
+  await app(page).getByTestId("open-overlay").click();
+  await expect.poll(() => page.evaluate(() => window.fakeHost.overlays)).toEqual([{ route: "note" }]);
+  // The overlay takes focus into another frame (here: the harness page), then gives it back to this frame.
+  await page.evaluate(() => {
+    const away = document.createElement("input");
+    document.body.append(away);
+    away.focus();
+  });
+  await expect.poll(() => app(page).locator("body").evaluate(() => document.hasFocus())).toBe(false);
+  await page.evaluate(() => document.querySelector("iframe")?.focus());
+  await expect(app(page).getByTestId("open-overlay")).toBeFocused();
+});
+
+test("Trash scratch files deletes every file in scratch/ in one call; the status says how it went", async ({ page }) => {
+  await app(page).getByTestId("scratch-delete").click();
+  await expect(app(page).getByTestId("scratch-status")).toHaveText("Nothing to trash in Projects/alpha/scratch");
+  await page.evaluate(() => {
+    window.fakeHost.writeFile("Projects/alpha/scratch/a.md", "a\n");
+    window.fakeHost.writeFile("Projects/alpha/scratch/b.md", "b\n");
+  });
+  await app(page).getByTestId("scratch-delete").click();
+  await expect(app(page).getByTestId("scratch-status")).toHaveText("Trashed 2 of 2");
+  expect(await page.evaluate(() => ["a", "b"].map((n) => { try { window.fakeHost.readFile(`Projects/alpha/scratch/${n}.md`); return "kept"; } catch { return "gone"; } }))).toEqual(["gone", "gone"]);
+  await app(page).getByTestId("scratch-new").click();
+  await expect(app(page).getByTestId("scratch-status")).toHaveText(/^Created Projects\/alpha\/scratch\/scratch-\d+\.md$/);
+});

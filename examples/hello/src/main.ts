@@ -12,6 +12,9 @@
 // whose click opens the roadmap in the app's own tab, in the project the notice is about. Its
 // always-on backend keeps a ticking demo service in a keeper (`public/backend/`); "Open the
 // ticker" opens it in an attached terminal tab, whose Restart header action the backend serves.
+// "Quick note…" opens the same overlay as Cmd+Shift+J from the panel or tab (`overlay.open`).
+// "New scratch file" makes a file in the project's scratch/ folder; "Trash scratch files" moves
+// every file there to the Trash in one `files.delete` call and says how each one went.
 // Built only on pomade-kit's SDK.
 
 import { joinPath } from "pomade-kit/protocol";
@@ -29,6 +32,7 @@ import {
 const FOLDER = "docs/roadmap";
 const DONE_FOLDER = "docs/roadmap/done";
 const COLUMNS = ["id", "status", "title"];
+const SCRATCH = "scratch";
 
 function el(testId: string): HTMLElement {
   const node = document.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
@@ -172,6 +176,9 @@ function startApp(host: HostClient): void {
       host.notices.post({ title: "Roadmap ready", body, action: { kind: "openApp", route: "roadmap", projectId: project.id } }),
     );
   });
+  // The overlay a shortcut opens, opened from this frame instead; focus comes back to the button.
+  el("open-overlay").addEventListener("click", () => void host.overlay.open({ route: "note" }));
+  useScratch(host);
   const showRoute = (route: string): void => {
     el("route").textContent = `Route: ${route === "" ? "(default)" : route}`;
   };
@@ -311,7 +318,37 @@ function startApp(host: HostClient): void {
   void show(host.welcome.project);
 }
 
-/** The overlay (Cmd+Shift+J): one input; Enter stores the note and closes, Escape just closes. */
+/** Scratch files in the active project's scratch/ folder: make one, or trash them all in one call. */
+function useScratch(host: HostClient): void {
+  const status = (text: string): void => {
+    el("scratch-status").textContent = text;
+  };
+  const folder = async (): Promise<string> => joinPath((await host.project.getActive()).root, SCRATCH);
+  el("scratch-new").addEventListener("click", () => {
+    void (async () => {
+      const path = joinPath(await folder(), `scratch-${Date.now()}.md`);
+      await host.files.create({ path, content: "# Scratch\n\nType here, then trash it from Hello.\n" });
+      status(`Created ${path}`);
+    })().catch((err: unknown) => status(err instanceof Error ? err.message : String(err)));
+  });
+  el("scratch-delete").addEventListener("click", () => {
+    void (async () => {
+      const path = await folder();
+      const { entries } = await host.files.readFolder({ path }).catch(() => ({ entries: [] as FileEntry[] }));
+      const files = entries.filter((e) => e.kind === "file").map((e) => e.path);
+      if (files.length === 0) {
+        status(`Nothing to trash in ${path}`);
+        return;
+      }
+      const results = await host.files.delete(files);
+      const trashed = results.filter((r) => r.ok).length;
+      const failed = results.filter((r) => !r.ok).map((r) => `${r.path}: ${r.error?.code ?? "error"}`);
+      status([`Trashed ${trashed} of ${results.length}`, ...failed].join(" · "));
+    })().catch((err: unknown) => status(err instanceof Error ? err.message : String(err)));
+  });
+}
+
+/** The overlay (Cmd+Shift+J, or "Quick note…"): one input; Enter stores the note and closes, Escape just closes. */
 function startQuickNote(host: HostClient): void {
   document.body.replaceChildren();
   document.body.className = "overlay";

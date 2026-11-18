@@ -158,6 +158,13 @@ export interface FrameOptions {
   route?: string;
   /** An overlay frame asked to close (`overlay.close`, or a forwarded Escape): close it here, as Pomade does. */
   onClose?: () => void;
+  /** The frame starts hidden — a tab in the background, a panel not shown; `overlay.open` refuses a hidden frame. Default `false`. */
+  hidden?: boolean;
+}
+
+/** An overlay the app opened (`overlay.open`), as the fake host records it. */
+export interface FakeOpenedOverlay {
+  route: string;
 }
 
 /** A strip icon's badge (`strip.setBadge`). */
@@ -175,6 +182,8 @@ export interface FrameConnection {
   detach(): void;
   /** Navigate the frame's tab to `route`, as Pomade does for `tabs.openApp`: `route.changed` when it differs (after welcome), and `host.info` answers it. */
   navigate(route: string): void;
+  /** Hide or show the frame, as Pomade does when the user switches tabs or panels. */
+  setHidden(hidden: boolean): void;
 }
 
 
@@ -197,6 +206,7 @@ interface Frame {
   bus: BusMember | null;
   target: FrameTarget;
   onClose: (() => void) | undefined;
+  hidden: boolean;
   welcomed: boolean;
   watches: Map<string, Watch>;
   gitWatches: Map<string, GitWatchState>;
@@ -214,6 +224,8 @@ export class FakeHost {
   readonly keys: KeyMessage[] = [];
   /** Every tab the app opened (`tabs.openFile` / `tabs.openTerminal` / `tabs.openAttached` / `tabs.openApp`), in order. */
   readonly openedTabs: FakeOpenedTab[] = [];
+  /** Every overlay the app opened (`overlay.open`), in order. */
+  readonly overlays: FakeOpenedOverlay[] = [];
   /** Every folder picker the app opened (`files.pickFolder`), in order. */
   readonly pickRequests: FakePickRequest[] = [];
   private readonly pickAnswers: (string | null)[] = [];
@@ -327,7 +339,7 @@ export class FakeHost {
     const target =
       surface === "overlay" ? resolveOverlayTarget(this.shortcuts, open.shortcut) : resolveFrameTarget(this.strip, surface, open.icon);
     if (open.route !== undefined) target.route = open.route;
-    const frame: Frame = { post, target, onClose: open.onClose, welcomed: false, serving: false, watches: new Map(), gitWatches: new Map(), bus: null };
+    const frame: Frame = { post, target, onClose: open.onClose, hidden: open.hidden === true, welcomed: false, serving: false, watches: new Map(), gitWatches: new Map(), bus: null };
     this.frames.add(frame);
     return {
       receive: (data) => {
@@ -340,6 +352,9 @@ export class FakeHost {
         frame.gitWatches.clear();
         frame.bus?.close();
         frame.bus = null;
+      },
+      setHidden: (hidden) => {
+        frame.hidden = hidden;
       },
       navigate: (route) => {
         if (route === frame.target.route) return;
@@ -804,6 +819,7 @@ export class FakeHost {
       case "files.setField":
       case "files.removeField":
       case "files.move":
+      case "files.delete":
         return dispatchFileWrite(this.data, method, params);
       case "tabs.openFile":
       case "tabs.openTerminal":
@@ -838,6 +854,13 @@ export class FakeHost {
           if (other === frame || !other.welcomed) continue;
           other.post({ channel: CHANNEL, type: "event", name: "state.changed", payload: { key, value: structuredClone(value) } });
         }
+        return {};
+      }
+      case "overlay.open": {
+        if (frame.target.surface === "overlay") throw new CallError("invalid-params", "overlay.open is for a tab or a panel frame; an overlay is already open");
+        if (frame.hidden) throw new CallError("invalid-params", "overlay.open needs a visible frame: an active tab or the shown panel");
+        const route = params.route === undefined ? "" : stringParam(params, "route");
+        this.overlays.push({ route });
         return {};
       }
       case "overlay.close":

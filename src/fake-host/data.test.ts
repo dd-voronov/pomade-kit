@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { getBody } from "../frontmatter/index.js";
-import type { FileChange, HostToAppMessage } from "../protocol/index.js";
+import { FILES_DELETE_MAX_PATHS, type FileChange, type HostToAppMessage } from "../protocol/index.js";
 import { connect, HostError, type HostClient } from "../sdk/index.js";
 import { createFakeHost, type FakeHost, type FakeHostOptions } from "./fake-host.js";
 
@@ -208,11 +208,64 @@ describe("files.move", () => {
   });
 });
 
+describe("files.delete", () => {
+  it("deletes files; each path is reported on its own, in order; the watch hears every delete in one batch", async () => {
+    const fh = fake();
+    const host = await client(fh);
+    const batches: FileChange[][] = [];
+    await host.files.watch({ path: "Projects/Pomade", recursive: true }, (c) => batches.push(c));
+    const results = await host.files.delete([
+      "Projects/Pomade/docs/roadmap/T-210.md",
+      "Projects/Pomade/docs/roadmap/nope.md",
+      "./Projects/Pomade/notes/plain.txt",
+    ]);
+    expect(results).toEqual([
+      { path: "Projects/Pomade/docs/roadmap/T-210.md", ok: true },
+      { path: "Projects/Pomade/docs/roadmap/nope.md", ok: false, error: { code: "not-found", message: '"Projects/Pomade/docs/roadmap/nope.md" does not exist' } },
+      { path: "./Projects/Pomade/notes/plain.txt", ok: true },
+    ]);
+    await expect(read(host, "Projects/Pomade/docs/roadmap/T-210.md")).rejects.toMatchObject({ code: "not-found" });
+    await flush();
+    expect(batches).toEqual([
+      [
+        { kind: "delete", path: "Projects/Pomade/docs/roadmap/T-210.md" },
+        { kind: "delete", path: "Projects/Pomade/notes/plain.txt" },
+      ],
+    ]);
+  });
+
+  it("a folder, the root and an escape fail their own entry; the other paths still go", async () => {
+    const fh = fake();
+    const host = await client(fh);
+    const results = await host.files.delete(["Projects/Pomade/docs", "", "../x.md", "Projects/Pomade/docs/roadmap/broken.md"]);
+    expect(results.map((r) => (r.ok ? "ok" : r.error?.code))).toEqual(["invalid-params", "invalid-params", "outside-workspace", "ok"]);
+    expect(fh.readFile("Projects/Pomade/docs/roadmap/T-210.md")).toBe(TICKET);
+  });
+
+  it("a symlinked file goes as the link itself; its target stays", async () => {
+    const fh = fake();
+    fh.symlink("Projects/Pomade/link.md", "Projects/Pomade/docs/roadmap/T-210.md");
+    const host = await client(fh);
+    expect(await host.files.delete(["Projects/Pomade/link.md"])).toEqual([{ path: "Projects/Pomade/link.md", ok: true }]);
+    expect(fh.isSymlink("Projects/Pomade/link.md")).toBe(false);
+    expect(fh.readFile("Projects/Pomade/docs/roadmap/T-210.md")).toBe(TICKET);
+  });
+
+  it("an empty list answers no results; a malformed list or too many paths refuses the call", () => {
+    const f = raw(fake());
+    expect(f.call("files.delete", { paths: [] })).toMatchObject({ ok: true, value: { results: [] } });
+    expect(f.errorOf("files.delete", {})).toBe("invalid-params");
+    expect(f.errorOf("files.delete", { paths: "a.md" })).toBe("invalid-params");
+    expect(f.errorOf("files.delete", { paths: ["a.md", 1] })).toBe("invalid-params");
+    expect(f.errorOf("files.delete", { paths: Array.from({ length: FILES_DELETE_MAX_PATHS + 1 }, (_, i) => `f${i}.md`) })).toBe("invalid-params");
+  });
+});
+
 describe("capabilities", () => {
   it("every write needs files.write; readFile needs files.read", () => {
     const f = raw(fake({ manifest: { id: "ro", name: "RO", version: "1.0.0", hostApi: 0, capabilities: ["files.read"] } }));
     expect(f.errorOf("files.readFile", { path: "Projects/Pomade/notes/plain.txt" })).toBeNull();
-    for (const m of ["files.create", "files.write", "files.setBody", "files.setField", "files.removeField", "files.move"]) {
+    for (const m of ["files.create", "files.write", "files.setBody", "files.setField", "files.removeField", "files.move", "files.delete"]) {
       expect(f.errorOf(m, {})).toBe("capability-denied");
     }
     const wo = raw(fake({ manifest: { id: "wo", name: "WO", version: "1.0.0", hostApi: 0, capabilities: ["files.write"] } }));

@@ -15,6 +15,8 @@ export interface MountedApp {
   readonly iframe: HTMLIFrameElement;
   /** Navigate the frame's tab to `route` (`route.changed`), as Pomade does for `tabs.openApp`. */
   navigate(route: string): void;
+  /** Hide or show the frame (the element too), as Pomade does when the user switches tabs or panels. */
+  setHidden(hidden: boolean): void;
   /** Stop answering the frame and remove it. */
   close(): void;
 }
@@ -42,10 +44,15 @@ export function mountApp(host: FakeHost, options: MountOptions): MountedApp {
   };
   win.addEventListener("message", onMessage);
   iframe.src = options.src;
+  iframe.hidden = options.hidden === true;
   parent.appendChild(iframe);
   const mounted: MountedApp = {
     iframe,
     navigate: (route) => frame.navigate(route),
+    setHidden(hidden) {
+      iframe.hidden = hidden;
+      frame.setHidden(hidden);
+    },
     close() {
       win.removeEventListener("message", onMessage);
       frame.detach();

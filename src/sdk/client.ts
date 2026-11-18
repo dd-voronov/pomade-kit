@@ -20,6 +20,8 @@ import {
   type CreateFileParams,
   type EditResult,
   type MoveParams,
+  type DeleteFileResult,
+  type OpenOverlayParams,
   type ReadFileParams,
   type ReadFileResult,
   type RemoveFieldParams,
@@ -56,6 +58,25 @@ import {
   type AgentTabsResumeParams,
 } from "../protocol/index.js";
 import type { Transport } from "./transport.js";
+
+/** Focus moving into the overlay's frame clears this frame's focused element. Remember it now; once
+ *  the call succeeded, the next time this frame gets focus back (the overlay closed) with nothing
+ *  focused inside, focus it again. A no-op outside a browser. */
+function rememberFocus(): () => void {
+  if (typeof document === "undefined" || typeof window === "undefined") return () => undefined;
+  const before = document.activeElement;
+  if (!(before instanceof HTMLElement) || before === document.body) return () => undefined;
+  return () => {
+    window.addEventListener(
+      "focus",
+      () => {
+        const now = document.activeElement;
+        if (before.isConnected && (now === null || now === document.body)) before.focus({ preventScroll: true });
+      },
+      { once: true },
+    );
+  };
+}
 
 /** A call the host answered with an error. */
 export class HostError extends Error {
@@ -143,6 +164,8 @@ export interface HostClient {
     removeField(params: RemoveFieldParams): Promise<EditResult>;
     /** Move or rename a file or folder (parent folders created); `already-exists` when `to` exists. */
     move(params: MoveParams): Promise<void>;
+    /** Move files to the Trash (`files.write`); one result per path, in order — a missing file or a folder fails only its own entry. */
+    delete(paths: string[]): Promise<DeleteFileResult[]>;
     /** Create a relative symlink inside a manifest `symlinks` folder. */
     symlink(params: SymlinkParams): Promise<void>;
     /** Remove a symlink inside a manifest `symlinks` folder (never its target). */
@@ -173,6 +196,9 @@ export interface HostClient {
     onChange(callback: (key: string, value: JsonValue | null) => void): () => void;
   };
   readonly overlay: {
+    /** Open this app's overlay at `route` (default ""), as its overlay shortcut does. Only from a visible tab or panel frame.
+     *  When the overlay closes, Pomade gives focus back to this frame and the element that had it (the button) is focused again. */
+    open(params?: OpenOverlayParams): Promise<void>;
     /** Close this overlay frame; focus returns where it was. Only for `welcome.surface === "overlay"`. */
     close(): Promise<void>;
   };
@@ -416,6 +442,10 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
       async move(params) {
         await call("files.move", params);
       },
+      async delete(paths) {
+        const { results } = await call("files.delete", { paths });
+        return results;
+      },
       async symlink(params) {
         await call("files.symlink", params);
       },
@@ -457,6 +487,11 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
       },
     },
     overlay: {
+      async open(params = {}) {
+        const restore = rememberFocus();
+        await call("overlay.open", params);
+        restore();
+      },
       async close() {
         await call("overlay.close", {});
       },

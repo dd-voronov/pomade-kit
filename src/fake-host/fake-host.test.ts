@@ -158,7 +158,7 @@ describe("calls — errors", () => {
 
   it("unknown-method", () => {
     const f = welcomed();
-    expect(f.errorOf("files.delete", { path: "x" })).toBe("unknown-method");
+    expect(f.errorOf("files.erase", { path: "x" })).toBe("unknown-method");
     expect(f.errorOf("toString")).toBe("unknown-method");
     expect(f.errorOf("constructor")).toBe("unknown-method");
   });
@@ -319,7 +319,7 @@ describe("surfaces, strip icons and routes", () => {
       if (r.status !== "connected") throw new Error(r.status);
       expect(r.host.welcome).toMatchObject({ surface, route: "" });
       await expect(r.host.info()).resolves.toMatchObject({ surface, route: "" });
-      for (const call of [() => r.host.files.pickFolder(), () => r.host.git.watch({}, () => undefined), () => r.host.overlay.close()]) {
+      for (const call of [() => r.host.files.pickFolder(), () => r.host.git.watch({}, () => undefined), () => r.host.overlay.open(), () => r.host.overlay.close()]) {
         await expect(call()).rejects.toMatchObject({ code: "capability-denied", message: expect.stringMatching(/needs an app frame/) });
       }
       await expect(r.host.files.readFolder({ path: "Projects/Pomade" })).resolves.toMatchObject({ entries: expect.any(Array) });
@@ -606,6 +606,37 @@ describe("overlay frames", () => {
     expect(onOverlayClose).toHaveBeenCalledTimes(1);
     expect(onTabClose).not.toHaveBeenCalled();
     expect(host.keys).toHaveLength(3);
+  });
+
+  it("overlay.open from a visible tab or panel records the route (default \"\"); from an overlay or a hidden frame it is invalid-params", async () => {
+    const host = fake({ manifest: { ...OVERLAY_MANIFEST, strip: [{ id: "tasks", title: "Tasks", action: "panel" }] } });
+    const tab = await connect({ transport: host.createTransport(), keySource: null });
+    const panel = await connect({ transport: host.createTransport({ surface: "panel", icon: "tasks" }), keySource: null });
+    const overlay = await connect({ transport: host.createTransport({ surface: "overlay", shortcut: "quick-add" }), keySource: null });
+    const hidden = await connect({ transport: host.createTransport({ hidden: true }), keySource: null });
+    if (tab.status !== "connected" || panel.status !== "connected" || overlay.status !== "connected" || hidden.status !== "connected") {
+      throw new Error("not connected");
+    }
+    await panel.host.overlay.open({ route: "quick-add" });
+    await tab.host.overlay.open();
+    await expect(overlay.host.overlay.open({ route: "x" })).rejects.toMatchObject({ code: "invalid-params" });
+    await expect(hidden.host.overlay.open({ route: "x" })).rejects.toMatchObject({ code: "invalid-params", message: expect.stringMatching(/visible/) });
+    await expect(tab.host.overlay.open({ route: 7 as unknown as string })).rejects.toMatchObject({ code: "invalid-params" });
+    expect(host.overlays).toEqual([{ route: "quick-add" }, { route: "" }]);
+  });
+
+  it("a frame shown again may open the overlay (setHidden)", () => {
+    const host = fake({ manifest: OVERLAY_MANIFEST });
+    const got: HostToAppMessage[] = [];
+    const frame = host.attach((m) => got.push(m), { hidden: true });
+    frame.receive({ channel: "pomade", type: "hello", hostApi: 0 });
+    frame.receive({ channel: "pomade", type: "call", id: "1", method: "overlay.open", params: { route: "a" } });
+    frame.setHidden(false);
+    frame.receive({ channel: "pomade", type: "call", id: "2", method: "overlay.open", params: { route: "b" } });
+    frame.setHidden(true);
+    frame.receive({ channel: "pomade", type: "call", id: "3", method: "overlay.open", params: { route: "c" } });
+    expect(got.slice(1).map((m) => m.type === "result" && m.ok)).toEqual([false, true, false]);
+    expect(host.overlays).toEqual([{ route: "b" }]);
   });
 
   it("the SDK closes its overlay", async () => {

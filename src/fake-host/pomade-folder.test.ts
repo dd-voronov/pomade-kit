@@ -91,6 +91,20 @@ describe("the workspace's .pomade folder is out of reach", () => {
     }
   });
 
+  it("files.delete refuses each path at or inside .pomade (and a link into it) on its own entry; the file stays", () => {
+    const host = fake();
+    const r = raw(host).call("files.delete", { paths: [...LEXICAL, "Projects/a/cfg.json", "Projects/a/README.md"] });
+    if (!r.ok) throw new Error(r.error.message);
+    const results = (r.value as { results: { path: string; ok: boolean; error?: { code: string } }[] }).results;
+    expect(results.map((e) => [e.path, e.ok ? "ok" : e.error?.code])).toEqual([
+      ...LEXICAL.map((p) => [p, "capability-denied"]),
+      ["Projects/a/cfg.json", "capability-denied"],
+      ["Projects/a/README.md", "ok"],
+    ]);
+    expect(host.isSymlink("Projects/a/cfg.json")).toBe(true);
+    expect(host.readFile(".pomade/workspace.json")).toBe("{}\n");
+  });
+
   it("listings leave .pomade and links into it out; a project's own .pomade and .pomaderc stay", () => {
     const r = raw(fake()).call("files.readFolder", { path: "", recursive: true });
     if (!r.ok) throw new Error(r.error.message);

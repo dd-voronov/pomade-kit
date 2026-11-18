@@ -270,6 +270,28 @@ export interface MoveParams {
   to: string;
 }
 
+/** `files.delete` — move files to the Trash (macOS), each path on its own; a folder is refused. At most `FILES_DELETE_MAX_PATHS` paths. */
+export interface DeleteFilesParams {
+  /** Workspace-relative files. */
+  paths: string[];
+}
+
+/** One path of a `files.delete` call: `ok: false` carries why that file stayed (`not-found`, `invalid-params` for a folder, …). */
+export interface DeleteFileResult {
+  /** The path as the app passed it. */
+  path: string;
+  ok: boolean;
+  error?: ErrorPayload;
+}
+
+/** `files.delete` — one result per path, in the order given. */
+export interface DeleteFilesResult {
+  results: DeleteFileResult[];
+}
+
+/** The most paths one `files.delete` call takes. */
+export const FILES_DELETE_MAX_PATHS = 1000;
+
 // ── Workspace data: tabs (pomade:E-030) ────────────────────────────────────
 
 /** `tabs.openFile` — open (or focus) a file in an editor tab. */
@@ -422,6 +444,12 @@ export interface OpenAppParams {
   projectId?: string;
 }
 
+/** `overlay.open` — open the calling app's overlay frame at a route, from a visible tab or panel frame. */
+export interface OpenOverlayParams {
+  /** What the overlay renders; default "". */
+  route?: string;
+}
+
 // ── Broker (pomade:E-028) ──────────────────────────────────────────────────
 
 /** `apps.call` — call a method another app (or this app's own backend) offers through Pomade. */
@@ -475,6 +503,7 @@ export interface HostMethods {
   "files.setField": { params: SetFieldParams; result: EditResult };
   "files.removeField": { params: RemoveFieldParams; result: EditResult };
   "files.move": { params: MoveParams; result: Record<string, never> };
+  "files.delete": { params: DeleteFilesParams; result: DeleteFilesResult };
   "tabs.openFile": { params: OpenFileParams; result: Record<string, never> };
   "tabs.openTerminal": { params: OpenTerminalParams; result: Record<string, never> };
   "tabs.openAttached": { params: OpenAttachedParams; result: Record<string, never> };
@@ -489,6 +518,7 @@ export interface HostMethods {
   "state.get": { params: StateGetParams; result: StateGetResult };
   "state.set": { params: StateSetParams; result: Record<string, never> };
   "tabs.openApp": { params: OpenAppParams; result: Record<string, never> };
+  "overlay.open": { params: OpenOverlayParams; result: Record<string, never> };
   "overlay.close": { params: Record<string, never>; result: Record<string, never> };
   "git.getState": { params: GitStateParams; result: GitStateResult };
   "git.watch": { params: GitStateParams; result: WatchResult };
@@ -526,6 +556,7 @@ export const METHOD_CAPABILITY: Readonly<Record<MethodName, MethodCapability>> =
   "files.setField": "files.write",
   "files.removeField": "files.write",
   "files.move": "files.write",
+  "files.delete": "files.write",
   "tabs.openFile": "tabs.open",
   "tabs.openTerminal": "tabs.open",
   "tabs.openAttached": "tabs.open",
@@ -540,6 +571,7 @@ export const METHOD_CAPABILITY: Readonly<Record<MethodName, MethodCapability>> =
   "state.get": null,
   "state.set": null,
   "tabs.openApp": null,
+  "overlay.open": null,
   "overlay.close": null,
   "git.getState": "git.read",
   "git.watch": "git.read",

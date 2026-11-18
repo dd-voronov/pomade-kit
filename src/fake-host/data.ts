@@ -11,7 +11,9 @@ import {
   parentPath,
   settingsSizeProblem,
   symlinkScopeCovers,
+  FILES_DELETE_MAX_PATHS,
   WORKSPACE_PROJECT_ID,
+  type DeleteFileResult,
   type FileChange,
   type GroupInfo,
   type MethodName,
@@ -22,7 +24,7 @@ import {
   type SessionRef,
   type JsonValue,
 } from "../protocol/index.js";
-import { CallError, entryParam, pathParam, requireAllowedTarget, stringParam, type Obj } from "./params.js";
+import { CallError, entryParam, pathParam, requestPath, requireAllowedTarget, stringParam, type Obj } from "./params.js";
 import type { Workspace } from "./workspace.js";
 
 /** A tab an app opened (`tabs.openFile` / `tabs.openTerminal` / `tabs.openAttached` / `tabs.openApp`), as the fake host records it. */
@@ -106,7 +108,7 @@ function isUnder(path: string, folder: string): boolean {
 /** The file methods of pomade:E-030 (`files.readFile` and the `files.write` group). */
 export type FileDataMethod = Extract<
   MethodName,
-  "files.readFile" | "files.create" | "files.write" | "files.setBody" | "files.setField" | "files.removeField" | "files.move"
+  "files.readFile" | "files.create" | "files.write" | "files.setBody" | "files.setField" | "files.removeField" | "files.move" | "files.delete"
 >;
 
 export function dispatchFileWrite(ctx: DataContext, method: FileDataMethod, p: Obj): unknown {
@@ -159,7 +161,41 @@ export function dispatchFileWrite(ctx: DataContext, method: FileDataMethod, p: O
       ctx.emit(ws.rename(from, to));
       return {};
     }
+    case "files.delete": {
+      const paths = deletePaths(p);
+      const changes: FileChange[] = [];
+      const results = paths.map((raw): DeleteFileResult => {
+        try {
+          changes.push(...deleteOne(ctx, raw));
+          return { path: raw, ok: true };
+        } catch (err) {
+          if (!(err instanceof CallError)) throw err;
+          return { path: raw, ok: false, error: { code: err.code, message: err.message } };
+        }
+      });
+      ctx.emit(changes);
+      return { results };
+    }
   }
+}
+
+/** `files.delete`'s `paths`: a list of strings, at most `FILES_DELETE_MAX_PATHS`. Each path's own rule is checked per entry. */
+function deletePaths(p: Obj): string[] {
+  const v = p.paths;
+  if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) throw new CallError("invalid-params", '"paths" must be a list of strings');
+  if (v.length > FILES_DELETE_MAX_PATHS) throw new CallError("invalid-params", `"paths" takes at most ${FILES_DELETE_MAX_PATHS} paths`);
+  return v as string[];
+}
+
+/** Delete one file as Pomade moves it to the Trash: a symlink goes as the link itself. */
+function deleteOne(ctx: DataContext, raw: string): FileChange[] {
+  const ws = ctx.workspace;
+  const path = requestPath(raw);
+  if (path === "") throw new CallError("invalid-params", "the workspace root is a folder, not a file");
+  if (!ws.exists(path)) throw new CallError("not-found", `${JSON.stringify(raw)} does not exist`);
+  requireAllowedTarget(ws, path);
+  if (ws.kindOf(path) === "dir") throw new CallError("invalid-params", `${JSON.stringify(raw)} is a folder; files.delete deletes files only`);
+  return ws.isLink(path) ? ws.removeLink(path) : ws.deleteFile(path);
 }
 
 function ancestorIsFile(ws: Workspace, path: string): boolean {

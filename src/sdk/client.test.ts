@@ -260,6 +260,34 @@ describe("overlay.close", () => {
   });
 });
 
+describe("overlay.open", () => {
+  it("sends the route (default {}) and resolves void; a refusal rejects", async () => {
+    const t = setup();
+    const p = t.host.overlay.open({ route: "quick-add" });
+    expect(t.lastCall()).toMatchObject({ method: "overlay.open", params: { route: "quick-add" } });
+    t.ok(t.lastCall().id, {});
+    expect(await p).toBeUndefined();
+    const q = t.host.overlay.open();
+    expect(t.lastCall()).toMatchObject({ method: "overlay.open", params: {} });
+    t.fail(t.lastCall().id, "invalid-params");
+    await expect(q).rejects.toMatchObject({ code: "invalid-params" });
+  });
+});
+
+describe("files.delete", () => {
+  it("sends { paths } and resolves with the results list", async () => {
+    const t = setup();
+    const p = t.host.files.delete(["a.md", "b.md"]);
+    expect(t.lastCall()).toMatchObject({ method: "files.delete", params: { paths: ["a.md", "b.md"] } });
+    const results = [
+      { path: "a.md", ok: true },
+      { path: "b.md", ok: false, error: { code: "not-found", message: "gone" } },
+    ];
+    t.ok(t.lastCall().id, { results });
+    expect(await p).toEqual(results);
+  });
+});
+
 describe("git", () => {
   const repo = { name: "Pomade", root: "Projects/Pomade", absPath: "/ws/Projects/Pomade", remoteUrl: null, branch: "main", upstream: null, ahead: 0, behind: 0, hasCommits: true, changes: [] };
   const gitChanged = (t: ReturnType<typeof setup>, watchId: string) =>
