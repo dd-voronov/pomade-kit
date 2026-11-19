@@ -6,6 +6,11 @@
 // closed-Pomade queue: one small JSON file in `<userData>/notices/queue/`, written to a dot-file first
 // and renamed into place, so Pomade never reads half a notice; Pomade drains the folder when it starts
 // and watches it while it runs. The same call works either way.
+//
+// A post over a connection is delivered when `notices.post` resolves, and refused when Pomade answers
+// with an error (`HostError`: the call reaches the caller, nothing is queued). Any other failure — the
+// connection closed before the answer (Pomade quitting mid-post), a send that threw — is a lost post:
+// the notice is queued instead, so it is shown once, now or at the next launch.
 
 import { randomBytes } from "node:crypto";
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
@@ -21,7 +26,7 @@ import {
   type QueuedNotice,
   POMADE_ENV,
 } from "../protocol/index.js";
-import type { HostClient } from "../sdk/client.js";
+import { HostError, type HostClient } from "../sdk/client.js";
 import { connectSocket, type SocketConnectResult } from "./socket.js";
 
 export interface PomadeTarget {
@@ -89,32 +94,44 @@ function withSource(notice: NoticeParams, source: string): NoticeParams & { sour
   return { ...notice, source };
 }
 
+/** Post over `host`: true when Pomade took it, false when the connection failed (the notice is not
+ *  known to be shown). A refusal from Pomade (`HostError`) is thrown. */
+async function postOver(host: HostClient, notice: NoticeParams, source: string): Promise<boolean> {
+  try {
+    await host.notices.post(withSource(notice, source));
+    return true;
+  } catch (err) {
+    if (err instanceof HostError) throw err;
+    return false;
+  }
+}
+
+/** Post over a short connection made with the identity in `options.env`; false when there is none or
+ *  Pomade is not reachable. */
+async function postOnOwnConnection(notice: NoticeParams, options: PostNoticeOptions): Promise<boolean> {
+  const env = options.env ?? process.env;
+  if (!env[POMADE_ENV.appId]) return false;
+  let r: SocketConnectResult;
+  try {
+    r = await connectSocket({ env, timeoutMs: options.timeoutMs ?? 2000 });
+  } catch {
+    return false; // no readable identity
+  }
+  if (r.status !== "connected") return false;
+  try {
+    return await postOver(r.host, notice, options.source);
+  } finally {
+    r.host.close();
+  }
+}
+
 /** Post a notice to Pomade, open or closed (see the file header). Throws on an invalid notice or source. */
 export async function postNotice(notice: NoticeParams, options: PostNoticeOptions): Promise<PostNoticeResult> {
   if (!APP_ID_RE.test(options.source)) throw new Error(`pomade-kit: "source" must match ${APP_ID_RE.source} (got ${JSON.stringify(options.source)})`);
   const checked = checkNotice(notice);
   if (!checked.ok) throw new Error(`pomade-kit: ${checked.error.message}`);
-  if (options.host) {
-    await options.host.notices.post(withSource(checked.value, options.source));
-    return { delivered: "pomade", path: null };
-  }
-  const env = options.env ?? process.env;
-  if (env[POMADE_ENV.appId]) {
-    let r: SocketConnectResult | null = null;
-    try {
-      r = await connectSocket({ env, timeoutMs: options.timeoutMs ?? 2000 });
-    } catch {
-      r = null; // no readable identity: queue
-    }
-    if (r?.status === "connected") {
-      try {
-        await r.host.notices.post(withSource(checked.value, options.source));
-        return { delivered: "pomade", path: null };
-      } finally {
-        r.host.close();
-      }
-    }
-  }
+  const posted = options.host ? await postOver(options.host, checked.value, options.source) : await postOnOwnConnection(checked.value, options);
+  if (posted) return { delivered: "pomade", path: null };
   const { path } = await queueNotice(notice, options);
   return { delivered: "queue", path };
 }

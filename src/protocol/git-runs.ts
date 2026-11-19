@@ -48,6 +48,16 @@ export interface GitRunOutput {
   results: GitRunResult[];
 }
 
+/** The longest job name `pomade-git --job` accepts (one line, trimmed, 1–100 characters). */
+export const JOB_NAME_MAX_LENGTH = 100;
+
+/** `pomade-git`'s exit codes: every repo done or skipped. */
+export const GIT_RUN_EXIT_OK = 0;
+/** At least one repo failed. */
+export const GIT_RUN_EXIT_FAILED = 1;
+/** The command line was wrong (unknown operation, no repo, a bad option); nothing ran. */
+export const GIT_RUN_EXIT_USAGE = 2;
+
 const has = <T>(list: readonly T[], v: unknown): v is T => (list as readonly unknown[]).includes(v);
 
 function isObj(v: unknown): v is Record<string, unknown> {

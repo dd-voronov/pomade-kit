@@ -16,6 +16,14 @@ describe("pomadeHome", () => {
     expect(pomadeHome({ POMADE_HOME: "rel" })).toBe(resolve("rel"));
     expect(pomadeHome({})).toBe(join(homedir(), ".pomade"));
   });
+
+  it("`stable: false` targets the dev Pomade's ~/.pomade-dev; stable is the default; POMADE_HOME wins over both", () => {
+    expect(pomadeHome({}, { stable: false })).toBe(join(homedir(), ".pomade-dev"));
+    expect(pomadeHome({}, { stable: true })).toBe(join(homedir(), ".pomade"));
+    expect(pomadeHome({}, {})).toBe(join(homedir(), ".pomade"));
+    expect(pomadeHome({ POMADE_HOME: "/x/home" }, { stable: false })).toBe("/x/home");
+    expect(pomadeHome({ POMADE_HOME: "" }, { stable: false })).toBe(join(homedir(), ".pomade-dev"));
+  });
 });
 
 describe("appStateDir", () => {

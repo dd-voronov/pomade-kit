@@ -1,5 +1,5 @@
 // Where a running — or closed — Pomade can be found from Node: its home folder (`POMADE_HOME`,
-// default `~/.pomade`, the stable Pomade's), the workspace pointer and the host record it writes
+// default `~/.pomade`, the stable Pomade's; `~/.pomade-dev` for the dev one), the workspace pointer and the host record it writes
 // there (HOST-API §3 "Socket", §2 "Commands").
 
 import { readFileSync } from "node:fs";
@@ -10,10 +10,16 @@ import { HOME_FILES, POMADE_ENV, parseHostRecord, type HostRecord } from "../pro
 
 export type Env = Readonly<Record<string, string | undefined>>;
 
-/** The Pomade home this process belongs to: `POMADE_HOME`, else the stable Pomade's `~/.pomade`. */
-export function pomadeHome(env: Env = process.env): string {
+export interface PomadeHomeOptions {
+  /** Without `POMADE_HOME`: the stable Pomade's `~/.pomade` (default), or with `false` the dev Pomade's `~/.pomade-dev`. */
+  stable?: boolean;
+}
+
+/** The Pomade home this process belongs to: `POMADE_HOME`, else the stable Pomade's `~/.pomade` —
+ *  or the dev Pomade's `~/.pomade-dev` with `{ stable: false }`. */
+export function pomadeHome(env: Env = process.env, options: PomadeHomeOptions = {}): string {
   const value = env[POMADE_ENV.home];
-  return value ? resolve(value) : join(homedir(), ".pomade");
+  return value ? resolve(value) : join(homedir(), options.stable === false ? ".pomade-dev" : ".pomade");
 }
 
 function readText(path: string): string | null {

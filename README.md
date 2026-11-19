@@ -369,6 +369,10 @@ path } }` → `{ jobs: RepoJob[] }` (`{ id, name, operation, schedule, nextRun, 
 Pomade's repo row reads it through the broker, `checkRepoJobs` drops a malformed job, and no
 answer means no row.
 
+A job name given to `pomade-git --job` is one line, at most `JOB_NAME_MAX_LENGTH` (100) characters.
+The command's exit code is `GIT_RUN_EXIT_OK` (0: every repo done or skipped), `GIT_RUN_EXIT_FAILED`
+(1: a repo failed) or `GIT_RUN_EXIT_USAGE` (2: the command line was wrong, nothing ran).
+
 ## Events
 
 The event bus (`pomade:E-031`). Pomade and apps publish; apps subscribe; a publisher can ask whether
@@ -445,11 +449,16 @@ r.delivered;                                    // "pomade" (shown now) | "queue
 
 With Pomade running it sends `notices.post` over the socket — over `options.host` (a connected
 client) or a short connection made with the identity in the environment (`POMADE_APP_ID`, …). With
-Pomade closed, or no identity configured, it writes one JSON file into `<userData>/notices/queue/`
+Pomade closed, no identity configured, or the connection lost before Pomade answered (Pomade quitting
+mid-post), it writes one JSON file into `<userData>/notices/queue/`
 (a dot-file renamed into place); Pomade drains the folder at launch and watches it while running. `source` is the app's id (or the
 platform command's name); the target is the dev Pomade unless `stable: true`, and
 `POMADE_USER_DATA` overrides both (`pomadeUserData()`). The file format is `QueuedNotice`
 (`parseQueuedNotice`, `NOTICE_QUEUE_DIR`, `queuedNoticeFileName` in `pomade-kit/protocol`).
+
+A post counts as delivered when `notices.post` resolves; an error Pomade answers with (`HostError`,
+for example `capability-denied`) is thrown and nothing is queued; any other failure of the post is a
+lost one and the notice is queued instead — so one call shows a notice once, now or at the next launch.
 
 ## Develop and test without Pomade — the fake host
 
@@ -1100,8 +1109,8 @@ if (up.status === "connected") up.host;      // up.launched: this call started i
   (`<userData>/app-state/<id>/`, absolute) — run history, captured output, caches, a control
   socket the backend and its commands share. Pomade sets it for the app's backend (the login item
   too) and every one of its commands, and creates the folder; `null` elsewhere.
-- `pomadeHome()` is the Pomade home a command belongs to (`POMADE_HOME`, else the stable Pomade's
-  `~/.pomade`); `readHostRecord()` reads what Pomade records there (`host.json`: its socket and
+- `pomadeHome(env?, { stable? })` is the Pomade home a command belongs to (`POMADE_HOME`, else the
+  stable Pomade's `~/.pomade`, or `~/.pomade-dev` with `stable: false`); `readHostRecord()` reads what Pomade records there (`host.json`: its socket and
   how to launch it).
 - The framing (`encodeLine`, `createLineDecoder`), the path limit (`socketPathProblem`, 103 bytes
   on macOS), the environment names (`POMADE_ENV`) and the home layout (`HOME_FILES`) are in

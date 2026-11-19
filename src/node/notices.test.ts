@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parseQueuedNotice } from "../protocol/index.js";
 import { pomadeUserData, postNotice } from "./index.js";
-import type { HostClient } from "../sdk/index.js";
+import { HostError, type HostClient } from "../sdk/index.js";
 
 let userData: string;
 beforeEach(async () => {
@@ -81,5 +81,39 @@ describe("postNotice with Pomade running", () => {
     const r = await postNotice({ title: "Later" }, { source: "pomade-runner", userData, env });
     expect(r.delivered).toBe("queue");
     expect(r.path).toMatch(/notices\/queue\/.+\.json$/);
+  });
+});
+
+describe("postNotice when the post over the connection fails", () => {
+  const hostWith = (post: (n: unknown) => Promise<void>): HostClient => ({ notices: { post } }) as unknown as HostClient;
+  const queued = async (): Promise<string[]> => readdir(join(userData, "notices", "queue")).catch(() => []);
+
+  it("queues it when the connection closed before the answer (Pomade quitting mid-post)", async () => {
+    let attempts = 0;
+    const host = hostWith(async () => {
+      attempts++;
+      throw new Error("pomade-kit: client is closed");
+    });
+    const r = await postNotice({ title: "Run failed" }, { source: "pomade-runner", userData, host });
+    expect(r.delivered).toBe("queue");
+    expect(attempts).toBe(1);
+    expect(await queued()).toHaveLength(1);
+    const parsed = parseQueuedNotice(JSON.parse(await readFile(r.path!, "utf8")));
+    expect(parsed).toMatchObject({ ok: true, notice: { title: "Run failed", source: "pomade-runner" } });
+  });
+
+  it("a delivered post is never also queued", async () => {
+    const host = hostWith(async () => undefined);
+    const r = await postNotice({ title: "Once" }, { source: "pomade-runner", userData, host });
+    expect(r).toEqual({ delivered: "pomade", path: null });
+    expect(await queued()).toEqual([]);
+  });
+
+  it("an error Pomade answered with is thrown, not queued", async () => {
+    const host = hostWith(async () => {
+      throw new HostError("capability-denied", "no");
+    });
+    await expect(postNotice({ title: "x" }, { source: "pomade-runner", userData, host })).rejects.toThrow(/no/);
+    expect(await queued()).toEqual([]);
   });
 });

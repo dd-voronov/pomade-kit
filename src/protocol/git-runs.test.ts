@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import { checkRepoJobs, isGitRunOutput, isGitRunResult, REPO_JOBS_APP_ID, REPO_JOBS_METHOD, type GitRunResult } from "./index.js";
+import {
+  checkRepoJobs,
+  GIT_RUN_EXIT_FAILED,
+  GIT_RUN_EXIT_OK,
+  GIT_RUN_EXIT_USAGE,
+  isGitRunOutput,
+  isGitRunResult,
+  JOB_NAME_MAX_LENGTH,
+  REPO_JOBS_APP_ID,
+  REPO_JOBS_METHOD,
+  type GitRunResult,
+} from "./index.js";
 
 const result: GitRunResult = {
   repo: "Knowledge",
@@ -11,6 +22,16 @@ const result: GitRunResult = {
   steps: [{ step: "agents", outcome: "skipped", detail: "claude in /ws/Knowledge (a Pomade terminal)" }],
   commit: null,
 };
+
+describe("pomade-git limits and exit codes", () => {
+  it("a job name is at most 100 characters", () => {
+    expect(JOB_NAME_MAX_LENGTH).toBe(100);
+  });
+
+  it("exit 0 done or skipped, 1 a repo failed, 2 usage", () => {
+    expect([GIT_RUN_EXIT_OK, GIT_RUN_EXIT_FAILED, GIT_RUN_EXIT_USAGE]).toEqual([0, 1, 2]);
+  });
+});
 
 describe("pomade-git --json output", () => {
   it("accepts a well-formed result and output", () => {
