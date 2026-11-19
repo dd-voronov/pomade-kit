@@ -659,6 +659,27 @@ describe("overlay frames", () => {
     expect(host.overlayResizes).toEqual([240, 255.5]);
   });
 
+  it("onOverlayOpen hears overlay.open after its result; onOverlayResize hears overlay.resize as given", async () => {
+    const host = fake({ manifest: OVERLAY_MANIFEST });
+    const got: HostToAppMessage[] = [];
+    const opened = vi.fn();
+    const resized = vi.fn();
+    const tab = host.attach((m) => got.push(m), { onOverlayOpen: opened });
+    tab.receive({ channel: "pomade", type: "hello", hostApi: 0 });
+    tab.receive({ channel: "pomade", type: "call", id: "1", method: "overlay.open", params: { route: "quick-add", height: 300, anchor: "panel" } });
+    tab.receive({ channel: "pomade", type: "call", id: "2", method: "overlay.open", params: { route: 7 } });
+    expect(got[1]).toMatchObject({ type: "result", ok: true });
+    expect(opened).not.toHaveBeenCalled();
+    await flush();
+    expect(opened.mock.calls).toEqual([[{ route: "quick-add", height: 300, anchor: "panel" }]]);
+
+    const overlay = host.attach(() => undefined, { surface: "overlay", onOverlayResize: resized });
+    overlay.receive({ channel: "pomade", type: "hello", hostApi: 0 });
+    overlay.receive({ channel: "pomade", type: "call", id: "1", method: "overlay.resize", params: { height: 255.5 } });
+    overlay.receive({ channel: "pomade", type: "call", id: "2", method: "overlay.resize", params: { height: 0 } });
+    expect(resized.mock.calls).toEqual([[255.5]]);
+  });
+
   it("a frame shown again may open the overlay (setHidden)", () => {
     const host = fake({ manifest: OVERLAY_MANIFEST });
     const got: HostToAppMessage[] = [];

@@ -71,6 +71,7 @@ import {
   type FakeGroup,
   type FakeOpenedTab,
   type FakePickRequest,
+  type FakeWriteFailure,
 } from "./data.js";
 import { reposInScope, scriptedRepos, type GitWatchState } from "./git.js";
 import { DEFAULT_FAKE_ROSTER, FakeAgentTabs, type FakeAgentTabSeed, type FakeOpenedAgentTab, type FakeSession } from "./agent-tabs.js";
@@ -161,6 +162,10 @@ export interface FrameOptions {
   route?: string;
   /** An overlay frame asked to close (`overlay.close`, or a forwarded Escape): close it here, as Pomade does. */
   onClose?: () => void;
+  /** A tab or panel frame opened its overlay (`overlay.open`, after its result): mount it here, as Pomade does. */
+  onOverlayOpen?: (overlay: FakeOpenedOverlay) => void;
+  /** An overlay frame asked for a height (`overlay.resize`, as given): size it here, as Pomade does. */
+  onOverlayResize?: (height: number) => void;
   /** The frame starts hidden — a tab in the background, a panel not shown; `overlay.open` refuses a hidden frame. Default `false`. */
   hidden?: boolean;
 }
@@ -213,6 +218,8 @@ interface Frame {
   bus: BusMember | null;
   target: FrameTarget;
   onClose: (() => void) | undefined;
+  onOverlayOpen: ((overlay: FakeOpenedOverlay) => void) | undefined;
+  onOverlayResize: ((height: number) => void) | undefined;
   hidden: boolean;
   welcomed: boolean;
   watches: Map<string, Watch>;
@@ -238,6 +245,7 @@ export class FakeHost {
   /** Every folder picker the app opened (`files.pickFolder`), in order. */
   readonly pickRequests: FakePickRequest[] = [];
   private readonly pickAnswers: (string | null)[] = [];
+  private readonly writeFailures: { path: string; failure: FakeWriteFailure }[] = [];
 
   private readonly workspace: Workspace;
   private readonly projects: ProjectRef[];
@@ -319,6 +327,7 @@ export class FakeHost {
       symlinkScopes: parsed.manifest.symlinks ?? [],
       pickAnswers: this.pickAnswers,
       pickRequests: this.pickRequests,
+      writeFailures: this.writeFailures,
     };
     this.agentTabModel = new FakeAgentTabs(
       {
@@ -348,7 +357,19 @@ export class FakeHost {
     const target =
       surface === "overlay" ? resolveOverlayTarget(this.shortcuts, open.shortcut) : resolveFrameTarget(this.strip, surface, open.icon);
     if (open.route !== undefined) target.route = open.route;
-    const frame: Frame = { post, target, onClose: open.onClose, hidden: open.hidden === true, welcomed: false, serving: false, watches: new Map(), gitWatches: new Map(), bus: null };
+    const frame: Frame = {
+      post,
+      target,
+      onClose: open.onClose,
+      onOverlayOpen: open.onOverlayOpen,
+      onOverlayResize: open.onOverlayResize,
+      hidden: open.hidden === true,
+      welcomed: false,
+      serving: false,
+      watches: new Map(),
+      gitWatches: new Map(),
+      bus: null,
+    };
     this.frames.add(frame);
     return {
       receive: (data) => {
@@ -404,9 +425,19 @@ export class FakeHost {
 
   // ── Test controls ────────────────────────────────────────────────────────
 
-  /** Create or overwrite a file; emits `create` (with any new parent folders) or `change`. */
-  writeFile(path: string, content: string): void {
-    this.emit(this.workspace.writeFile(controlPath(path), content));
+  /** Create or overwrite a file; emits `create` (with any new parent folders) or `change`. `silent`:
+   *  the bytes and the mtime change but no watch hears it — a change the app finds only by reading
+   *  (`ifMtime` writes then fail with `changed-on-disk`). */
+  writeFile(path: string, content: string, options: { silent?: boolean } = {}): void {
+    const changes = this.workspace.writeFile(controlPath(path), content);
+    if (options.silent !== true) this.emit(changes);
+  }
+
+  /** Script the app's next write to `path` (any `files.write` method naming it; a `move`'s `from`
+   *  or `to`, a `delete`'s entry) to fail with the error Pomade gives for `failure`, once it passed
+   *  the checks Pomade makes first. Failures queue up, each used once. */
+  failNextWrite(path: string, failure: FakeWriteFailure): void {
+    this.writeFailures.push({ path: controlPath(path), failure });
   }
 
   /** Create a symlink at `path` to `target` (both workspace-relative); emits `create`. */
@@ -874,11 +905,15 @@ export class FakeHost {
         if (heightProblem) throw new CallError("invalid-params", heightProblem);
         const anchorProblem = params.anchor === undefined ? null : checkOverlayAnchor(params.anchor);
         if (anchorProblem) throw new CallError("invalid-params", anchorProblem);
-        this.overlays.push({
+        const opened: FakeOpenedOverlay = {
           route,
           ...(params.height !== undefined ? { height: params.height as number } : {}),
           anchor: (params.anchor as OverlayAnchor | undefined) ?? "center",
-        });
+        };
+        this.overlays.push(opened);
+        // After the result is posted, like Pomade: the caller hears its answer, then the overlay opens.
+        const onOpen = frame.onOverlayOpen;
+        if (onOpen) setTimeout(() => onOpen({ ...opened }), 0);
         return {};
       }
       case "overlay.resize": {
@@ -886,6 +921,7 @@ export class FakeHost {
         const problem = checkOverlayHeight(params.height);
         if (problem) throw new CallError("invalid-params", problem);
         this.overlayResizes.push(params.height as number);
+        frame.onOverlayResize?.(params.height as number);
         return {};
       }
       case "overlay.close":

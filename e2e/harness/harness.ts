@@ -1,7 +1,7 @@
 // The fake host as the parent window of an app frame: the page an app's Playwright e2e opens
 // instead of Pomade. `?app=<url>` is the app to load; the fake host is on `window.fakeHost` so
 // specs can drive it (writeFile, setActiveProject, …), and the mounted frame on `window.mounted`
-// (navigate). `?shortcut=<id>` mounts it as that shortcut's overlay.
+// (navigate; `overlay` is the overlay it opened). `?shortcut=<id>` mounts it as that shortcut's overlay.
 
 import { createFakeHost, mountApp, type FakeHost, type MountedApp } from "pomade-kit/fake-host";
 import manifest from "../../examples/hello/public/manifest.json" with { type: "json" };

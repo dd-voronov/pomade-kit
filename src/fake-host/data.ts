@@ -65,6 +65,28 @@ export interface DataContext {
   readonly pickAnswers: (string | null)[];
   /** Every picker the app opened: its root and where it started. */
   readonly pickRequests: FakePickRequest[];
+  /** Scripted write failures (`fake.failNextWrite`), in order; each fails the next write to its path once. */
+  readonly writeFailures: { path: string; failure: FakeWriteFailure }[];
+}
+
+/** How a scripted write fails (`fake.failNextWrite`): what Pomade answers when the disk refuses a write
+ *  (`permission`, an `io-error` with the OS's EACCES reason), the disk fails it (`io-error`), or the
+ *  target was taken meanwhile (`already-exists`). */
+export type FakeWriteFailure = "permission" | "io-error" | "already-exists";
+
+/** Fail this write when a failure is scripted for `path` (once), with the error Pomade gives. */
+function scriptedFailure(ctx: DataContext, path: string): void {
+  const i = ctx.writeFailures.findIndex((f) => f.path === path);
+  if (i < 0) return;
+  const { failure } = ctx.writeFailures.splice(i, 1)[0]!;
+  switch (failure) {
+    case "permission":
+      throw new CallError("io-error", `EACCES: permission denied, open '${path}'`);
+    case "io-error":
+      throw new CallError("io-error", `EIO: i/o error, write '${path}'`);
+    case "already-exists":
+      throw new CallError("already-exists", `${JSON.stringify(path)} already exists`);
+  }
 }
 
 /** A folder picker the app opened (`files.pickFolder`), as the fake host records it. */
@@ -114,6 +136,7 @@ function edit(ctx: DataContext, path: string, p: Obj, run: (text: string) => Fie
   const ifMtime = ifMtimeParam(p);
   const file = existingFile(ctx, path);
   requireMtime(path, file.mtimeMs, ifMtime);
+  scriptedFailure(ctx, path);
   const r = run(file.content);
   if (!r.ok) {
     throw new CallError(r.reason === "invalid-value" ? "invalid-params" : r.reason, `${JSON.stringify(path)}: ${r.message}`);
@@ -148,6 +171,7 @@ export function dispatchFileWrite(ctx: DataContext, method: FileDataMethod, p: O
       if (ancestorIsFile(ws, path)) {
         throw new CallError("io-error", `ENOTDIR: a parent of ${JSON.stringify(path)} is a file`);
       }
+      scriptedFailure(ctx, path);
       ctx.emit(ws.writeFile(path, content));
       return {};
     }
@@ -156,6 +180,7 @@ export function dispatchFileWrite(ctx: DataContext, method: FileDataMethod, p: O
       const content = stringParam(p, "content");
       const ifMtime = ifMtimeParam(p);
       requireMtime(path, existingFile(ctx, path).mtimeMs, ifMtime);
+      scriptedFailure(ctx, path);
       ctx.emit(ws.writeFile(path, content));
       return {};
     }
@@ -190,6 +215,8 @@ export function dispatchFileWrite(ctx: DataContext, method: FileDataMethod, p: O
       if (isUnder(to, from)) throw new CallError("invalid-params", `cannot move ${JSON.stringify(from)} into itself`);
       if (ws.kindOf(to) !== null) throw new CallError("already-exists", `${JSON.stringify(to)} already exists`);
       if (ancestorIsFile(ws, to)) throw new CallError("io-error", `ENOTDIR: a parent of ${JSON.stringify(to)} is a file`);
+      scriptedFailure(ctx, from);
+      scriptedFailure(ctx, to);
       ctx.emit(ws.rename(from, to));
       return {};
     }
@@ -227,6 +254,7 @@ function deleteOne(ctx: DataContext, raw: string): FileChange[] {
   if (!ws.exists(path)) throw new CallError("not-found", `${JSON.stringify(raw)} does not exist`);
   requireAllowedTarget(ws, path);
   if (ws.kindOf(path) === "dir") throw new CallError("invalid-params", `${JSON.stringify(raw)} is a folder; files.delete deletes files only`);
+  scriptedFailure(ctx, path);
   return ws.isLink(path) ? ws.removeLink(path) : ws.deleteFile(path);
 }
 

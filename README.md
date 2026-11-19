@@ -439,6 +439,8 @@ code, and the events. Test controls emit the events Pomade would:
 | Control | Emits |
 |---|---|
 | `fake.writeFile(path, content)` | `create` (and one per new parent folder) or `change` |
+| `fake.writeFile(path, content, { silent: true })` | — (the bytes and the mtime change, no watch hears it: a change the app finds only by reading — its `ifMtime` write then fails with `changed-on-disk`, as in Pomade) |
+| `fake.failNextWrite(path, failure)` | — (the app's next write to `path` fails once, after the checks Pomade makes first (`not-found`, `ifMtime`): any `files.write` method naming it, either end of a `move`, a `delete` entry. `failure` is `"permission"` → `io-error` `EACCES: permission denied, …`, `"io-error"` → `io-error` `EIO: i/o error, …`, `"already-exists"` → `already-exists`; failures queue up) |
 | `fake.deleteFile(path)` | `delete` |
 | `fake.rename(from, to)` | `rename` (file or folder) |
 | `fake.batch(() => …)` | the changes inside as one `files.changed` per watch |
@@ -520,7 +522,7 @@ in `host.state`. Pomade matches the physical key
 another app took first, is reported at install and does nothing — Pomade wins. In the fake host a
 `tab` shortcut's target is a frame opened at its route: `fake.createTransport({ route })`; an
 overlay is `fake.createTransport({ surface: "overlay", shortcut: "quick-add", onClose })` (or
-`mountApp(fake, { src, surface: "overlay", shortcut })`, which removes the frame when it closes) —
+`mountApp(fake, { src, surface: "overlay", shortcut })`, which mounts it as Pomade shows it — see below) —
 `onClose` runs after `overlay.close` is answered, or on a forwarded Escape.
 
 The app's own tab or panel frame opens the same overlay with `host.overlay.open({ route, height?, anchor? })`
@@ -541,8 +543,18 @@ got; the width never changes (`checkOverlayHeight` / `checkOverlayAnchor` hold t
 is `"center"` (default) or `"panel"` — beside the side panel, for an overlay asked for from a panel. The user
 can drag the overlay by its head; Pomade remembers where it was left, per app, and the app's next overlay
 opens there — a remembered position wins over `anchor`. The fake host records `height` and `anchor` in
-`fake.overlays` and each `overlay.resize` height in `fake.overlayResizes`; it does not mount, place or
-size the frame.
+`fake.overlays` and each `overlay.resize` height in `fake.overlayResizes`.
+
+`mountApp` mounts the overlay a mounted tab or panel frame opens, so an app's overlay flow runs
+standalone: a fresh `<iframe data-surface="overlay">` of the same page at the call's route
+(`mounted.overlay` while it is open), 420 px wide and as high as asked — rounded, between 120 px and
+60% of the window, following `overlay.resize` — centred in the window (`anchor: "panel"`: 16 px from
+its top-left corner), over a dimming scrim, with keyboard focus. It closes on `overlay.close`, a
+forwarded Escape or a click on the scrim, and focus returns to the frame that called `overlay.open`
+(where the SDK puts it back on the button); a new `overlay.open` replaces the open one. An overlay
+mounted directly (`surface: "overlay"`) is placed the same way and gives focus back to what had it
+before. Without `mountApp`, `attach(post, { onOverlayOpen, onOverlayResize })` hands the open
+(`{ route, height?, anchor }`, after its result) and each resize to the test.
 
 `skills` lists the agent skills the app ships — folders inside the build, each holding a
 `SKILL.md`; a folder's last segment is the skill's name (`SKILL_NAME_RE`, unique):

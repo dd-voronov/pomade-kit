@@ -204,6 +204,118 @@ describe("ifMtime — write only while the file is the one read", () => {
   });
 });
 
+describe("a silent change — new bytes, no watch event", () => {
+  const path = "Projects/Pomade/docs/roadmap/T-210.md";
+
+  it("moves the bytes and the mtime without a files.changed; the app's ifMtime write is then changed-on-disk, as in Pomade", async () => {
+    const fh = fake();
+    const host = await client(fh);
+    const heard: FileChange[][] = [];
+    await host.files.watch({ path: "Projects/Pomade/docs/roadmap" }, (changes) => heard.push(changes));
+    const { mtimeMs } = await host.files.readFile({ path });
+    fh.writeFile(path, "edited elsewhere\n", { silent: true });
+    await flush();
+    expect(heard).toEqual([]);
+    const now = await host.files.readFile({ path });
+    expect(now.content).toBe("edited elsewhere\n");
+    expect(now.mtimeMs).toBeGreaterThan(mtimeMs);
+    await expect(host.files.setField({ path, key: "status", value: "done", ifMtime: mtimeMs })).rejects.toEqual(
+      new HostError("changed-on-disk", `${JSON.stringify(path)} changed on disk since it was read; nothing was written`),
+    );
+    expect(fh.readFile(path)).toBe("edited elsewhere\n");
+  });
+
+  it("within one clock tick the mtime still moves on; a silent create is heard by no watch either", async () => {
+    const fh = createFakeHost({ files: FILES, now: () => 5000 });
+    const host = await client(fh);
+    const heard: FileChange[][] = [];
+    await host.files.watch({ path: "Projects/Pomade/docs/roadmap" }, (changes) => heard.push(changes));
+    const { mtimeMs } = await host.files.readFile({ path });
+    fh.writeFile(path, "x\n", { silent: true });
+    fh.writeFile("Projects/Pomade/docs/roadmap/new.md", "new\n", { silent: true });
+    await flush();
+    expect(heard).toEqual([]);
+    expect((await host.files.readFile({ path })).mtimeMs).toBeGreaterThan(mtimeMs);
+    expect(await read(host, "Projects/Pomade/docs/roadmap/new.md")).toBe("new\n");
+  });
+});
+
+describe("scripted write failures — fake.failNextWrite", () => {
+  const path = "Projects/Pomade/docs/roadmap/T-210.md";
+  const writes: [string, Record<string, unknown>][] = [
+    ["files.write", { path, content: "x\n" }],
+    ["files.setBody", { path, body: "x\n" }],
+    ["files.setField", { path, key: "status", value: "done" }],
+    ["files.removeField", { path, key: "status" }],
+    ["files.setKeyLines", { path, key: "repeat", text: "repeat:\n  a: 1" }],
+    ["files.move", { from: path, to: "Projects/Pomade/docs/roadmap/moved.md" }],
+  ];
+
+  it.each(writes)("%s: the next write fails with Pomade's error, the file is untouched, the write after it goes", (method, params) => {
+    const fh = fake();
+    const f = raw(fh);
+    fh.failNextWrite(path, "permission");
+    const r = f.call(method, params);
+    expect(!r.ok && r.error).toEqual({ code: "io-error", message: `EACCES: permission denied, open '${path}'` });
+    expect(fh.readFile(path)).toBe(TICKET);
+    expect(f.errorOf(method, params)).toBeNull();
+  });
+
+  it("io-error and already-exists carry Pomade's codes and messages; files.create fails on its target", () => {
+    const fh = fake();
+    const f = raw(fh);
+    const target = "Projects/Pomade/docs/roadmap/new.md";
+    fh.failNextWrite(target, "already-exists");
+    fh.failNextWrite(path, "io-error");
+    const created = f.call("files.create", { path: target, content: "x" });
+    expect(!created.ok && created.error).toEqual({ code: "already-exists", message: `${JSON.stringify(target)} already exists` });
+    expect(() => fh.readFile(target)).toThrow();
+    const written = f.call("files.write", { path, content: "x" });
+    expect(!written.ok && written.error).toEqual({ code: "io-error", message: `EIO: i/o error, write '${path}'` });
+    expect(f.errorOf("files.create", { path: target, content: "x" })).toBeNull();
+  });
+
+  it("failures queue up per path, each used once; another path's write is not affected; paths are normalized", () => {
+    const fh = fake();
+    const f = raw(fh);
+    fh.failNextWrite(`./${path}`, "io-error");
+    fh.failNextWrite(path, "permission");
+    expect(f.errorOf("files.write", { path: "Projects/Pomade/notes/plain.txt", content: "y" })).toBeNull();
+    expect(f.errorOf("files.write", { path, content: "x" })).toBe("io-error");
+    const second = f.call("files.write", { path, content: "x" });
+    expect(!second.ok && second.error.message).toMatch(/^EACCES/);
+    expect(f.errorOf("files.write", { path, content: "x" })).toBeNull();
+  });
+
+  it("checks Pomade makes first still win, and keep the failure scripted: a stale ifMtime, a missing file", () => {
+    const fh = fake();
+    const f = raw(fh);
+    fh.failNextWrite(path, "permission");
+    expect(f.errorOf("files.setField", { path, key: "status", value: "done", ifMtime: 1 })).toBe("changed-on-disk");
+    expect(f.errorOf("files.write", { path: "Projects/Pomade/none.md", content: "x" })).toBe("not-found");
+    expect(f.errorOf("files.write", { path, content: "x" })).toBe("io-error");
+  });
+
+  it("files.delete fails that entry only; the move's target path fails it too", () => {
+    const fh = fake();
+    const f = raw(fh);
+    const plain = "Projects/Pomade/notes/plain.txt";
+    fh.failNextWrite(path, "permission");
+    const r = f.call("files.delete", { paths: [path, plain] });
+    expect(r.ok && r.value).toEqual({
+      results: [
+        { path, ok: false, error: { code: "io-error", message: `EACCES: permission denied, open '${path}'` } },
+        { path: plain, ok: true },
+      ],
+    });
+    expect(fh.readFile(path)).toBe(TICKET);
+    const to = "Projects/Pomade/docs/roadmap/moved.md";
+    fh.failNextWrite(to, "already-exists");
+    expect(f.errorOf("files.move", { from: path, to })).toBe("already-exists");
+    expect(fh.readFile(path)).toBe(TICKET);
+  });
+});
+
 describe("files.setBody", () => {
   it("replaces the body and keeps the frontmatter bytes (CRLF block included)", async () => {
     const host = await client(fake());

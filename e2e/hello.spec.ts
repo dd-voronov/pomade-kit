@@ -4,7 +4,17 @@ const APP = "http://localhost:4317/";
 const HARNESS = `http://localhost:4318/harness.html?app=${encodeURIComponent(APP)}`;
 
 function app(page: Page) {
-  return page.frameLocator("iframe");
+  return page.frameLocator('iframe[data-surface="tab"]');
+}
+
+/** The overlay frame the fake host mounts (`overlay.open`, or the harness's `?shortcut=`). */
+function overlay(page: Page) {
+  return page.frameLocator('iframe[data-surface="overlay"]');
+}
+
+/** What has focus in the harness page: the `data-surface` of the focused frame. */
+function focusedFrame(page: Page) {
+  return page.evaluate(() => document.activeElement?.getAttribute("data-surface") ?? null);
 }
 
 function row(page: Page, path: string) {
@@ -94,7 +104,7 @@ test.describe("the quick-note overlay", () => {
 
   test("Enter stores the note in the app state and closes the overlay", async ({ page }) => {
     await page.goto(OVERLAY);
-    const note = app(page).getByTestId("note");
+    const note = overlay(page).getByTestId("note");
     await expect(note).toBeFocused();
     await note.fill("call the bank");
     await note.press("Enter");
@@ -104,7 +114,7 @@ test.describe("the quick-note overlay", () => {
 
   test("the note field asks the host for more height as its text grows", async ({ page }) => {
     await page.goto(OVERLAY);
-    const note = app(page).getByTestId("note");
+    const note = overlay(page).getByTestId("note");
     await note.fill("one line");
     const one = await page.evaluate(() => window.fakeHost.overlayResizes.at(-1));
     await note.fill("a\nb\nc\nd\ne\nf");
@@ -115,7 +125,7 @@ test.describe("the quick-note overlay", () => {
 
   test("Escape closes it and stores nothing", async ({ page }) => {
     await page.goto(OVERLAY);
-    await app(page).getByTestId("note").press("Escape");
+    await overlay(page).getByTestId("note").press("Escape");
     await expect(page.locator("iframe")).toHaveCount(0);
     expect(await page.evaluate(() => window.fakeHost.state)).toEqual({});
   });
@@ -295,18 +305,49 @@ test("says once where its shipped skill is, and always in About", async ({ page 
   if (process.env.HELLO_SHOTS) await page.screenshot({ path: `${process.env.HELLO_SHOTS}/about.png` });
 });
 
-test("Quick note… opens its overlay from the frame (overlay.open); focus comes back to the button", async ({ page }) => {
-  await app(page).getByTestId("open-overlay").click();
-  await expect.poll(() => page.evaluate(() => window.fakeHost.overlays)).toEqual([{ route: "note", anchor: "panel" }]);
-  // The overlay takes focus into another frame (here: the harness page), then gives it back to this frame.
-  await page.evaluate(() => {
-    const away = document.createElement("input");
-    document.body.append(away);
-    away.focus();
+test.describe("Quick note… — the overlay the frame opens (overlay.open), mounted by the fake host", () => {
+  test("opens beside the panel and takes focus; Enter stores the note, closes it, and focus comes back to the button", async ({ page }) => {
+    await app(page).getByTestId("open-overlay").click();
+    await expect.poll(() => page.evaluate(() => window.fakeHost.overlays)).toEqual([{ route: "note", anchor: "panel" }]);
+    const note = overlay(page).getByTestId("note");
+    await expect(note).toBeFocused();
+    await expect.poll(() => focusedFrame(page)).toBe("overlay");
+    // `anchor: "panel"`: the window's top-left corner, 16 px in; 420 × 220 until the app asks for more.
+    expect(await page.locator('iframe[data-surface="overlay"]').boundingBox()).toEqual({ x: 16, y: 16, width: 420, height: 220 });
+
+    await note.fill("call the bank");
+    await note.press("Enter");
+    await expect(page.locator('iframe[data-surface="overlay"]')).toHaveCount(0);
+    expect(await page.evaluate(() => window.fakeHost.state.lastNote)).toBe("call the bank");
+    await expect.poll(() => focusedFrame(page)).toBe("tab");
+    await expect(app(page).getByTestId("open-overlay")).toBeFocused();
   });
-  await expect.poll(() => app(page).locator("body").evaluate(() => document.hasFocus())).toBe(false);
-  await page.evaluate(() => document.querySelector("iframe")?.focus());
-  await expect(app(page).getByTestId("open-overlay")).toBeFocused();
+
+  test("the frame takes the height the note asks for (overlay.resize)", async ({ page }) => {
+    await app(page).getByTestId("open-overlay").click();
+    const frame = page.locator('iframe[data-surface="overlay"]');
+    await overlay(page).getByTestId("note").fill(Array.from({ length: 14 }, (_, i) => `line ${i + 1}`).join("\n"));
+    await expect.poll(() => page.evaluate(() => window.fakeHost.overlayResizes.at(-1))).toBeGreaterThan(220);
+    const asked = await page.evaluate(() => window.fakeHost.overlayResizes.at(-1)!);
+    await expect.poll(async () => (await frame.boundingBox())?.height).toBe(Math.round(asked));
+    await expect.poll(() => overlay(page).locator("body").evaluate(() => window.innerHeight)).toBe(Math.round(asked));
+  });
+
+  test("Escape closes it, a click on the scrim too; each time focus comes back to the button", async ({ page }) => {
+    await app(page).getByTestId("open-overlay").click();
+    await overlay(page).getByTestId("note").press("Escape");
+    await expect(page.locator('iframe[data-surface="overlay"]')).toHaveCount(0);
+    await expect.poll(() => focusedFrame(page)).toBe("tab");
+    await expect(app(page).getByTestId("open-overlay")).toBeFocused();
+
+    await app(page).getByTestId("open-overlay").click();
+    await expect(overlay(page).getByTestId("note")).toBeFocused();
+    await page.mouse.click(700, 500);
+    await expect(page.locator('iframe[data-surface="overlay"]')).toHaveCount(0);
+    await expect.poll(() => focusedFrame(page)).toBe("tab");
+    await expect(app(page).getByTestId("open-overlay")).toBeFocused();
+    expect(await page.evaluate(() => window.fakeHost.state.lastNote)).toBeUndefined();
+  });
 });
 
 test("Trash scratch files deletes every file in scratch/ in one call; the status says how it went", async ({ page }) => {
