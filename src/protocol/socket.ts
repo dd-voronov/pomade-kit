@@ -88,12 +88,13 @@ export function createLineDecoder(maxBytes: number = SOCKET_MESSAGE_MAX_BYTES): 
   let buffer = "";
   return {
     push(chunk) {
-      buffer += chunk;
+      // Only the new text is searched: the buffered part holds no newline.
       const out: unknown[] = [];
-      let nl = buffer.indexOf("\n");
+      let start = 0;
+      let nl = chunk.indexOf("\n");
       while (nl !== -1) {
-        const line = buffer.slice(0, nl);
-        buffer = buffer.slice(nl + 1);
+        const line = buffer + chunk.slice(start, nl);
+        buffer = "";
         if (line.trim() !== "") {
           try {
             out.push(JSON.parse(line));
@@ -101,8 +102,10 @@ export function createLineDecoder(maxBytes: number = SOCKET_MESSAGE_MAX_BYTES): 
             // Not JSON: not a protocol message; ignored like any non-message.
           }
         }
-        nl = buffer.indexOf("\n");
+        start = nl + 1;
+        nl = chunk.indexOf("\n", start);
       }
+      buffer += chunk.slice(start);
       // Characters, not bytes: a UTF-16 length is at most the UTF-8 byte length, so the cap holds.
       if (buffer.length > maxBytes) throw new Error(`message longer than ${maxBytes} bytes`);
       return out;

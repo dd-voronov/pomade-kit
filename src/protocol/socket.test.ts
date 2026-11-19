@@ -15,6 +15,22 @@ describe("socket framing", () => {
     expect(d.push("")).toEqual([]);
   });
 
+  it("a line over many chunks, and a large one in linear time", () => {
+    const d = createLineDecoder();
+    expect(d.push('{"s":"')).toEqual([]);
+    expect(d.push("ab")).toEqual([]);
+    expect(d.push('c"}\n{"t":1}')).toEqual([{ s: "abc" }]);
+    expect(d.push("\n")).toEqual([{ t: 1 }]);
+    // 12 MiB in 8 KiB chunks, as a socket delivers it: each chunk is searched once, not the whole buffer again.
+    const big = "x".repeat(12 * 1024 * 1024);
+    const text = `{"big":"${big}"}\n`;
+    const started = performance.now();
+    const out: unknown[] = [];
+    for (let i = 0; i < text.length; i += 8192) out.push(...d.push(text.slice(i, i + 8192)));
+    expect(out).toEqual([{ big }]);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
   it("skips lines that are not JSON", () => {
     const d = createLineDecoder();
     expect(d.push('nope\n{"ok":true}\n{bad\n')).toEqual([{ ok: true }]);

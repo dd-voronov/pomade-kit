@@ -12,6 +12,7 @@
 // whose click opens the roadmap in the app's own tab, in the project the notice is about. Its
 // always-on backend keeps a ticking demo service in a keeper (`public/backend/`); "Open the
 // ticker" opens it in an attached terminal tab, whose Restart header action the backend serves.
+// "Ask the backend" calls the app's own API (`status`), which its backend serves through Pomade's broker.
 // "Quick note…" opens the same overlay as Cmd+Shift+J from the panel or tab (`overlay.open`).
 // "New scratch file" makes a file in the project's scratch/ folder; "Trash scratch files" moves
 // every file there to the Trash in one `files.delete` call and says how each one went.
@@ -162,12 +163,26 @@ async function showSkills(host: HostClient): Promise<void> {
   });
 }
 
+/** The app's own API, served by its backend: the UI reaches it through Pomade's broker. */
+async function askBackend(host: HostClient): Promise<void> {
+  const status = el("backend-status");
+  status.textContent = "Asking…";
+  try {
+    const { pid, ticker } = await host.apps.call<{ pid: number; ticker: string }>(host.welcome.appId, "status", {}, { timeoutMs: 3000 });
+    status.textContent = `Backend: pid ${pid} · ${ticker === "no keeper" ? "keeper not running" : `ticker ${ticker}`}`;
+  } catch (err) {
+    const absent = err instanceof HostError && (err.code === "app-absent" || err.code === "app-not-responding");
+    status.textContent = absent ? "Backend: not running" : `Backend: ${err instanceof HostError ? err.code : String(err)}`;
+  }
+}
+
 function startApp(host: HostClient): void {
   void countLaunches(host);
   void showSkills(host);
   void useEvents(host);
   // The ticker is a session the backend's keeper runs, with or without Pomade: open it attached.
   el("open-ticker").addEventListener("click", () => void host.tabs.openAttached({ session: { app: host.welcome.appId, session: "ticker" } }));
+  el("ask-backend").addEventListener("click", () => void askBackend(host));
   // The notice belongs to the project it is about: its click opens the roadmap there, whichever
   // project is in front by then.
   el("notify").addEventListener("click", () => {

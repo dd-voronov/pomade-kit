@@ -1,7 +1,8 @@
 // Hello's always-on backend: keeps the app's keeper running with a demo service in it — a ticker
 // that prints a line a second and echoes what is typed — so an attached tab in Pomade shows it,
 // with Pomade open or closed. The ticker's Restart header action reaches this backend as the
-// `attachedTab.action` event.
+// `attachedTab.action` event. It serves the app's API (`status`): the UI's "Ask the backend" goes
+// through Pomade's broker to here and back.
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -21,6 +22,18 @@ async function owner() {
   const r = await connectKeeper({ socketPath, app: appId, role: "owner", key });
   if (r.status !== "connected") throw new Error(`keeper: ${r.status}`);
   return r.keeper;
+}
+
+/** The ticker's state in the keeper: `running`, `exited`, or `no keeper` when none answers. */
+async function tickerState() {
+  if (!socketPath) return "no keeper";
+  const r = await connectKeeper({ socketPath, app: appId, timeoutMs: 1000 });
+  if (r.status !== "connected") return "no keeper";
+  try {
+    return (await r.keeper.list()).find((x) => x.id === SESSION)?.state ?? "not started";
+  } finally {
+    r.keeper.close();
+  }
 }
 
 /** Start the ticker unless it runs; with `restart`, stop it first. */
@@ -59,6 +72,9 @@ stayConnected(
   { role: "backend" },
   {
     async onConnect(host) {
+      await host.api.serve({
+        status: async () => ({ pid: process.pid, ticker: await tickerState() }),
+      });
       await host.events.subscribe("attachedTab.action", (payload) => {
         if (payload.session.app === appId && payload.session.session === SESSION && payload.action === "restart") {
           void ensureTicker({ restart: true }).catch((err) => console.error(`hello backend: ${err.message}`));

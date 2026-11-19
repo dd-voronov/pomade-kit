@@ -160,6 +160,9 @@ export interface FrameOptions {
   shortcut?: string;
   /** Open at this route instead of the icon's or shortcut's — a tab Pomade opened for `tabs.openApp`. */
   route?: string;
+  /** The app tab (`fake.appTabs`) the frame shows: it opens as that tab, at its icon and route, and
+   *  follows the tab's route changes (`route.changed`). Unknown ids throw. */
+  tabId?: string;
   /** An overlay frame asked to close (`overlay.close`, or a forwarded Escape): close it here, as Pomade does. */
   onClose?: () => void;
   /** A tab or panel frame opened its overlay (`overlay.open`, after its result): mount it here, as Pomade does. */
@@ -186,13 +189,30 @@ export interface FakeBadge {
   urgent: boolean;
 }
 
+/** One of the app's own tabs in Pomade's tab strip (`tabs.openApp`, `fake.openAppTab`): one per
+ *  strip icon per project, and one icon-less tab per project. */
+export interface FakeAppTab {
+  tabId: string;
+  projectId: string;
+  /** The strip icon the tab is for; absent for the icon-less tab. */
+  icon?: string;
+  /** The route the tab renders now. */
+  route: string;
+}
+
+/** What happened to an app tab: opened (and focused), focused, or navigated to a new route. */
+export interface FakeAppTabChange {
+  change: "open" | "focus" | "route";
+  tab: FakeAppTab;
+}
+
 /** One app frame attached to the host. */
 export interface FrameConnection {
   /** Hand the host a message the frame sent. */
   receive(data: unknown): void;
   /** The frame is gone: drop its watches, stop sending to it. */
   detach(): void;
-  /** Navigate the frame's tab to `route`, as Pomade does for `tabs.openApp`: `route.changed` when it differs (after welcome), and `host.info` answers it. */
+  /** Navigate the frame's tab to `route`, as Pomade does for `tabs.openApp`: `route.changed` when it differs (after welcome), and `host.info` answers it. A frame of an app tab (`tabId`) navigates that tab and every frame showing it. */
   navigate(route: string): void;
   /** Hide or show the frame, as Pomade does when the user switches tabs or panels. */
   setHidden(hidden: boolean): void;
@@ -222,9 +242,25 @@ interface Frame {
   onOverlayResize: ((height: number) => void) | undefined;
   hidden: boolean;
   welcomed: boolean;
+  /** The app tab the frame shows, if any. */
+  tab: AppTabRecord | null;
   watches: Map<string, Watch>;
   gitWatches: Map<string, GitWatchState>;
 }
+
+interface AppTabRecord extends FakeAppTab {
+  frames: Set<Frame>;
+}
+
+/** Calls whose project is optional and, for a socket client, defaults to the Workspace scope (HOST-API §3 "Socket"). */
+const WORKSPACE_DEFAULT_METHODS: readonly string[] = [
+  "tabs.openFile",
+  "tabs.openTerminal",
+  "tabs.openAttached",
+  "tabs.openApp",
+  "agentTabs.launch",
+  "agentTabs.resume",
+];
 
 function isMethod(name: string): name is MethodName {
   return Object.hasOwn(METHOD_CAPABILITY, name);
@@ -269,6 +305,15 @@ export class FakeHost {
   readonly published: FakePublishedEvent[] = [];
   /** Every notice the app posted (`notices.post`), normalized as Pomade keeps it, in order. */
   readonly notices: NoticeParams[] = [];
+  /** Per notice: the project it belongs to — the poster's (an app tab's frame: its tab's project; another frame: the active one then; a socket client: the Workspace). */
+  private readonly noticeProjects: string[] = [];
+  /** Every open, focus and route change of the app's own tabs, in order. */
+  readonly appTabChanges: FakeAppTabChange[] = [];
+  private readonly appTabList: AppTabRecord[] = [];
+  private readonly appTabListeners = new Set<(change: FakeAppTabChange) => void>();
+  private nextAppTab = 1;
+  /** The absolute folder the fake workspace stands for (`FakeHostOptions.workspaceRoot`). */
+  readonly workspaceRoot: string;
   private readonly apps: Record<string, FakeApi>;
   private readonly appFolder: string;
   private nextRequestId = 1;
@@ -319,6 +364,7 @@ export class FakeHost {
         return { ...project };
       },
       activate: (id) => this.setActiveProject(id === WORKSPACE_PROJECT_ID ? null : id),
+      openApp: (projectId, route) => this.openOwnTab(projectId, this.iconForRoute(route), route),
       openedTabs: this.openedTabs,
       listProjects: () => listProjects(this.groupList, this.projects, this.projectGroup),
       projectAgents: this.projectAgents,
@@ -329,10 +375,11 @@ export class FakeHost {
       pickRequests: this.pickRequests,
       writeFailures: this.writeFailures,
     };
+    this.workspaceRoot = (options.workspaceRoot ?? "/fake/workspace").replace(/\/+$/, "");
     this.agentTabModel = new FakeAgentTabs(
       {
         workspace: this.workspace,
-        workspaceRoot: (options.workspaceRoot ?? "/fake/workspace").replace(/\/+$/, ""),
+        workspaceRoot: this.workspaceRoot,
         project: (id) => this.data.project(id),
         activate: (id) => this.data.activate(id),
         publish: (payload) => this.bus.publish("agentTab.changed", structuredClone(payload) as unknown as JsonValue),
@@ -353,10 +400,15 @@ export class FakeHost {
 
   /** Attach a frame opened for `open` (default: a tab from the new-tab menu); `post` delivers host → app messages to it. */
   attach(post: (message: HostToAppMessage) => void, open: FrameOptions = {}): FrameConnection {
-    const surface = open.surface ?? "tab";
+    const tab = open.tabId === undefined ? null : (this.appTabList.find((t) => t.tabId === open.tabId) ?? null);
+    if (open.tabId !== undefined && !tab) throw new Error(`fake host: no app tab ${JSON.stringify(open.tabId)}`);
+    const surface = tab ? "tab" : (open.surface ?? "tab");
     const target =
-      surface === "overlay" ? resolveOverlayTarget(this.shortcuts, open.shortcut) : resolveFrameTarget(this.strip, surface, open.icon);
-    if (open.route !== undefined) target.route = open.route;
+      surface === "overlay"
+        ? resolveOverlayTarget(this.shortcuts, open.shortcut)
+        : resolveFrameTarget(this.strip, surface, tab ? tab.icon : open.icon);
+    if (tab) target.route = tab.route;
+    else if (open.route !== undefined) target.route = open.route;
     const frame: Frame = {
       post,
       target,
@@ -366,17 +418,20 @@ export class FakeHost {
       hidden: open.hidden === true,
       welcomed: false,
       serving: false,
+      tab,
       watches: new Map(),
       gitWatches: new Map(),
       bus: null,
     };
     this.frames.add(frame);
+    tab?.frames.add(frame);
     return {
       receive: (data) => {
         if (this.frames.has(frame)) this.handle(frame, data);
       },
       detach: () => {
         this.frames.delete(frame);
+        frame.tab?.frames.delete(frame);
         this.dropRequests(frame);
         frame.watches.clear();
         frame.gitWatches.clear();
@@ -387,11 +442,8 @@ export class FakeHost {
         frame.hidden = hidden;
       },
       navigate: (route) => {
-        if (route === frame.target.route) return;
-        frame.target.route = route;
-        if (this.frames.has(frame) && frame.welcomed) {
-          frame.post({ channel: CHANNEL, type: "event", name: "route.changed", payload: { route } });
-        }
+        if (frame.tab) this.navigateTab(frame.tab, route);
+        else this.navigateFrame(frame, route);
       },
     };
   }
@@ -593,7 +645,32 @@ export class FakeHost {
     if (!action) return;
     const { kind, ...params } = action;
     const method = kind === "openFile" ? "tabs.openFile" : kind === "openTerminal" ? "tabs.openTerminal" : "tabs.openApp";
-    dispatchTabs(this.data, method, params as Record<string, unknown>);
+    dispatchTabs(this.data, method, { projectId: this.noticeProjects[index], ...params } as Record<string, unknown>);
+  }
+
+  /** The app's own tabs now, in open order (a snapshot). */
+  get appTabs(): FakeAppTab[] {
+    return this.appTabList.map(publicTab);
+  }
+
+  /** Hear every open, focus and route change of the app's own tabs (`appTabChanges`) as it happens —
+   *  a browser harness mounts a frame for an opened tab with `{ tabId }`. Returns the unsubscribe. */
+  onAppTab(listener: (change: FakeAppTabChange) => void): () => void {
+    this.appTabListeners.add(listener);
+    return () => this.appTabListeners.delete(listener);
+  }
+
+  /** The user opens the app's tab in a project (default the active one) — from the new-tab menu
+   *  (no `icon`; at `route`, default `""`) or a strip icon whose action opens a tab — as Pomade
+   *  does: an open one is focused (the icon-less one navigated to `route` when given), and the
+   *  project becomes active. Returns the tab. */
+  openAppTab(open: { projectId?: string; icon?: string; route?: string } = {}): FakeAppTab {
+    if (open.icon !== undefined) {
+      const icon = this.strip.find((s) => s.id === open.icon);
+      if (!icon || icon.action === "panel") throw new Error(`fake host: no strip icon ${JSON.stringify(open.icon)} that opens a tab`);
+    }
+    const projectId = this.data.project(open.projectId).id;
+    return publicTab(this.openOwnTab(projectId, open.icon, open.icon === undefined ? open.route : undefined));
   }
 
   /** Pomade's agent tabs now, in tab order (a snapshot). */
@@ -664,6 +741,8 @@ export class FakeHost {
         this.handshake(frame, msg.hostApi);
         return;
       case "key":
+        // A socket client has no keyboard: Pomade ignores its keys.
+        if (isSocketSurface(frame.target.surface)) return;
         this.keys.push(msg);
         if (frame.target.surface === "overlay" && isPlainEscape(msg)) frame.onClose?.();
         return;
@@ -694,13 +773,14 @@ export class FakeHost {
       return;
     }
     frame.welcomed = true;
-    // Every frame hears `project.changed` (its welcome carries the project), subscribed or not.
+    // Every frame hears `project.changed` (its welcome carries the project), subscribed or not; a
+    // socket client hears only what it subscribes to.
     frame.bus = this.bus.open(
       {
         appId: this.manifest.id,
         deliver: (name, payload) => frame.post({ channel: CHANNEL, type: "event", name, payload } as HostToAppMessage),
       },
-      ["project.changed"],
+      isSocketSurface(frame.target.surface) ? [] : ["project.changed"],
     );
     frame.post({
       channel: CHANNEL,
@@ -733,7 +813,7 @@ export class FakeHost {
   // ── Broker ───────────────────────────────────────────────────────────────
 
   /** Call the app's own API as another app would (`from`, default the platform) — the request
-   *  reaches the frame that serves it (`api.serve`). Rejects with the broker's errors: `app-absent`
+   *  reaches its server (`api.serve`): the backend when it serves, else the frame that called it last. Rejects with the broker's errors: `app-absent`
    *  when no frame serves, `app-not-responding` on timeout, or the frame's own error. */
   callApi(method: string, params: JsonValue = {}, options: CallApiOptions = {}): Promise<JsonValue> {
     return this.route(options.from ?? PLATFORM_CLIENT_ID, method, params, options.timeoutMs ?? APP_CALL_TIMEOUT_MS);
@@ -742,7 +822,9 @@ export class FakeHost {
   private route(from: string, method: string, params: JsonValue, timeoutMs: number): Promise<JsonValue> {
     const id = this.manifest.id;
     if (!(this.manifest.api ?? []).includes(method)) return Promise.reject(asCallError(brokerErrors.unknownMethod(id, method)));
-    const server = [...this.frames].reverse().find((f) => f.serving && f.welcomed);
+    // The backend when it serves, else the frame that called `api.serve` last (HOST-API §4 `apps`).
+    const servers = [...this.frames].filter((f) => f.serving && f.welcomed).reverse();
+    const server = servers.find((f) => f.target.surface === "backend") ?? servers[0];
     if (!server) return Promise.reject(asCallError(brokerErrors.notRunning(id)));
     const requestId = `q${this.nextRequestId++}`;
     return new Promise<JsonValue>((resolve, reject) => {
@@ -809,7 +891,10 @@ export class FakeHost {
     if (capability && !(this.manifest.capabilities as readonly string[]).includes(capability)) {
       throw new CallError("capability-denied", `${method} needs the "${capability}" capability`);
     }
-    const params = paramsObject(call.params);
+    // A socket client is in no project: where a call's project is optional, it is the Workspace scope.
+    const scoped =
+      isSocketSurface(frame.target.surface) && WORKSPACE_DEFAULT_METHODS.includes(method) ? withWorkspaceDefault(call.params) : call.params;
+    const params = paramsObject(scoped);
     switch (method) {
       case "host.info":
         return {
@@ -970,6 +1055,7 @@ export class FakeHost {
           throw new CallError("capability-denied", `a notice that opens a tab needs the "${needs}" capability`);
         }
         this.notices.push(structuredClone(n.value));
+        this.noticeProjects.push(isSocketSurface(frame.target.surface) ? WORKSPACE_PROJECT_ID : (frame.tab?.projectId ?? this.active.id));
         return {};
       }
       case "events.hasSubscribers": {
@@ -987,7 +1073,7 @@ export class FakeHost {
       case "agentTabs.focus":
       case "agentTabs.launch":
       case "agentTabs.resume":
-        return this.agentTabModel.dispatch(method, call.params);
+        return this.agentTabModel.dispatch(method, scoped);
       case "api.serve": {
         const methods = this.manifest.api ?? [];
         if (methods.length === 0) throw new CallError("capability-denied", 'The manifest declares no "api"');
@@ -995,6 +1081,66 @@ export class FakeHost {
         return { methods: [...methods] };
       }
     }
+  }
+
+  // ── App tabs ─────────────────────────────────────────────────────────────
+
+  /** The strip icon whose tab renders `route` (action `tab` or `both`), if any. */
+  private iconForRoute(route: string): string | undefined {
+    return this.strip.find((s) => s.action !== "panel" && s.route === route)?.id;
+  }
+
+  /** Open or focus the app's tab for `icon` in `projectId`, as Pomade's tab strip does: an open
+   *  icon-less tab is navigated to `route`; the project becomes active. */
+  private openOwnTab(projectId: string, icon: string | undefined, route: string | undefined): AppTabRecord {
+    let tab = this.appTabList.find((t) => t.projectId === projectId && t.icon === icon);
+    const changes: FakeAppTabChange["change"][] = [];
+    if (tab) {
+      if (icon === undefined && route !== undefined && tab.route !== route) {
+        tab.route = route;
+        changes.push("route");
+      }
+      changes.push("focus");
+    } else {
+      const iconRoute = icon === undefined ? undefined : this.strip.find((s) => s.id === icon)?.route;
+      tab = {
+        tabId: `app-tab-${this.nextAppTab++}`,
+        projectId,
+        ...(icon !== undefined ? { icon } : {}),
+        route: iconRoute ?? route ?? "",
+        frames: new Set(),
+      };
+      this.appTabList.push(tab);
+      changes.push("open");
+    }
+    this.setActiveProject(projectId === WORKSPACE_PROJECT_ID ? null : projectId);
+    for (const change of changes) {
+      if (change === "route") for (const frame of tab.frames) this.navigateFrame(frame, tab.route);
+      this.tabChanged(change, tab);
+    }
+    return tab;
+  }
+
+  /** Navigate an app tab and every frame showing it. */
+  private navigateTab(tab: AppTabRecord, route: string): void {
+    if (route === tab.route) return;
+    tab.route = route;
+    for (const frame of tab.frames) this.navigateFrame(frame, route);
+    this.tabChanged("route", tab);
+  }
+
+  private navigateFrame(frame: Frame, route: string): void {
+    if (route === frame.target.route) return;
+    frame.target.route = route;
+    if (this.frames.has(frame) && frame.welcomed) {
+      frame.post({ channel: CHANNEL, type: "event", name: "route.changed", payload: { route } });
+    }
+  }
+
+  private tabChanged(change: FakeAppTabChange["change"], tab: AppTabRecord): void {
+    const record = { change, tab: publicTab(tab) };
+    this.appTabChanges.push(record);
+    for (const listener of [...this.appTabListeners]) listener({ change, tab: publicTab(tab) });
   }
 
   /** `projectId` of a git call, checked to name a project; absent or the Workspace scope = the workspace. */
@@ -1057,6 +1203,17 @@ export class FakeHost {
 /** Create a fake host. */
 export function createFakeHost(options?: FakeHostOptions): FakeHost {
   return new FakeHost(options);
+}
+
+/** `params` with `projectId` defaulted to the Workspace scope; malformed params stay as given (refused later). */
+function withWorkspaceDefault(params: unknown): unknown {
+  if (params === undefined) return { projectId: WORKSPACE_PROJECT_ID };
+  if (typeof params !== "object" || params === null || Array.isArray(params)) return params;
+  return (params as Record<string, unknown>).projectId === undefined ? { ...params, projectId: WORKSPACE_PROJECT_ID } : params;
+}
+
+function publicTab(tab: AppTabRecord): FakeAppTab {
+  return { tabId: tab.tabId, projectId: tab.projectId, ...(tab.icon !== undefined ? { icon: tab.icon } : {}), route: tab.route };
 }
 
 function asCallError(error: ErrorPayload): CallError {

@@ -52,6 +52,8 @@ export interface DataContext {
   project(id: string | undefined): ProjectRef;
   /** Make `id` the active project (emits `project.changed` when it changes). */
   activate(id: string): void;
+  /** Open or focus the app's own tab at `route` in project `id` and make that project active (`tabs.openApp`). */
+  openApp(id: string, route: string): void;
   readonly openedTabs: FakeOpenedTab[];
   listProjects(): ProjectListResult;
   /** Per project: its visible agents and this app's settings. */
@@ -323,8 +325,8 @@ export function dispatchTabs(ctx: DataContext, method: TabDataMethod, p: Obj): u
     case "tabs.openApp": {
       const route = optionalString(p, "route") ?? "";
       const project = ctx.project(optionalString(p, "projectId"));
-      ctx.activate(project.id);
       ctx.openedTabs.push({ kind: "app", projectId: project.id, route });
+      ctx.openApp(project.id, route);
       return {};
     }
   }

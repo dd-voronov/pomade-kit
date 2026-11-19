@@ -5,6 +5,8 @@ export {
   DEFAULT_IGNORE,
   FakeHost,
   WORKSPACE_SCOPE,
+  type FakeAppTab,
+  type FakeAppTabChange,
   type FakeBadge,
   type FakeOpenedOverlay,
   type FakePublishedEvent,

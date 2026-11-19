@@ -553,6 +553,114 @@ describe("tabs.openApp and navigate", () => {
   });
 });
 
+describe("the app's own tabs (tabs.openApp)", () => {
+  it("opens one icon-less tab per project, focuses it again, and navigates it to a new route", async () => {
+    const host = fake({ activeProject: "pomade", manifest: STRIP_MANIFEST });
+    const changes: string[] = [];
+    host.onAppTab(({ change, tab }) => changes.push(`${change} ${tab.tabId} ${tab.route}`));
+    const app = await client(host);
+    await app.tabs.openApp({ route: "today" });
+    await app.tabs.openApp({ route: "today" });
+    await app.tabs.openApp({ route: "week" });
+    await app.tabs.openApp({ route: "today", projectId: "kit" });
+    expect(host.appTabs).toEqual([
+      { tabId: "app-tab-1", projectId: "pomade", route: "week" },
+      { tabId: "app-tab-2", projectId: "kit", route: "today" },
+    ]);
+    expect(changes).toEqual(["open app-tab-1 today", "focus app-tab-1 today", "route app-tab-1 week", "focus app-tab-1 week", "open app-tab-2 today"]);
+    expect(host.appTabChanges.map((c) => c.change)).toEqual(["open", "focus", "route", "focus", "open"]);
+    expect(host.activeProject.id).toBe("kit");
+  });
+
+  it("a route a strip icon's tab renders is that icon's tab, never navigated; a panel-only icon's route is not", async () => {
+    const host = fake({ activeProject: "pomade", manifest: STRIP_MANIFEST });
+    const app = await client(host);
+    await app.tabs.openApp({ route: "board" });
+    await app.tabs.openApp({ route: "log" });
+    await app.tabs.openApp({ route: "board" });
+    await app.tabs.openApp({ route: "needs-you" });
+    expect(host.appTabs).toEqual([
+      { tabId: "app-tab-1", projectId: "pomade", icon: "board", route: "board" },
+      { tabId: "app-tab-2", projectId: "pomade", icon: "log", route: "log" },
+      { tabId: "app-tab-3", projectId: "pomade", route: "needs-you" },
+    ]);
+    expect(host.appTabChanges.map((c) => `${c.change} ${c.tab.tabId}`)).toEqual(["open app-tab-1", "open app-tab-2", "focus app-tab-1", "open app-tab-3"]);
+  });
+
+  it("a frame of a tab opens at its icon and route and follows its route changes; detached, it stops hearing them", () => {
+    const host = fake({ activeProject: "pomade", manifest: STRIP_MANIFEST });
+    const opener = raw(host);
+    opener.hello();
+    opener.call("tabs.openApp", { route: "today" });
+    const [tab] = host.appTabs;
+    if (!tab) throw new Error("no tab");
+    const got: HostToAppMessage[] = [];
+    const frame = host.attach((m) => got.push(m), { tabId: tab.tabId, surface: "panel", route: "ignored" });
+    frame.receive({ channel: "pomade", type: "hello", hostApi: 0 });
+    expect(got[0]).toMatchObject({ type: "welcome", surface: "tab", route: "today" });
+    expect(got[0]).not.toHaveProperty("icon");
+    opener.call("tabs.openApp", { route: "week" });
+    expect(got.filter((m) => m.type === "event")).toEqual([{ channel: "pomade", type: "event", name: "route.changed", payload: { route: "week" } }]);
+    // The frame's own navigate is the tab's.
+    frame.navigate("month");
+    expect(host.appTabs[0]?.route).toBe("month");
+    expect(host.appTabChanges.at(-1)).toEqual({ change: "route", tab: { tabId: tab.tabId, projectId: "pomade", route: "month" } });
+    frame.detach();
+    opener.call("tabs.openApp", { route: "year" });
+    expect(got.filter((m) => m.type === "event")).toHaveLength(2);
+    expect(() => host.attach(() => undefined, { tabId: "nope" })).toThrow(/no app tab/);
+  });
+
+  it("an icon tab's frame welcomes with the icon and its tab route", () => {
+    const host = fake({ manifest: STRIP_MANIFEST });
+    const tab = host.openAppTab({ icon: "board", projectId: "kit" });
+    const got: HostToAppMessage[] = [];
+    host.attach((m) => got.push(m), { tabId: tab.tabId }).receive({ channel: "pomade", type: "hello", hostApi: 0 });
+    expect(got[0]).toMatchObject({ type: "welcome", surface: "tab", icon: "board", route: "board" });
+  });
+
+  it("openAppTab: the user opens the app's tab from the new-tab menu or a strip icon, as tabs.openApp does", () => {
+    const host = fake({ activeProject: "pomade", manifest: STRIP_MANIFEST });
+    expect(host.openAppTab()).toEqual({ tabId: "app-tab-1", projectId: "pomade", route: "" });
+    expect(host.openAppTab({ route: "today" })).toEqual({ tabId: "app-tab-1", projectId: "pomade", route: "today" });
+    expect(host.openAppTab({ icon: "log", projectId: "kit" })).toEqual({ tabId: "app-tab-2", projectId: "kit", icon: "log", route: "log" });
+    expect(host.activeProject.id).toBe("kit");
+    expect(host.appTabChanges.map((c) => c.change)).toEqual(["open", "route", "focus", "open"]);
+    expect(() => host.openAppTab({ icon: "planner" })).toThrow(/no strip icon "planner" that opens a tab/);
+    expect(() => host.openAppTab({ projectId: "nope" })).toThrow(/No project/);
+    // The user's opening is not the app's call.
+    expect(host.openedTabs).toEqual([]);
+  });
+
+  it("a notice's openApp action opens the tab in the project the notice belongs to", () => {
+    const host = fake({ activeProject: "pomade", manifest: { ...STRIP_MANIFEST, capabilities: [] } });
+    const r = raw(host);
+    r.hello();
+    r.call("notices.post", { title: "Today", action: { kind: "openApp", route: "today" } });
+    host.setActiveProject("kit");
+    host.clickNotice();
+    expect(host.appTabs).toEqual([{ tabId: "app-tab-1", projectId: "pomade", route: "today" }]);
+    expect(host.activeProject.id).toBe("pomade");
+  });
+});
+
+describe("socket surfaces in memory (backend, command)", () => {
+  it("hear no project.changed unless subscribed, and their keys are ignored", () => {
+    const host = fake({ activeProject: "pomade", manifest: { id: "a1", name: "A", version: "1.0.0", hostApi: 0, capabilities: [], backend: { entry: "b.mjs", mode: "with-pomade" }, events: { subscribe: ["project.changed"] } } });
+    const got: HostToAppMessage[] = [];
+    const backend = host.attach((m) => got.push(m), { surface: "backend" });
+    backend.receive({ channel: "pomade", type: "hello", hostApi: 0 });
+    expect(got[0]).toMatchObject({ type: "welcome", surface: "backend", route: "" });
+    host.setActiveProject("kit");
+    expect(got).toHaveLength(1);
+    backend.receive({ channel: "pomade", type: "key", key: "w", code: "KeyW", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false });
+    expect(host.keys).toEqual([]);
+    backend.receive({ channel: "pomade", type: "call", id: "1", method: "events.subscribe", params: { name: "project.changed" } });
+    host.setActiveProject("pomade");
+    expect(got.at(-1)).toMatchObject({ type: "event", name: "project.changed", payload: { id: "pomade" } });
+  });
+});
+
 describe("overlay frames", () => {
   const OVERLAY_MANIFEST = {
     id: "planner",

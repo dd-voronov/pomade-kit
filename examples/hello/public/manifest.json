@@ -49,6 +49,9 @@
       "attachedTab.action"
     ]
   },
+  "api": [
+    "status"
+  ],
   "backend": {
     "entry": "backend/main.mjs",
     "mode": "always-on"

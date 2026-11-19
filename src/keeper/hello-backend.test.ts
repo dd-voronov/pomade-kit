@@ -1,8 +1,9 @@
-// The hello example's always-on backend (examples/hello/public/backend): it starts the app's keeper
-// with a ticking demo service, and the service keeps running after the backend is gone — as it
-// does when Pomade quits.
+// The hello example's always-on backend (examples/hello/public/backend), against the fake host's
+// socket: it starts the app's keeper with a ticking demo service, serves the app's `status` with
+// the ticker's state, and the service keeps running after the backend is gone — as it does when
+// Pomade quits.
 
-import { writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 
@@ -10,6 +11,8 @@ import { describe, expect, it } from "vitest";
 
 import { FIXTURES, TEST_ENV, connect, isAliveForTest, killKeepers, requireFreshDist, sleep, tmpDir, track, waitFor } from "./test-helpers.js";
 import { connectKeeper } from "../node/keeper.js";
+import { createFakeHost } from "../fake-host/fake-host.js";
+import { serveFakeHost } from "../fake-host/node/socket.js";
 
 const BACKEND = resolve(FIXTURES, "../../../examples/hello/public/backend/main.mjs");
 
@@ -19,12 +22,12 @@ describe("hello's always-on backend", { timeout: 30_000 }, () => {
     const dir = tmpDir();
     const socketPath = join(dir, "run/keepers/hello.sock");
     const stateDir = join(dir, "app-state/hello/keeper");
-    const keyFile = join(dir, "key");
-    writeFileSync(keyFile, "secret\n");
-    const backend = spawn(process.execPath, [BACKEND], {
-      stdio: "ignore",
-      env: { ...TEST_ENV, POMADE_APP_ID: "hello", POMADE_APP_KEY_FILE: keyFile, POMADE_KEEPER_SOCKET: socketPath, POMADE_CLIENT: "backend", POMADE_SOCKET: join(dir, "none.sock") },
-    });
+    const manifest = JSON.parse(readFileSync(resolve(FIXTURES, "../../../examples/hello/public/manifest.json"), "utf8")) as unknown;
+    const fake = createFakeHost({ manifest });
+    const pomade = await serveFakeHost(fake, { userData: dir });
+    const env = pomade.env("backend");
+    expect(env.POMADE_KEEPER_SOCKET).toBe(socketPath);
+    const backend = spawn(process.execPath, [BACKEND], { stdio: "ignore", env: { ...TEST_ENV, ...env } });
     try {
       const keeperPid = await waitFor(async () => {
         const r = await connectKeeper({ socketPath, app: "test", timeoutMs: 300 });
@@ -37,6 +40,8 @@ describe("hello's always-on backend", { timeout: 30_000 }, () => {
       const ticker = await waitFor(async () => (await viewer.k.list()).find((s) => s.id === "ticker"), "the ticker");
       track(stateDir, "session", ticker.pid);
       expect(ticker).toMatchObject({ title: "Ticker", state: "running", actions: [{ id: "restart", title: "Restart" }] });
+      const status = await waitFor(() => fake.callApi("status").catch(() => null), "the backend to serve its API");
+      expect(status).toEqual({ pid: backend.pid, ticker: "running" });
       await viewer.k.attach("ticker");
       await waitFor(() => viewer.output("ticker").includes("tick"), "a tick");
       viewer.k.input("ticker", "hi\r");
@@ -50,6 +55,7 @@ describe("hello's always-on backend", { timeout: 30_000 }, () => {
     } finally {
       backend.kill("SIGKILL");
       killKeepers(stateDir);
+      await pomade.close();
     }
   });
 });

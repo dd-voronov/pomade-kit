@@ -25,6 +25,10 @@
       "types": "./dist/fake-host/index.d.ts",
       "default": "./dist/fake-host/index.js"
     },
+    "./fake-host/node": {
+      "types": "./dist/fake-host/node/index.d.ts",
+      "default": "./dist/fake-host/node/index.js"
+    },
     "./frontmatter": {
       "types": "./dist/frontmatter/index.d.ts",
       "default": "./dist/frontmatter/index.js"

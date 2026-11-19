@@ -20,6 +20,7 @@ The package installs from a git tag: npm clones it, installs its dev dependencie
 | `pomade-kit/protocol` | Host API v0 in code: messages, `ProjectRef`, `FileEntry`, `FileChange`, error codes, `Manifest` + `parseManifest`, strip icons (`StripIcon`, `resolveFrameTarget`), shortcuts (`AppShortcut`, `parseChord`, `formatChord`, `chordMatches`), app state rules, the event bus (`PLATFORM_EVENTS`, event name and payload rules, `parseManifestEvents`, the `EventBus` both hosts run), `HOST_API_VERSION`, message guards, workspace path rules, `readFrontmatter` | browser and Node |
 | `pomade-kit/sdk` | `connect()` and the typed client | browser (any `Transport` elsewhere) |
 | `pomade-kit/fake-host` | the Host API in memory, for standalone runs and tests | browser and Node |
+| `pomade-kit/fake-host/node` | the fake host's socket side: an app's backend and commands connect to it as to Pomade (`serveFakeHost`) | Node |
 | `pomade-kit/frontmatter` | field-only frontmatter writes: `setField`, `removeField`, body writes `setBody` / `getBody`, and the block core Pomade's editor uses | browser and Node |
 | `pomade-kit/schedule` | the schedule format: `parseSchedule` with readable errors, the occurrence engine, `describeSchedule`, `formatSchedule` | browser and Node |
 | `pomade-kit/dates` | date phrases: `parseDatePhrase` (`fri`, `tomorrow`, `+3d`, `nov 20`, `tonight 23:00`, `in 2 hours`) and `currentDay` with a day boundary | browser and Node |
@@ -470,8 +471,25 @@ code, and the events. Test controls emit the events Pomade would:
 | `fake.answerPick(path \| null)` | — (queues the user's next picker choice, a folder for `pickFolder` and a file for `pickFile`; an answer outside the root, of the wrong kind or, for `pickFile`, of another extension is refused and the next answer used; none left = cancel). `fake.pickRequests` logs `{ kind, root, initial }` per picker, plus `extensions` for `pickFile` (its `under` is both `root` and `initial`) |
 | `fake.setGitRepos(repos)` | `git.changed` to each git watch whose scope's repos changed |
 | `fake.openedTabs` | — (every `tabs.openFile` / `openTerminal` / `openApp`, in order: `{ kind: "file", projectId, path }` · `{ kind: "terminal", projectId, cwd, command?, title? }` · `{ kind: "app", projectId, route }`; the call switches the active project like Pomade) |
+| `fake.openAppTab({ projectId?, icon?, route? })` | `project.changed` when the project changes (the user opens the app's tab from the new-tab menu, or a strip icon whose action opens a tab; an open one is focused — the icon-less one navigated to `route`; returns the tab) |
+| `fake.appTabs` · `fake.appTabChanges` · `fake.onAppTab(listener)` | — (the app's own tabs as Pomade's tab strip keeps them, below: the open tabs `{ tabId, projectId, icon?, route }`, every `{ change: "open" \| "focus" \| "route", tab }` in order, and a listener for each as it happens; returns its unsubscribe) |
 | `fake.overlays` | — (every `overlay.open`, in order: `{ route, height?, anchor }` — `height` as given, absent when none; `anchor` `"center"` when none) |
 | `fake.overlayResizes` | — (every height an overlay frame asked for with `overlay.resize`, in order, as given) |
+
+**The app's own tabs.** `tabs.openApp` (and a notice's `openApp` action, and `fake.openAppTab`)
+opens or focuses the app's tab as Pomade does: a route that a strip icon's tab renders (an icon with
+action `tab` or `both` whose `route` equals it) is that icon's tab — one per icon per project, never
+navigated; any other route is the app's one icon-less tab per project, opened at that route or
+navigated to it (`route` change, then `focus`). The project becomes active. A frame attached with
+`{ tabId }` (`attach`, `createTransport`, `mountApp`) shows that tab: it opens at the tab's icon and
+route and gets `route.changed` when the tab moves; its own `navigate(route)` moves the tab. A
+browser harness mounts a frame for every `open` it hears from `fake.onAppTab`:
+
+```ts
+fake.onAppTab(({ change, tab }) => {
+  if (change === "open") mountApp(fake, { src: appUrl, tabId: tab.tabId });
+});
+```
 
 A frame opened with `attach(post, { route })` / `mountApp(fake, { src, route })` starts at that route,
 and `connection.navigate(route)` / `mounted.navigate(route)` sends `route.changed` as Pomade
@@ -491,8 +509,58 @@ specs, and hosts the app's page in an iframe with `mountApp(fake, { src: appUrl 
 runs unchanged, as inside Pomade. Working setup: `e2e/harness/` and `e2e/hello.spec.ts`, run by
 `playwright.config.ts` (the built app served on one origin, the harness on another).
 
+**An app with a backend** runs it against the fake host's socket, below; its frames then need the
+same fake host, in Node: a harness page relays their postMessage traffic to it (`fake.attach` per
+frame). Working setup: `e2e/backend.spec.ts` with `e2e/harness/remote.ts` (Playwright's
+`exposeBinding` carries frame → host, `page.evaluate` host → frame).
+
 **`dev:fake`:** serve such a harness page with a fixture workspace from the app's own Vite dev
 server, with `?app=` pointing at the app's page — a standalone app with live, scriptable data.
+
+## The fake host's socket side — a backend against the fake host
+
+An app's backend and commands connect to the fake host as to Pomade: the same socket, the same
+handshake and messages (HOST-API §3 "Socket"), so `connectSocket`, `stayConnected` and
+`postNotice` run unchanged.
+
+```ts
+import { createFakeHost } from "pomade-kit/fake-host";
+import { serveFakeHost } from "pomade-kit/fake-host/node";
+
+const fake = createFakeHost({ manifest, projects, activeProject: "alpha" });
+const pomade = await serveFakeHost(fake, { userData: "/tmp/my-app-test" });   // socket path ≤ 103 bytes
+const backend = spawn(process.execPath, ["backend/main.mjs"], { env: { ...process.env, ...pomade.env() } });
+
+await waitFor(() => pomade.clients().some((c) => c.role === "backend"));
+await fake.callApi("sessions.last", { cwd });        // the broker → the backend's api.serve → back
+fake.appTabs;                                         // what its tabs.openApp did
+backend.kill();
+await pomade.close();                                 // Pomade quits: connections end, the socket goes
+```
+
+- **Where:** the socket is `<userData>/run/pomade.sock` (0600 in a 0700 folder); the app's key is
+  issued at `<userData>/app-keys/<appId>` (32 random bytes, hex, 0600 in a 0700 folder; an existing
+  key is kept) — Pomade's layout. `pomade.key`, `pomade.keyFile`, `pomade.socketPath`.
+- **`pomade.env(role = "backend")`** is the environment Pomade gives the app's backend or a
+  command: `POMADE_APP_ID`, `POMADE_APP_KEY_FILE`, `POMADE_CLIENT`, `POMADE_SOCKET`,
+  `POMADE_WORKSPACE` (the fake host's `workspaceRoot`) and, for a backend,
+  `POMADE_KEEPER_SOCKET` (`<userData>/run/keepers/<appId>.sock`). A test that starts a backend
+  with a keeper kills the keeper too.
+- **Identity:** `hello` must carry the manifest's app id, the key in the key file now (deleting the
+  file revokes it) and a role the app has — `backend` needs a manifest `backend`, `command` needs
+  `commands`; anything else is `reject` `unauthorized` (Pomade's platform client `pomade` too: the
+  fake hosts one app). The version is checked first. The connection stays open after a `reject`;
+  a new `hello` starts a new session.
+- **A session** is the fake host's, with surface `backend` / `command`: `welcome` with `route: ""`,
+  no icon and the active project; no event it did not subscribe to (`project.changed` too); the
+  frame-only methods `capability-denied`; the Workspace scope wherever a call's project is
+  optional (`tabs.*`, `agentTabs.launch` / `resume`, a notice's action); the manifest's
+  capabilities. Its `api.serve` takes precedence over a frame's; when it ends, its pending requests
+  answer `app-not-responding`.
+- **Lifetime:** a call before `welcome` is `not-ready`; a connection not welcomed within 5 s
+  (`helloTimeoutMs`) or sending a line over 16 MiB is closed. `pomade.clients()` lists the welcomed
+  connections (`{ role }`). `close()` ends every connection and removes the socket file; serving
+  the same `userData` again is Pomade back — `stayConnected` reconnects.
 
 ## Validate a manifest
 
@@ -929,7 +997,8 @@ try {
   the `HostError` code the handler threw. `params` default to `{}`.
 - A handler gets `from`: the caller's app id, `"pomade"` for Pomade itself (rule 7 reads).
 - Fake host: `createFakeHost({ apps: { "pomade-agents": { "sessions.last": () => ({…}) }, "slow": "not-responding" } })`
-  scripts other apps; `fake.callApi(method, params, { from })` calls the app's own served API.
+  scripts other apps; `fake.callApi(method, params, { from })` calls the app's own served API — its
+  backend on the fake host's socket when it serves, else the frame that served last.
 
 ## Backends and commands — the socket
 
@@ -967,6 +1036,7 @@ const up = await launchPomade({ readyTimeoutMs: 60000 });
 if (up.status === "connected") up.host;      // up.launched: this call started it
 ```
 
+- Test a backend against the fake host's socket ("The fake host's socket side" above).
 - `connectSocket()` resolves `connected`, `not-running` (nothing listens, or no answer in 5 s) or
   `rejected`. It throws only when the identity is not configured — no app id, no key.
 - Options override the environment: `socketPath`, `appId`, `key` / `keyFile`, `role`
@@ -1110,7 +1180,9 @@ its roadmap tab in the project the notice is about. "Quick note…" opens its Cm
 from the panel or tab (`overlay.open`); "New scratch file" / "Trash scratch files" make files in the
 project's `scratch/` folder and move them all to the Trash in one `files.delete`. Its always-on backend (`public/backend/`) keeps the app's keeper running with a
 demo ticker in it; "Open the ticker" opens that session in an attached tab, and the tab's Restart
-action reaches the backend as `attachedTab.action`. `npm run hello:build` writes the installable folder
+action reaches the backend as `attachedTab.action`. "Ask the backend" calls the app's own API
+(`status`: the backend's pid and the ticker's state), which the backend serves through Pomade's
+broker. `npm run hello:build` writes the installable folder
 `examples/hello/dist/` (`index.html`, `manifest.json`, assets).
 
 ## Develop this repo
