@@ -656,6 +656,16 @@ schedule:
 ```
 ```yaml
 schedule:
+  weekly: { every: 2, days: [sun], at: 3:00 }    # every other Sunday: every N weeks
+  start: 2026-11-22                              # counted from the week of start (required)
+```
+```yaml
+repeat:
+  daily: { every: 10 }                           # every 10 days: every N days
+  start: 2027-01-03                              # counted from start (required)
+```
+```yaml
+schedule:
   monthly: { days: [1, 15, last, first mon], at: 9:00 }   # numbers 1–31, last, "<nth> <weekday>"
 ```
 ```yaml
@@ -682,13 +692,13 @@ repeat:
 |---|---|
 | `once` | `YYYY-MM-DD H:MM`, or `YYYY-MM-DD` in a day schedule |
 | `every` | `minutes: 1–1440` or `hours: 1–24`; `from`, `to` (a window inside one day, both ends inclusive) |
-| `daily` | `at`: a time or a list |
-| `weekly` | `days`: `mon` … `sun` (full names too); `at` |
+| `daily` | `every`: 1–1000 days (default 1); `at`: a time or a list |
+| `weekly` | `every`: 1–1000 weeks (default 1); `days`: `mon` … `sun` (full names too); `at` |
 | `monthly` | `days`: `1`–`31`, `last`, `first`/`second`/`third`/`fourth`/`fifth`/`last` + weekday; `months`: `jan` … `dec` or `1`–`12`; `at` |
 | `after-completion` | exactly one of `days`, `weeks`, `months` |
 | `always` | `true` |
 | `only` | `weekdays` · `weekends` — with `every` and `daily` |
-| `start`, `end` | dates, inclusive — not with `once`, `always` |
+| `start`, `end` | dates, inclusive — not with `once`, `always`; `start` is required with `every` above 1 |
 | `lead-days` | whole days ≥ 0 — not with `always` |
 
 Full day names, `1st`…`5th` and capitalised names are accepted; `formatSchedule` writes the
@@ -706,6 +716,12 @@ canonical form above.
 - **A time repeated by fall-back** happens once, on its first pass: a 01:30 run on New York's
   02:00 → 01:00 day runs at 01:30 EDT and not again at 01:30 EST. An interval leaves the repeated
   hour empty.
+- **`every` in `daily` / `weekly`** counts calendar days or weeks from `start`, which is the first
+  occurrence's day or week: `daily: { every: 10 }` from Jan 3 = Jan 3, 13, 23, Feb 2 …; `weekly:
+  { every: 2, days: [mon, fri] }` from Wed Nov 25 = Fri Nov 27, then Mon Dec 7, Fri Dec 11 … — weeks
+  run Monday to Sunday, the week of `start` is the first, and its days before `start` do not count.
+  `only` (with `daily`) filters the cycle's days without shifting it. DST never moves the cycle:
+  it counts dates.
 - **`after-completion`** has no fixed dates: the next date is the completion date plus the period
   (months keep the day, clamped like above), never before `start`.
 - **A day schedule** (no `at`) in the time functions happens at local 0:00.
@@ -782,15 +798,20 @@ currentDay(now, { hour: 3, minute: 0 });             // the Planner day: at 01:3
 | `tonight 23:00` · `tonight 1:00` | 2026-11-09 23:00 · 2026-11-10 1:00 (before 12:00 = the next morning) |
 | `tomorrow 9:00`, `fri at 9pm`, `nov 20 9:30` | that day at that time |
 | `23:00`, `at 7am` (a time alone) | its next occurrence after `now` |
+| `2026-11-20T09:30` (`<input type="datetime-local">`) | that local date and time, even if it has passed |
 
 - **Day boundary.** Day phrases count from the reference day: the calendar date, or with
   `dayBoundary` the Planner's day — at 01:30 with a 03:00 boundary, `today` is still yesterday's
-  date and `tomorrow` is today's. Elapsed-time phrases (`+2h`) and a time alone ignore it.
+  date and `tomorrow` is today's. Elapsed-time phrases (`+2h`), a time alone and
+  `YYYY-MM-DDTHH:MM` ignore it. `currentDay` never moves backwards: on a fall-back night the day
+  starts on the first pass of the boundary and stays while the clock repeats the hour before it (a
+  02:30 boundary in Madrid: the day starts at 02:30 CEST and stays through 02:00–02:59 CET); a
+  boundary skipped by spring-forward is passed when the clock jumps over it.
 - **Times** are `H:MM` 24-hour or `9pm` / `9:30am`; they follow the schedule module's DST rules (a
   skipped time moves forward by the gap, a repeated one is its first pass). `date` and `time` in
   the result are where `at` actually falls.
 - **Invalid** means the text reads as a date but names none: `nov 31`, `feb 29 2027`,
-  `2026-02-30`, `tomorrow 25:00`, `13pm`, `+99999d`.
+  `2026-02-30`, `tomorrow 25:00`, `13pm`, `+99999d`, `2026-11-20T24:00`.
 - Case and extra spaces are ignored. Anything else — `buy milk`, `next fri`, `fri 20` — is
   `not-a-date`.
 

@@ -48,24 +48,58 @@ describe("parseSchedule — every shape from YAML", () => {
   it("daily at several times, sorted, duplicates dropped", () => {
     expect(parsed("schedule:\n  daily: { at: [20:00, 13:00, '13:00'] }").rule).toEqual({
       kind: "daily",
+      every: 1,
       at: [{ hour: 13, minute: 0 }, { hour: 20, minute: 0 }],
     });
   });
 
   it("daily at one time written as a scalar, block style", () => {
-    expect(parsed("schedule:\n  daily:\n    at: 7:00").rule).toEqual({ kind: "daily", at: [{ hour: 7, minute: 0 }] });
+    expect(parsed("schedule:\n  daily:\n    at: 7:00").rule).toEqual({ kind: "daily", every: 1, at: [{ hour: 7, minute: 0 }] });
   });
 
   it("daily with no times (day schedule)", () => {
-    expect(parsed("schedule:\n  daily: {}", "day").rule).toEqual({ kind: "daily", at: [] });
+    expect(parsed("schedule:\n  daily: {}", "day").rule).toEqual({ kind: "daily", every: 1, at: [] });
   });
 
   it("weekly on chosen days, full and short names, Monday-first order", () => {
     expect(parsed("schedule:\n  weekly: { days: [Friday, mon, wed, mon], at: 7:00 }").rule).toEqual({
       kind: "weekly",
+      every: 1,
       days: ["mon", "wed", "fri"],
       at: [{ hour: 7, minute: 0 }],
     });
+  });
+
+  it("every N days from a start date", () => {
+    expect(parsed("schedule:\n  daily: { every: 10 }\n  start: 2027-01-03", "day")).toEqual({
+      ...base,
+      start: "2027-01-03",
+      rule: { kind: "daily", every: 10, at: [] },
+    });
+    expect(parsed("schedule:\n  daily: { every: 3, at: [9:00, 7:00] }\n  start: 2027-01-03", "time").rule).toEqual({
+      kind: "daily",
+      every: 3,
+      at: [{ hour: 7, minute: 0 }, { hour: 9, minute: 0 }],
+    });
+  });
+
+  it("every N weeks on chosen days from a start date", () => {
+    expect(parsed("schedule:\n  weekly: { every: 2, days: [mon] }\n  start: 2026-11-23", "day")).toEqual({
+      ...base,
+      start: "2026-11-23",
+      rule: { kind: "weekly", every: 2, days: ["mon"], at: [] },
+    });
+    expect(parsed("schedule:\n  weekly:\n    every: 3\n    days: [thu, Monday]\n    at: 7:00\n  start: 2026-11-23", "time").rule).toEqual({
+      kind: "weekly",
+      every: 3,
+      days: ["mon", "thu"],
+      at: [{ hour: 7, minute: 0 }],
+    });
+  });
+
+  it("every: 1 is the plain shape and needs no start", () => {
+    expect(parsed("schedule:\n  daily: { every: 1, at: 7:00 }")).toEqual(parsed("schedule:\n  daily: { at: 7:00 }"));
+    expect(parsed("schedule:\n  weekly: { every: 1, days: [mon] }")).toEqual(parsed("schedule:\n  weekly: { days: [mon] }"));
   });
 
   it("monthly on numbers, the last day and nth weekdays, with a months filter", () => {
@@ -127,6 +161,15 @@ describe("parseSchedule — readable errors", () => {
     [{ daily: { at: ["7:00", "7.30"] } }, "daily.at[1]", /"7.30" is not a time/],
     [{ daily: { at: 700 } }, "daily.at", /700 is not a time/],
     [{ weekly: { at: "7:00" } }, "weekly.days", /required — a weekday/],
+    [{ daily: { every: 10 } }, "start", /required with daily.every — the date the days count from, like start: 2027-01-04/],
+    [{ weekly: { every: 2, days: ["mon"] } }, "start", /required with weekly.every — the date the weeks count from/],
+    [{ daily: { every: 0 }, start: "2027-01-03" }, "daily.every", /whole number from 1 to 1000/],
+    [{ daily: { every: 1001 }, start: "2027-01-03" }, "daily.every", /from 1 to 1000/],
+    [{ daily: { every: 2.5 }, start: "2027-01-03" }, "daily.every", /whole number/],
+    [{ weekly: { every: "2", days: ["mon"] }, start: "2027-01-03" }, "weekly.every", /"2" is not allowed — use a whole number/],
+    [{ daily: { days: 10 } }, "daily.days", /unknown key — daily takes every, at/],
+    [{ weekly: { days: ["mon"], weeks: 2 } }, "weekly.weeks", /unknown key — weekly takes every, days, at/],
+    [{ weekly: { every: 2, days: ["mon"] }, start: "2027-01-03", only: "weekdays" }, "only", /weekly picks its days itself/],
     [{ weekly: { days: ["mon", "fry"], at: "7:00" } }, "weekly.days[1]", /"fry" is not a weekday — use mon, tue, wed, thu, fri, sat or sun/],
     [{ monthly: { days: [0] } }, "monthly.days[0]", /not a day of the month — use a number 1–31/],
     [{ monthly: { days: [32] } }, "monthly.days[0]", /not a day of the month/],
@@ -212,6 +255,10 @@ describe("formatSchedule — canonical YAML that reads back to the same schedule
     "schedule:\n  daily: {}\n  only: weekends",
     "schedule:\n  weekly: { days: [mon, fri], at: 7:00 }",
     "schedule:\n  weekly: { days: [sun] }\n  start: 2026-01-01\n  end: 2026-12-31",
+    "schedule:\n  daily: { every: 10 }\n  start: 2027-01-03",
+    "schedule:\n  daily: { every: 3, at: [7:00, 19:00] }\n  only: weekdays\n  start: 2027-01-03\n  end: 2027-06-30",
+    "schedule:\n  weekly: { every: 2, days: [mon] }\n  start: 2026-11-23\n  lead-days: 1",
+    "schedule:\n  weekly: { every: 4, days: [tue, sat], at: 6:30 }\n  start: 2026-11-23",
     "schedule:\n  monthly: { days: [1, 15, last, first mon, last fri], months: [jan, apr, jul, oct], at: 9:00 }",
     "schedule:\n  monthly: { days: [5] }\n  start: 2026-01-01\n  lead-days: 3",
     "schedule:\n  after-completion: { months: 3 }\n  lead-days: 7",
@@ -225,6 +272,10 @@ describe("formatSchedule — canonical YAML that reads back to the same schedule
   it("writes hand-written variants in canonical form", () => {
     expect(formatSchedule("repeat", parsed("schedule:\n  weekly:\n    days: [Friday, monday]\n    at: [07:00]"))).toBe(
       "repeat:\n  weekly: { days: [mon, fri], at: 7:00 }",
+    );
+    expect(formatSchedule("repeat", parsed("schedule:\n  weekly: { at: 7:00, days: [mon], every: 1 }"))).toBe("repeat:\n  weekly: { days: [mon], at: 7:00 }");
+    expect(formatSchedule("repeat", parsed("schedule:\n  start: 2026-11-23\n  weekly:\n    days: Monday\n    every: 2"))).toBe(
+      "repeat:\n  weekly: { every: 2, days: [mon] }\n  start: 2026-11-23",
     );
   });
 });

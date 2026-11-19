@@ -43,10 +43,18 @@ const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Se
 const MAX_AMOUNT = 9999;
 const NOT_A_DATE: DatePhrase = { kind: "not-a-date" };
 
-/** The day `now` belongs to: its calendar date, or the day before while `now` is before the boundary. */
+/**
+ * The day `now` belongs to: its calendar date, or the day before while the clock has not yet
+ * reached the boundary today. It never moves backwards: on a fall-back night the boundary is
+ * passed on the first pass of the repeated hour, and the day stays when the clock shows the
+ * earlier wall times again (02:30 boundary, Madrid 03:00 → 02:00: the day starts at 02:30 CEST
+ * and stays through 02:00–02:59 CET). On a spring-forward night a boundary inside the gap is
+ * passed when the clock jumps over it.
+ */
 export function currentDay(now: Date, dayBoundary: Time = { hour: 0, minute: 0 }): LocalDate {
   const today = localDateOf(now);
-  return minutesOf(localTimeOf(now)) < minutesOf(dayBoundary) ? addDays(today, -1) : today;
+  if (minutesOf(localTimeOf(now)) >= minutesOf(dayBoundary)) return today;
+  return toInstant(today, dayBoundary) <= now ? today : addDays(today, -1);
 }
 
 type Parsed<T> = T | { invalid: string } | null;
@@ -144,6 +152,8 @@ function dateTime(at: Date): DatePhrase {
  * - A time after a day phrase, optionally with `at`: `tomorrow 9:00`, `fri at 9pm`. `tonight` with
  *   a time before 12:00 is the next morning (`tonight 1:00`).
  * - A time alone (`23:00`, `at 7am`): its next occurrence after `now`.
+ * - `2026-11-20T09:30` (what `<input type="datetime-local">` gives): that local date and time,
+ *   whatever the reference day.
  * Case and extra spaces are ignored.
  */
 export function parseDatePhrase(text: string, options: DatePhraseOptions): DatePhrase {
@@ -151,6 +161,15 @@ export function parseDatePhrase(text: string, options: DatePhraseOptions): DateP
   const phrase = text.trim().toLowerCase().replace(/\s+/g, " ");
   if (phrase === "") return NOT_A_DATE;
   const today = currentDay(now, options.dayBoundary);
+
+  const local = /^(\d{4}-\d{2}-\d{2})t(\d{2}:\d{2})$/.exec(phrase);
+  if (local) {
+    const date = local[1] ?? "";
+    const time = parseTime(local[2] ?? "");
+    if (!isLocalDate(date)) return { kind: "invalid", message: `${date} is not a real date` };
+    if (!time) return { kind: "invalid", message: `${local[2] ?? ""} is not a time — use 00:00–23:59` };
+    return dateTime(toInstant(date, time));
+  }
 
   const rel = /^(?:\+ ?|in )(\d+) ?([a-z]+)$/.exec(phrase);
   const minutes = rel ? TIME_UNITS[rel[2] ?? ""] : undefined;

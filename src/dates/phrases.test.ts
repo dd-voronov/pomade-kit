@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toInstant } from "../schedule/local-time.js";
+import { addDays, toInstant } from "../schedule/local-time.js";
 import { useTimeZone } from "../schedule/test-helpers.js";
 import { currentDay, parseDatePhrase, type DatePhrase } from "./phrases.js";
 
@@ -237,6 +237,154 @@ describe("DST and year ends", () => {
 
     it("a time alone after the spring gap", () => {
       expect(show(parseDatePhrase("2:30", { now: at("2026-03-08 1:00") }))).toBe("2026-03-08 3:30");
+    });
+  });
+});
+
+describe("currentDay never moves backwards across DST", () => {
+  const MIN = 60_000;
+  const boundaries = (step: number, from = 0, to = 24 * 60 - 1) => {
+    const out: Array<{ hour: number; minute: number }> = [];
+    for (let m = from; m <= to; m += step) out.push({ hour: Math.floor(m / 60), minute: m % 60 });
+    return out;
+  };
+
+  /** currentDay at every `step` minutes over [from, to]: never backwards, one change per night. */
+  function sweep(from: Date, to: Date, boundary: { hour: number; minute: number }, step: number): string[] {
+    const days: string[] = [];
+    for (let t = from.getTime(); t <= to.getTime(); t += step * MIN) {
+      const day = currentDay(new Date(t), boundary);
+      if (days.length > 0) expect(day >= (days[days.length - 1] as string), `${new Date(t).toISOString()} boundary ${boundary.hour}:${boundary.minute}`).toBe(true);
+      if (days[days.length - 1] !== day) days.push(day);
+    }
+    return days;
+  }
+
+  describe("Europe/Madrid (fall 2026-10-25 03:00 → 02:00, spring 2026-03-29 02:00 → 03:00)", () => {
+    useTimeZone("Europe/Madrid");
+
+    it.each([
+      ["2:30", "2026-10-25T00:29:00Z", "2026-10-24"], // 02:29 CEST
+      ["2:30", "2026-10-25T00:30:00Z", "2026-10-25"], // 02:30 CEST — the day starts
+      ["2:30", "2026-10-25T01:00:00Z", "2026-10-25"], // 02:00 CET, the clock is back at 02:00
+      ["2:30", "2026-10-25T01:29:00Z", "2026-10-25"], // 02:29 CET
+      ["2:30", "2026-10-25T01:30:00Z", "2026-10-25"], // 02:30 CET
+      ["2:00", "2026-10-24T23:59:00Z", "2026-10-24"], // 01:59 CEST
+      ["2:00", "2026-10-25T00:00:00Z", "2026-10-25"], // 02:00 CEST
+      ["2:00", "2026-10-25T01:00:00Z", "2026-10-25"], // 02:00 CET
+      ["2:59", "2026-10-25T00:58:00Z", "2026-10-24"], // 02:58 CEST
+      ["2:59", "2026-10-25T00:59:00Z", "2026-10-25"], // 02:59 CEST
+      ["2:59", "2026-10-25T01:58:00Z", "2026-10-25"], // 02:58 CET
+      ["3:00", "2026-10-25T00:59:00Z", "2026-10-24"], // 02:59 CEST
+      ["3:00", "2026-10-25T01:59:00Z", "2026-10-24"], // 02:59 CET — 03:00 happens once, after the repeated hour
+      ["3:00", "2026-10-25T02:00:00Z", "2026-10-25"], // 03:00 CET
+      ["2:30", "2026-03-29T00:59:00Z", "2026-03-28"], // 01:59 CET
+      ["2:30", "2026-03-29T01:00:00Z", "2026-03-29"], // 03:00 CEST — the clock jumped over 02:30
+      ["3:00", "2026-03-29T00:59:00Z", "2026-03-28"], // 01:59 CET
+      ["3:00", "2026-03-29T01:00:00Z", "2026-03-29"], // 03:00 CEST
+      ["3:30", "2026-03-29T01:29:00Z", "2026-03-28"], // 03:29 CEST
+      ["3:30", "2026-03-29T01:30:00Z", "2026-03-29"], // 03:30 CEST
+    ])("boundary %s at %s → %s", (b, instant, day) => {
+      const [hour = 0, minute = 0] = b.split(":").map(Number);
+      expect(currentDay(new Date(instant), { hour, minute })).toBe(day);
+    });
+
+    it("every boundary 2:00–2:59, minute by minute through the fall-back night: one change, never back", () => {
+      for (const b of boundaries(1, 120, 179)) {
+        expect(sweep(new Date("2026-10-24T22:00:00Z"), new Date("2026-10-25T04:00:00Z"), b, 1)).toEqual(["2026-10-24", "2026-10-25"]);
+      }
+    });
+
+    it("every boundary 2:00–2:59, minute by minute through the spring-forward night: one change, never back", () => {
+      for (const b of boundaries(1, 120, 179)) {
+        expect(sweep(new Date("2026-03-28T22:00:00Z"), new Date("2026-03-29T04:00:00Z"), b, 1)).toEqual(["2026-03-28", "2026-03-29"]);
+      }
+    });
+
+    it("every quarter-hour boundary over both change days: days follow one another, never back", () => {
+      const consecutive = (days: string[]) => days.every((d, i) => i === 0 || d === addDays(days[i - 1] as string, 1));
+      for (const b of boundaries(15)) {
+        expect(consecutive(sweep(new Date("2026-10-24T00:00:00Z"), new Date("2026-10-27T00:00:00Z"), b, 5))).toBe(true);
+        expect(consecutive(sweep(new Date("2026-03-28T00:00:00Z"), new Date("2026-03-31T00:00:00Z"), b, 5))).toBe(true);
+      }
+    });
+  });
+
+  describe("America/New_York (fall 2026-11-01 02:00 → 01:00)", () => {
+    useTimeZone("America/New_York");
+
+    it("a 1:30 boundary stays passed through the repeated hour", () => {
+      expect(currentDay(new Date("2026-11-01T05:29:00Z"), { hour: 1, minute: 30 })).toBe("2026-10-31"); // 01:29 EDT
+      expect(currentDay(new Date("2026-11-01T05:30:00Z"), { hour: 1, minute: 30 })).toBe("2026-11-01"); // 01:30 EDT
+      expect(currentDay(new Date("2026-11-01T06:00:00Z"), { hour: 1, minute: 30 })).toBe("2026-11-01"); // 01:00 EST
+      for (const b of boundaries(1, 60, 119)) {
+        expect(sweep(new Date("2026-11-01T03:00:00Z"), new Date("2026-11-01T09:00:00Z"), b, 1)).toEqual(["2026-10-31", "2026-11-01"]);
+      }
+    });
+  });
+});
+
+describe("datetime-local — YYYY-MM-DDTHH:MM", () => {
+  describe("Europe/Madrid", () => {
+    useTimeZone("Europe/Madrid");
+    const now = at("2026-11-09 14:00");
+    const read = (text: string, dayBoundary?: { hour: number; minute: number }) =>
+      show(parseDatePhrase(text, dayBoundary ? { now, dayBoundary } : { now }));
+
+    it.each([
+      ["2026-11-20T09:30", "2026-11-20 9:30"],
+      ["2026-11-20t09:30", "2026-11-20 9:30"],
+      [" 2026-11-20T23:59 ", "2026-11-20 23:59"],
+      ["2026-11-20T00:00", "2026-11-20 0:00"],
+      ["2026-11-09T13:00", "2026-11-09 13:00"], // earlier today: the moment as written, not moved ahead
+      ["2025-01-01T08:00", "2025-01-01 8:00"],
+      ["2028-02-29T12:00", "2028-02-29 12:00"],
+    ])("%s → %s", (text, out) => {
+      expect(read(text)).toBe(out);
+    });
+
+    it("is that local moment", () => {
+      expect(parseDatePhrase("2026-11-20T09:30", { now })).toEqual({
+        kind: "date-time",
+        date: "2026-11-20",
+        time: { hour: 9, minute: 30 },
+        at: new Date("2026-11-20T08:30:00Z"),
+      });
+    });
+
+    it("ignores the day boundary", () => {
+      expect(read("2026-11-10T01:30", { hour: 3, minute: 0 })).toBe("2026-11-10 1:30");
+    });
+
+    it.each([
+      ["2026-02-30T10:00", "invalid: 2026-02-30 is not a real date"],
+      ["2027-02-29T10:00", "invalid: 2027-02-29 is not a real date"],
+      ["2026-11-20T24:00", "invalid: 24:00 is not a time — use 00:00–23:59"],
+      ["2026-11-20T09:60", "invalid: 09:60 is not a time — use 00:00–23:59"],
+      ["2026-11-20T9:30", "not-a-date"],
+      ["2026-11-20T09:30:15", "not-a-date"],
+      ["2026-11-20T09", "not-a-date"],
+      ["2026-11-20T", "not-a-date"],
+    ])("%s → %s", (text, out) => {
+      expect(read(text)).toBe(out);
+    });
+
+    it("follows the DST rules: a skipped time moves forward, a repeated one is its first pass", () => {
+      const spring = parseDatePhrase("2026-03-29T02:30", { now });
+      expect(show(spring)).toBe("2026-03-29 3:30");
+      expect(spring.kind === "date-time" && spring.at.toISOString()).toBe("2026-03-29T01:30:00.000Z");
+      const fall = parseDatePhrase("2026-10-25T02:30", { now });
+      expect(show(fall)).toBe("2026-10-25 2:30");
+      expect(fall.kind === "date-time" && fall.at.toISOString()).toBe("2026-10-25T00:30:00.000Z");
+    });
+  });
+
+  describe("America/New_York", () => {
+    useTimeZone("America/New_York");
+
+    it("is the local moment in that zone", () => {
+      const r = parseDatePhrase("2026-11-20T09:30", { now: at("2026-11-09 14:00") });
+      expect(r.kind === "date-time" && r.at.toISOString()).toBe("2026-11-20T14:30:00.000Z");
     });
   });
 });

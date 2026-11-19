@@ -34,6 +34,17 @@ function monthDayMatches(d: MonthDay, day: number, weekdayIndex: number, dim: nu
   return d.nth === "last" ? day + 7 > dim : Math.ceil(day / 7) === d.nth;
 }
 
+/**
+ * Whether day `n` is in the cycle of an `every`-th day or week counted from `anchor` (`start`;
+ * the parser requires it when `every` > 1, a hand-built schedule without one counts from day 0).
+ */
+function inCycle(n: number, anchor: number, every: number, unit: "days" | "weeks"): boolean {
+  if (every === 1) return true;
+  const offset = unit === "days" ? n - anchor : n - weekdayIndexOfDayNumber(n) - (anchor - weekdayIndexOfDayNumber(anchor));
+  const period = unit === "days" ? every : every * 7;
+  return ((offset % period) + period) % period === 0;
+}
+
 /** The wall-clock times of a fixed schedule on day number `n`, or null when it has none that day. */
 function timesOn(schedule: Schedule, n: number): Time[] | null {
   const { rule, only, start, end } = schedule;
@@ -42,6 +53,7 @@ function timesOn(schedule: Schedule, n: number): Time[] | null {
   if (start !== null && n < dayNumber(start)) return null;
   if (end !== null && n > dayNumber(end)) return null;
   const wd = weekdayIndexOfDayNumber(n);
+  const anchor = start === null ? 0 : dayNumber(start);
   if (only === "weekdays" && wd >= 5) return null;
   if (only === "weekends" && wd < 5) return null;
   switch (rule.kind) {
@@ -53,9 +65,10 @@ function timesOn(schedule: Schedule, n: number): Time[] | null {
       return times;
     }
     case "daily":
+      if (!inCycle(n, anchor, rule.every, "days")) return null;
       return rule.at.length > 0 ? rule.at : [MIDNIGHT];
     case "weekly":
-      if (!rule.days.includes(WEEKDAYS[wd] ?? "mon")) return null;
+      if (!rule.days.includes(WEEKDAYS[wd] ?? "mon") || !inCycle(n, anchor, rule.every, "weeks")) return null;
       return rule.at.length > 0 ? rule.at : [MIDNIGHT];
     case "monthly": {
       const { year, month, day } = ymdOfDayNumber(n);

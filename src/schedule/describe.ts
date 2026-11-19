@@ -74,9 +74,16 @@ function ruleWords(s: Schedule): string {
       return `${base}${filter}${window}`;
     }
     case "daily":
+      if (rule.every > 1) return `every ${rule.every} days${only ? ` on ${only}` : ""}${atWords(rule.at)}`;
       if (rule.at.length === 0) return only === "weekdays" ? "every weekday" : only === "weekends" ? "every weekend day" : "every day";
       return `${only ?? "daily"}${atWords(rule.at)}`;
     case "weekly":
+      if (rule.every > 1) {
+        const days = joinWords(rule.days.map((d) => WEEKDAY_SHORT[d]));
+        if (rule.every === 2 && rule.days.length === 1) return `every other ${days}${atWords(rule.at)}`;
+        const weeks = rule.every === 2 ? "every other week" : `every ${rule.every} weeks`;
+        return `${weeks} on ${days}${atWords(rule.at)}`;
+      }
       return `${dayWords(rule.days)}${atWords(rule.at)}`;
     case "monthly": {
       const days = monthDayWords(rule.days);

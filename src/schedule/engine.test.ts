@@ -344,3 +344,103 @@ describe("whole-day schedules (Planner)", () => {
     expect(datesBetween(wd, "2025-12-31", "2026-12-31", { limit: 2 })).toEqual(["2026-01-01", "2026-01-02"]);
   });
 });
+
+describe("every N days or weeks from a start date", () => {
+  useTimeZone("Europe/Madrid");
+
+  it("every 10 days from Sun 2027-01-03 (across a month end)", () => {
+    const d = s({ daily: { every: 10 }, start: "2027-01-03" });
+    expect(datesBetween(d, "2026-12-01", "2027-03-10")).toEqual([
+      "2027-01-03", "2027-01-13", "2027-01-23", "2027-02-02", "2027-02-12", "2027-02-22", "2027-03-04",
+    ]);
+    expect(nextDate(d, "2026-11-19")).toBe("2027-01-03");
+    expect(nextDate(d, "2027-01-03")).toBe("2027-01-13");
+    expect(nextDate(d, "2027-01-03", { inclusive: true })).toBe("2027-01-03");
+    expect(nextDate(d, "2027-01-12")).toBe("2027-01-13");
+    expect(occursOn(d, "2027-01-13")).toBe(true);
+    expect(occursOn(d, "2027-01-14")).toBe(false);
+    expect(occursOn(d, "2026-12-24")).toBe(false); // in the cycle backwards, but before start
+  });
+
+  it("every 10 days through a leap February", () => {
+    const d = s({ daily: { every: 10 }, start: "2028-02-20" });
+    expect(datesBetween(d, "2028-02-19", "2028-03-12")).toEqual(["2028-02-20", "2028-03-01", "2028-03-11"]);
+  });
+
+  it("every 1000 days, the largest count", () => {
+    expect(nextDate(s({ daily: { every: 1000 }, start: "2026-01-01" }), "2026-01-01")).toBe("2028-09-27");
+  });
+
+  it("every 3 days with a weekday filter skips the weekend hits and keeps the cycle", () => {
+    const d = s({ daily: { every: 3 }, start: "2026-11-20", only: "weekdays" });
+    expect(datesBetween(d, "2026-11-19", "2026-12-05")).toEqual(["2026-11-20", "2026-11-23", "2026-11-26", "2026-12-02"]); // 11-29 and 12-05 are a Sun and a Sat
+  });
+
+  it("every other Monday from Mon 2026-11-23 (across the year end)", () => {
+    const w = s({ weekly: { every: 2, days: ["mon"] }, start: "2026-11-23" });
+    expect(datesBetween(w, "2026-11-01", "2027-01-31")).toEqual(["2026-11-23", "2026-12-07", "2026-12-21", "2027-01-04", "2027-01-18"]);
+    expect(nextDate(w, "2026-11-23")).toBe("2026-12-07");
+    expect(nextDate(w, "2026-11-30", { inclusive: true })).toBe("2026-12-07");
+    expect(occursOn(w, "2026-11-30")).toBe(false);
+  });
+
+  it("weeks run Monday to Sunday from the week of start; days of it before start do not count", () => {
+    const monFri = s({ weekly: { every: 2, days: ["mon", "fri"] }, start: "2026-11-25" }); // a Wednesday
+    expect(datesBetween(monFri, "2026-11-20", "2026-12-26")).toEqual(["2026-11-27", "2026-12-07", "2026-12-11", "2026-12-21", "2026-12-25"]);
+    const sundayStart = s({ weekly: { every: 2, days: ["mon"] }, start: "2026-11-29" }); // the Sunday of that week
+    expect(nextDate(sundayStart, "2026-11-29", { inclusive: true })).toBe("2026-12-07");
+  });
+
+  it("every 3 weeks on two days, with an end date", () => {
+    const w = s({ weekly: { every: 3, days: ["tue", "sat"] }, start: "2026-11-23", end: "2026-12-31" });
+    expect(datesBetween(w, "2026-11-01", "2027-03-01")).toEqual(["2026-11-24", "2026-11-28", "2026-12-15", "2026-12-19"]);
+    expect(nextDate(w, "2026-12-19")).toBeNull();
+  });
+
+  it("times: next, previous and missed runs of every other Monday at 9:00", () => {
+    const w = s({ weekly: { every: 2, days: ["mon"], at: "9:00" }, start: "2026-11-23" });
+    expect(iso(nextOccurrence(w, at("2026-11-23 9:00")))).toBe("2026-12-07T08:00:00.000Z");
+    expect(iso(nextOccurrence(w, at("2026-11-01 9:00")))).toBe("2026-11-23T08:00:00.000Z");
+    expect(iso(previousOccurrence(w, at("2026-12-14 12:00")))).toBe("2026-12-07T08:00:00.000Z");
+    expect(iso(previousOccurrence(w, at("2026-11-23 9:00")))).toBeNull();
+    expect(isos(occurrencesBetween(w, at("2026-11-20 0:00"), at("2026-12-22 0:00")))).toEqual([
+      "2026-11-23T08:00:00.000Z",
+      "2026-12-07T08:00:00.000Z",
+      "2026-12-21T08:00:00.000Z",
+    ]);
+  });
+
+  it("the cycle counts calendar days across DST: every 7 days at 2:30 through spring-forward", () => {
+    const d = s({ daily: { every: 7, at: "2:30" }, start: "2026-03-22" });
+    expect(isos(occurrencesBetween(d, at("2026-03-21 0:00"), at("2026-04-06 0:00")))).toEqual([
+      "2026-03-22T01:30:00.000Z", // 02:30 CET
+      "2026-03-29T01:30:00.000Z", // 03:30 CEST — 02:30 did not exist
+      "2026-04-05T00:30:00.000Z", // 02:30 CEST
+    ]);
+  });
+
+  it("every other Sunday at 2:30 through fall-back runs once, on the first pass", () => {
+    const w = s({ weekly: { every: 2, days: ["sun"], at: "2:30" }, start: "2026-10-11" });
+    expect(isos(occurrencesBetween(w, at("2026-10-10 0:00"), at("2026-11-09 0:00")))).toEqual([
+      "2026-10-11T00:30:00.000Z",
+      "2026-10-25T00:30:00.000Z", // 02:30 CEST, the first pass
+      "2026-11-08T01:30:00.000Z", // 02:30 CET
+    ]);
+  });
+
+  it("lead time works on the cycle dates", () => {
+    const w = s({ weekly: { every: 2, days: ["mon"] }, start: "2026-11-23", "lead-days": 2 });
+    expect(leadStart(w, nextDate(w, "2026-11-23") ?? "")).toBe("2026-12-05");
+  });
+
+  it("a hand-built schedule without start counts from 1970-01-01 (Thu), also before it", () => {
+    const daily: Schedule = { rule: { kind: "daily", every: 2, at: [] }, only: null, start: null, end: null, leadDays: 0 };
+    expect(["1969-12-30", "1969-12-31", "1970-01-01", "1970-01-02", "1970-01-03"].map((d) => occursOn(daily, d))).toEqual([
+      true, false, true, false, true,
+    ]);
+    const weekly: Schedule = { ...daily, rule: { kind: "weekly", every: 2, days: ["thu"], at: [] } };
+    expect(["1969-12-18", "1969-12-25", "1970-01-01", "1970-01-08", "1970-01-15"].map((d) => occursOn(weekly, d))).toEqual([
+      true, false, true, false, true,
+    ]);
+  });
+});

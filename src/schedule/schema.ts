@@ -24,9 +24,15 @@ export type Rule =
   | { kind: "once"; date: LocalDate; at: Time | null }
   /** A grid of times every `count` units from `from` (default 0:00) up to `to` (default 23:59), restarting each day. */
   | { kind: "every"; count: number; unit: "minutes" | "hours"; from: Time | null; to: Time | null }
-  /** `at` empty in a day schedule. */
-  | { kind: "daily"; at: Time[] }
-  | { kind: "weekly"; days: Weekday[]; at: Time[] }
+  /**
+   * Every `every`-th day, counted from `start` (1 = every day). `at` empty in a day schedule.
+   */
+  | { kind: "daily"; every: number; at: Time[] }
+  /**
+   * `days` of every `every`-th week, weeks running Monday to Sunday and counted from the week of
+   * `start` (1 = every week).
+   */
+  | { kind: "weekly"; every: number; days: Weekday[]; at: Time[] }
   /** `months` null = every month; else month numbers 1–12. */
   | { kind: "monthly"; days: MonthDay[]; months: number[] | null; at: Time[] }
   | { kind: "after-completion"; count: number; unit: "days" | "weeks" | "months" }
@@ -38,7 +44,7 @@ export interface Schedule {
   rule: Rule;
   /** Weekday filter for `every` and `daily`. */
   only: "weekdays" | "weekends" | null;
-  /** First date with occurrences (inclusive). */
+  /** First date with occurrences (inclusive); the anchor `every` counts from (then required). */
   start: LocalDate | null;
   /** Last date with occurrences (inclusive). */
   end: LocalDate | null;
@@ -76,6 +82,7 @@ const TIME_HINT = "a time like 7:00 or 13:30 (H:MM, 24-hour)";
 const DATE_HINT = "a date like 2026-11-20 (YYYY-MM-DD)";
 const WEEKDAY_HINT = "mon, tue, wed, thu, fri, sat or sun";
 const show = (v: unknown): string => JSON.stringify(v);
+const MAX_EVERY = 1000;
 
 type Fields = Record<string, unknown>;
 
@@ -253,23 +260,30 @@ function parseEvery(c: Collector, v: unknown, resolution: Resolution | undefined
   return { kind: "every", count, unit, from, to };
 }
 
+/** `every`: a count of days or weeks, default 1. */
+function parseEveryCount(c: Collector, obj: Fields, field: string): number | null {
+  return obj.every === undefined ? 1 : c.positiveInt(obj.every, `${field}.every`, MAX_EVERY);
+}
+
 function parseDaily(c: Collector, v: unknown, resolution: Resolution | undefined): Rule | null {
   const obj = shapeMapping(c, v, "daily", resolution === "day" ? "{}" : "{ at: 7:00 }");
   if (!obj) return null;
-  c.keys(obj, "daily", ["at"]);
+  c.keys(obj, "daily", ["every", "at"]);
+  const every = parseEveryCount(c, obj, "daily");
   const at = parseAt(c, obj, "daily", resolution);
-  return at ? { kind: "daily", at } : null;
+  return at && every !== null ? { kind: "daily", every, at } : null;
 }
 
 function parseWeekly(c: Collector, v: unknown, resolution: Resolution | undefined): Rule | null {
   const obj = shapeMapping(c, v, "weekly", "{ days: [mon, fri], at: 7:00 }");
   if (!obj) return null;
-  c.keys(obj, "weekly", ["days", "at"]);
+  c.keys(obj, "weekly", ["every", "days", "at"]);
+  const every = parseEveryCount(c, obj, "weekly");
   const items = c.list(obj.days, "weekly.days", `a weekday (${WEEKDAY_HINT})`);
   const days = items?.map((it) => parseWeekday(c, it.value, it.field));
   const at = parseAt(c, obj, "weekly", resolution);
-  if (!days || days.some((d) => d === null) || !at) return null;
-  return { kind: "weekly", days: sortedUnique(days as Weekday[], (d) => WEEKDAYS.indexOf(d)), at };
+  if (every === null || !days || days.some((d) => d === null) || !at) return null;
+  return { kind: "weekly", every, days: sortedUnique(days as Weekday[], (d) => WEEKDAYS.indexOf(d)), at };
 }
 
 function parseMonthly(c: Collector, v: unknown, resolution: Resolution | undefined): Rule | null {
@@ -373,6 +387,13 @@ export function parseSchedule(value: unknown, options: { resolution?: Resolution
     if (value[k] !== undefined && !bounded) c.add(k, `not used with ${shape} — remove it`);
   }
   if (start && end && end < start) c.add("end", `${end} is before start (${start})`);
+  if ((shape === "daily" || shape === "weekly") && isMapping(value[shape]) && value.start === undefined) {
+    const every = value[shape].every;
+    if (typeof every === "number" && every > 1) {
+      const unit = shape === "daily" ? "days" : "weeks";
+      c.add("start", `required with ${shape}.every — the date the ${unit} count from, like start: 2027-01-04`);
+    }
+  }
 
   let leadDays = 0;
   if (value["lead-days"] !== undefined) {
@@ -405,6 +426,10 @@ function atText(at: Time[]): string | null {
   return at.length === 0 ? null : flowList(at.map(formatTime));
 }
 
+function everyText(every: number): string | null {
+  return every === 1 ? null : String(every);
+}
+
 function monthDayText(d: MonthDay): string {
   if (typeof d === "number") return String(d);
   if (d === "last") return "last";
@@ -423,9 +448,13 @@ function ruleText(rule: Rule): string {
         ["to", rule.to && formatTime(rule.to)],
       ]);
     case "daily":
-      return flowMap([["at", atText(rule.at)]]);
+      return flowMap([
+        ["every", everyText(rule.every)],
+        ["at", atText(rule.at)],
+      ]);
     case "weekly":
       return flowMap([
+        ["every", everyText(rule.every)],
         ["days", `[${rule.days.join(", ")}]`],
         ["at", atText(rule.at)],
       ]);
