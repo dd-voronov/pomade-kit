@@ -63,7 +63,10 @@ describe("keeper update (fd hand-off)", { timeout: 30_000 }, () => {
     const { socketPath, stateDir, dir } = await keeperProcess({ KEEPER_TEST_RING: String(256 * 1024 * 1024) });
     const owner = await connect(socketPath);
     const log = join(dir, "flood.log");
-    const s = await owner.k.spawn({ id: "flood", title: "flood", argv: ["/usr/bin/awk", "BEGIN { for (i = 1; ; i++) print i }"], cwd: dir, log });
+    // The flood starts once the follower is attached: its snapshot is then empty and the client's
+    // stream has to hold every line from 1.
+    const flood = "read go; exec /usr/bin/awk 'BEGIN { for (i = 1; ; i++) print i }'";
+    const s = await owner.k.spawn({ id: "flood", title: "flood", argv: ["/bin/sh", "-c", flood], cwd: dir, log });
     track(stateDir, "session", s.pid);
     let seen = "";
     let snapshots = 0;
@@ -76,6 +79,7 @@ describe("keeper update (fd hand-off)", { timeout: 30_000 }, () => {
       },
     );
     await waitFor(() => follower.state.kind === "attached", "the follower to attach");
+    owner.k.input("flood", "\r");
     await sleep(400);
     await upgradeTo(socketPath, stateDir, "v2");
     await sleep(400);
