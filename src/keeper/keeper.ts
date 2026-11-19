@@ -423,6 +423,16 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
     }
   };
 
+  /** What a client typed or pasted reaches the program once the terminal of record has parsed
+   *  everything the program printed before it — so the terminal's answers to the program's queries
+   *  come before any key typed after the questions were shown, as in a terminal, which answers while
+   *  it draws. `data` is built then, against the modes the program has set by that point. */
+  const toProgram = (s: Session, data: () => string): void => {
+    s.screen.write("", () => {
+      if (sessions.get(s.id) === s && !s.exit && s.hold) s.hold.write(data());
+    });
+  };
+
   /** Cut a snapshot for `c` once the terminal has parsed everything so far; output arriving
    *  meanwhile is queued and follows it, so the client misses nothing and sees nothing twice. */
   const snapshotTo = (c: Client, s: Session, att: Attachment, resync: boolean, lines: number | undefined, then?: () => void): void => {
@@ -728,7 +738,7 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
         const s = sessions.get(m.session);
         if (!s || s.exit || !s.hold) return;
         if (m.data.includes("\x03")) s.lastCtrlC = Date.now();
-        s.hold.write(m.data);
+        toProgram(s, () => m.data);
         return;
       }
       case "paste": {
@@ -736,9 +746,8 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
         if (!s || s.exit || !s.hold) return;
         // As a terminal pastes: line breaks become CR; bracketed when the program asked for it,
         // with any bracket markers inside the text removed so it cannot end the paste early.
-        let text = m.text.replace(/\r?\n/g, "\r");
-        if (s.screen.bracketedPaste) text = `\x1b[200~${text.replace(/\x1b\[20[01]~/g, "")}\x1b[201~`;
-        s.hold.write(text);
+        const text = m.text.replace(/\r?\n/g, "\r");
+        toProgram(s, () => (s.screen.bracketedPaste ? `\x1b[200~${text.replace(/\x1b\[20[01]~/g, "")}\x1b[201~` : text));
         return;
       }
       case "resize": {

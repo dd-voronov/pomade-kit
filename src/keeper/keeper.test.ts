@@ -301,6 +301,39 @@ describe("terminal queries and screen fidelity", () => {
     expect(received.match(/\x1b\[\?[\d;]*c/g)?.length).toBe(1);
   });
 
+  it("the program gets the answers to its queries before a key typed the moment the questions were shown", async () => {
+    const { socketPath, dir } = await keeperInProcess();
+    const owner = await connect(socketPath);
+    const viewer = await connect(socketPath, "viewer");
+    // A client that reacts at once to the output the questions came in: the closest a user can get.
+    for (let n = 0; n < 10; n++) {
+      const log = join(dir, `probe-${n}.log`);
+      writeFileSync(log, "");
+      const s = await owner.k.spawn({ title: "probe", argv: [process.execPath, join(FIXTURES, "query-probe.cjs")], cwd: dir, env: { PROBE_LOG: log } });
+      let typed = false;
+      const off = viewer.k.onEvent((e) => {
+        if (e.type !== "output" || e.session !== s.id || typed || !viewer.output(s.id).includes("asking")) return;
+        typed = true;
+        viewer.k.input(s.id, "x");
+      });
+      await viewer.k.attach(s.id);
+      const seen = (): string => (snapshots(viewer.events, s.id)[0]?.data ?? "") + viewer.output(s.id);
+      await waitFor(() => seen().includes("probe ready"), "the probe");
+      viewer.k.input(s.id, "q");
+      const reads = (): string =>
+        readOr(log)
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map((l) => JSON.parse(l) as string)
+          .join("");
+      await waitFor(() => reads().includes("x") && /\x1b\[\d+;\d+R/.test(reads()) && /\x1b\[\?[\d;]*c/.test(reads()), "the answers and the key");
+      off();
+      expect(reads()).toMatch(/^q\x1b\[\d+;\d+R\x1b\[\?[\d;]*cx$/);
+      await owner.k.stop(s.id);
+    }
+  });
+
   it("the headless terminal uses the Unicode 11 widths Pomade's renderer uses", async () => {
     const { socketPath, dir } = await keeperInProcess();
     const owner = await connect(socketPath);

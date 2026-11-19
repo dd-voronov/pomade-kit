@@ -1216,6 +1216,9 @@ its own channel (Pomade publishes `attachedTab.action` to the owner), never over
   (`sessionEnv`); a `command` runs in the user's login shell, which brings the user's `PATH`.
 - A headless xterm per session parses every byte — the same xterm line (5.5) and Unicode 11 width
   tables as Pomade's renderer, so both agree on every cell.
+- A client's `input` and `paste` reach the program once that terminal has parsed everything the
+  program printed before them, so the answers to its queries always come before a key typed after
+  the questions were shown — as in a terminal, which answers while it draws.
 - **Update** (`upgrade`): the keeper stops reading the PTYs (and drains what it already read — a
   paused stream would lose it), writes the sessions' state to a hand-off file and starts the new
   entry with the PTY masters as inherited fds; the new keeper adopts them and binds the socket.
