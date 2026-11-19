@@ -1140,6 +1140,8 @@ if (r.status === "connected") {
     actions: [{ id: "restart", title: "Restart" }],        // header actions on attached tabs
   });
   await k.list();                              // SessionInfo[]: id, title, command, cwd, pid, state, exit, clients, actions
+  const now = await k.watch();                 // the same list, then every session's `info` and `exit` as events, no output
+  k.onEvent((e) => { if (e.type === "exit") { /* e.session ended: e.exit.reason */ } });
   await k.stop("svc:coda-web", { reason: "time-limit", graceMs: 3000 });   // SIGTERM, then SIGKILL
   await k.update("svc:coda-web", { title: "Coda web (dev)" });
   await k.forget("svc:coda-web");              // drop an ended session
@@ -1173,6 +1175,7 @@ socket — the Host API socket's framing (`encodeLine`, `createLineDecoder`). Re
 |---|---|
 | `hello { protocol, client: { app, role: "owner" \| "viewer", key? } }` | `welcome { protocol, app, keeper: { version, pid } }` or `reject { code: "unauthorized" \| "version-mismatch" }` — the owner must be the keeper's app with its key |
 | `list` | `SessionInfo[]` |
+| `watch` *(owner)* | `SessionInfo[]`, as `list`; from then on the connection gets every session's `info` (it started, or its title or actions changed) and `exit` — never its output. It lasts as long as the connection: after `keeper-restarting`, watch again |
 | `spawn { spec }` *(owner)* | `SessionInfo`; an id held by an ended session is reused (its clients stay attached and get the new session's screen); a running id is `session-running` |
 | `attach { session, cols?, rows?, since?, scrollback? }` | a `snapshot` (or a `delta` when `since: { startedAt, seq }` is still in the keeper's ring), then the session's events |
 | `input { session, data }` · `paste { session, text }` · `resize { session, cols, rows }` · `detach { session }` | — (paste is bracketed when the program asked for it) |
@@ -1183,7 +1186,7 @@ socket — the Host API socket's framing (`encodeLine`, `createLineDecoder`). Re
 |---|---|
 | `snapshot { session, info, data, seq, resync }` | the screen serialized: drawn into an empty terminal it reproduces scrollback (up to 1000 lines), the screen (normal or alternate), colours, cursor, modes, scroll region, mouse encoding and cursor visibility — never a replay of recorded bytes, so it asks the terminal nothing |
 | `delta { session, info, data, seq }` · `output { session, data, seq }` | `seq` counts output characters since the session started; a client keeps the last one to resume |
-| `resized { session, cols, rows }` · `exit { session, exit }` · `info { session, info }` | another client resized it (last active client wins) · it ended · the owner changed its title or actions |
+| `resized { session, cols, rows }` · `exit { session, exit }` · `info { session, info }` | another client resized it (last active client wins) · it ended · the owner changed its title or actions (to a watcher also: it started). A client attached to a session it also watches gets each once |
 | `keeper-restarting { reconnectAfterMs }` | an update: reconnect and attach again with `since` |
 
 **Exit reasons** (`SessionExit.reason`): `exited` (status 0) · `crashed` (any other status, or a
@@ -1213,7 +1216,15 @@ its own channel (Pomade publishes `attachedTab.action` to the owner), never over
   output dropped and gets a fresh snapshot (`resync: true`) once it catches up — the keeper's memory
   stays bounded.
 - **Crash:** the kernel hangs up a dead keeper's PTYs, so its sessions end with it; the next keeper
-  reads their records and reports them `lost-in-keeper-crash`.
+  reads their records and reports them `lost-in-keeper-crash`. What outlives the hang-up — a program
+  that ignores SIGHUP, or node-pty's `spawn-helper` caught before it reached the terminal — the next
+  keeper SIGKILLs with its process group (the exit then says `signal: "SIGKILL"`). The shim catches
+  SIGHUP, so it lives exactly as long as the program and stays the group's provable leader. A pid is
+  killed only when it is proven to be the session's process: it leads its own group and `ps` says it
+  started inside the window the keeper recorded around the spawn; anything else is left alone.
+- **One per state folder:** the keeper records its pid and start time in `stateDir/keeper.json`; a
+  keeper that is not adopting a hand-off refuses to start while that keeper still runs (an update
+  under way, or a keeper that stopped answering) — it would report and kill sessions that are not lost.
 - **One per socket:** a keeper refuses a socket another keeper serves; a stale socket file is replaced.
 - `node-pty` is a peer dependency of `pomade-kit/keeper` only. Its prebuilt `spawn-helper` sometimes
   loses its executable bit on install; the keeper restores it before the first spawn.

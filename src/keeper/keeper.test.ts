@@ -1,7 +1,8 @@
 // The keeper in this process, real PTYs: sessions, attach, input and paste, resize, several
 // clients, exit reasons, who may do what, terminal queries, screen fidelity, flow control, ended
-// sessions, crash records and the socket rules.
+// sessions, crash records and the cleanup after a crash, watching sessions, and the socket rules.
 
+import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -11,7 +12,7 @@ import { ATTACH_PROTOCOL, type KeeperMessage, type SessionInfo } from "../protoc
 import { connectKeeper } from "../node/keeper.js";
 import { runKeeper } from "./keeper.js";
 import { sessionEnv } from "./env.js";
-import { FIXTURES, TEST_ENV, connect, keeperInProcess, screenState, sleep, tmpDir, viewTerm, waitFor } from "./test-helpers.js";
+import { FIXTURES, TEST_ENV, connect, isAliveForTest, keeperInProcess, onCleanup, screenState, sleep, tmpDir, viewTerm, waitFor } from "./test-helpers.js";
 
 const readOr = (file: string): string => {
   try {
@@ -413,6 +414,95 @@ describe("ended sessions and keeper restarts", () => {
     expect(s).toMatchObject({ id: "svc", title: "Coda web", state: "exited", pid: null, exit: { reason: "lost-in-keeper-crash" } });
     const record = JSON.parse(readFileSync(join(stateDir, "sessions", "svc.json"), "utf8")) as { exit: { reason: string } };
     expect(record.exit.reason).toBe("lost-in-keeper-crash");
+  });
+
+  /** A process standing in for what a crashed keeper's session left running: its own group (as a
+   *  session's process is), or the test's group. Killed in teardown. */
+  const leftover = (ownGroup: boolean): { pid: number; within: [number, number] } => {
+    const from = Date.now();
+    const child = spawn("/bin/sleep", ["60"], { detached: ownGroup, stdio: "ignore" });
+    const within: [number, number] = [from, Date.now()];
+    child.unref();
+    const pid = child.pid ?? 0;
+    onCleanup(() => {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* gone */
+      }
+    });
+    return { pid, within };
+  };
+  const writeLost = (stateDir: string, id: string, pid: number, spawnedWithin?: [number, number]): void => {
+    mkdirSync(join(stateDir, "sessions"), { recursive: true });
+    writeFileSync(
+      join(stateDir, "sessions", `${id}.json`),
+      JSON.stringify({ id, title: id, command: "sleep 60", cwd: "/", pid, ...(spawnedWithin ? { spawnedWithin } : {}), startedAt: 1, actions: [], exit: null }),
+    );
+  };
+
+  it("the next keeper kills the process group a lost session left running, once the pid is proven its own", async () => {
+    const dir = tmpDir();
+    const stateDir = join(dir, "state");
+    const left = leftover(true);
+    writeLost(stateDir, "svc", left.pid, left.within);
+    const { socketPath } = await keeperInProcess({ stateDir }, dir);
+    await waitFor(() => !isAliveForTest(left.pid), "the leftover to be killed", 3000);
+    const viewer = await connect(socketPath, "viewer");
+    expect(await viewer.k.list()).toMatchObject([{ id: "svc", state: "exited", exit: { reason: "lost-in-keeper-crash", signal: "SIGKILL" } }]);
+  });
+
+  it("a pid that started outside the recorded window, has no window, or leads no group of its own is left alone", async () => {
+    const dir = tmpDir();
+    const stateDir = join(dir, "state");
+    const reused = leftover(true);
+    const unrecorded = leftover(true);
+    const notLeader = leftover(false);
+    writeLost(stateDir, "reused", reused.pid, [1_000_000, 1_000_100]);
+    writeLost(stateDir, "old", unrecorded.pid);
+    writeLost(stateDir, "member", notLeader.pid, notLeader.within);
+    const { socketPath } = await keeperInProcess({ stateDir }, dir);
+    await sleep(300);
+    expect([reused.pid, unrecorded.pid, notLeader.pid].map(isAliveForTest)).toEqual([true, true, true]);
+    const viewer = await connect(socketPath, "viewer");
+    const lost = await viewer.k.list();
+    expect(lost).toHaveLength(3);
+    for (const s of lost) expect(s).toMatchObject({ state: "exited", exit: { reason: "lost-in-keeper-crash", signal: null } });
+  });
+});
+
+describe("watching sessions (the owner)", () => {
+  it("a watcher gets every session's start, info changes and exit, never its output; once each when also attached", async () => {
+    const { socketPath, dir } = await keeperInProcess();
+    const first = await connect(socketPath);
+    await first.k.spawn({ id: "before", title: "before", command: "sleep 30", cwd: dir });
+    const watcher = await connect(socketPath);
+    expect((await watcher.k.watch()).map((s) => s.id)).toEqual(["before"]);
+    const owner = await connect(socketPath);
+    await owner.k.spawn({ id: "svc", title: "svc", command: "echo hi; read l; exit 3", cwd: dir });
+    await waitFor(() => watcher.events.some((e) => e.type === "info" && e.session === "svc" && e.info.state === "running"), "the start");
+    await owner.k.update("svc", { title: "renamed" });
+    await waitFor(() => watcher.events.some((e) => e.type === "info" && e.info.title === "renamed"), "the rename");
+    await watcher.k.attach("svc");
+    owner.k.input("svc", "x\r");
+    expect(await waitFor(() => watcher.exitOf("svc"), "the exit")).toMatchObject({ code: 3, reason: "crashed" });
+    await owner.k.stop("before");
+    await waitFor(() => watcher.exitOf("before"), "the other session's exit");
+    await sleep(100);
+    expect(watcher.events.filter((e) => e.type === "exit" && e.session === "svc")).toHaveLength(1);
+    expect(watcher.events.filter((e) => e.type === "info" && e.session === "svc")).toHaveLength(2);
+    expect(watcher.events.some((e) => e.type === "output" && e.session === "before")).toBe(false);
+  });
+
+  it("only the owner may watch; a client that does not watch hears nothing of sessions it is not attached to", async () => {
+    const { socketPath, dir } = await keeperInProcess();
+    const viewer = await connect(socketPath, "viewer");
+    await expect(viewer.k.watch()).rejects.toMatchObject({ code: "not-owner" });
+    const owner = await connect(socketPath);
+    await owner.k.spawn({ id: "q", title: "q", command: "true", cwd: dir });
+    await waitFor(async () => (await owner.k.list())[0]?.state === "exited", "the session to end");
+    await sleep(50);
+    expect([...viewer.events, ...owner.events]).toEqual([]);
   });
 });
 

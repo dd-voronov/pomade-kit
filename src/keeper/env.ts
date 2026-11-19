@@ -53,15 +53,18 @@ export function loginShell(env: NodeJS.ProcessEnv): string {
 /**
  * The session's direct child, run as `/bin/sh -c SHIM pomade-keeper <status-file> <program> <args…>`:
  * it runs the program, then writes its exit status to the status file, so a keeper that is not
- * the session's parent (after an update) still learns how it ended. INT, TERM and QUIT are caught
- * with a no-op, not ignored — an ignored signal would be inherited by the program (Ctrl+C would
- * stop working); a caught one is reset on exec. HUP keeps its default, so a keeper crash (the
- * kernel hangs up the PTY) ends the whole session. The shim's own stderr goes nowhere, so its
- * job report ("Terminated: 15") never lands in the session's output; the program keeps the real one.
+ * the session's parent (after an update) still learns how it ended. INT, TERM, QUIT and HUP are
+ * caught with a no-op, not ignored — an ignored signal would be inherited by the program (Ctrl+C
+ * would stop working); a caught one is reset on exec. So a keeper crash (the kernel hangs up the
+ * PTY) ends the program by its own HUP disposition, while the shim — the session's process-group
+ * leader, whose pid the keeper records — lives exactly as long as the program: a program that
+ * ignores the hang-up keeps a live leader for the next keeper to kill with its group. The shim's
+ * own stderr goes nowhere, so its job report ("Terminated: 15") never lands in the session's
+ * output; the program keeps the real one.
  */
 export const SHIM = `status_file=$1
 shift
-trap ':' INT TERM QUIT
+trap ':' INT TERM QUIT HUP
 exec 3>&2 2>/dev/null
 "$@" 2>&3 3>&-
 code=$?

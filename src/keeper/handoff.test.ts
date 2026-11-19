@@ -1,16 +1,26 @@
 // Keepers as processes (the built library): an update hands the PTYs to a new keeper with no byte
 // lost or doubled under a flood; sessions, screens and exit reasons survive it; a failed update
-// leaves the old keeper serving; a keeper crash ends its sessions and the next keeper reports them;
+// leaves the old keeper serving; a keeper crash ends its sessions and the next keeper reports them,
+// killing what outlived it;
 // `followSession` and `startKeeper`.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import type { SessionExit } from "../protocol/index.js";
 import { connectKeeper, followSession, startKeeper } from "../node/keeper.js";
+import { runKeeper } from "./keeper.js";
 import { ENTRY, FIXTURES, TEST_ENV, connect, isAliveForTest, keeperProcess, killKeepers, onCleanup, sleep, tmpDir, track, waitFor } from "./test-helpers.js";
+
+const readOr = (file: string): string => {
+  try {
+    return readFileSync(file, "utf8");
+  } catch {
+    return "";
+  }
+};
 
 async function upgradeTo(socketPath: string, stateDir: string, version: string, entry = ENTRY): Promise<number> {
   const before = await connect(socketPath);
@@ -161,6 +171,36 @@ describe("keeper crash", { timeout: 30_000 }, () => {
     await keeperProcess({}, dir);
     const c = await connect(first.socketPath, "viewer");
     expect(await c.k.list()).toMatchObject([{ id: "svc", title: "Coda web", state: "exited", exit: { reason: "lost-in-keeper-crash" } }]);
+  });
+
+  it("what outlives a killed keeper — a program ignoring the hang-up, with its group — is killed when the next keeper starts", async () => {
+    const dir = tmpDir();
+    const first = await keeperProcess({}, dir);
+    const owner = await connect(first.socketPath);
+    const s = await owner.k.spawn({ id: "svc", title: "svc", command: "trap '' HUP; sleep 61 & echo $! > bg; sleep 60", cwd: dir });
+    track(first.stateDir, "session", s.pid);
+    const bg = Number(await waitFor(() => readOr(join(dir, "bg")).trim(), "the background pid"));
+    process.kill(first.child.pid ?? 0, "SIGKILL");
+    await sleep(500);
+    expect([isAliveForTest(s.pid ?? 0), isAliveForTest(bg)]).toEqual([true, true]);
+    await keeperProcess({}, dir);
+    await waitFor(() => !isAliveForTest(s.pid ?? 0) && !isAliveForTest(bg), "the session's group to be killed", 3000);
+    const c = await connect(first.socketPath, "viewer");
+    expect(await c.k.list()).toMatchObject([{ id: "svc", state: "exited", exit: { reason: "lost-in-keeper-crash", signal: "SIGKILL" } }]);
+  });
+
+  it("a keeper refuses to start while the keeper recorded for its state folder still runs, and kills nothing", async () => {
+    const dir = tmpDir();
+    const first = await keeperProcess({}, dir);
+    const owner = await connect(first.socketPath);
+    const s = await owner.k.spawn({ id: "svc", title: "svc", command: "sleep 60", cwd: dir });
+    track(first.stateDir, "session", s.pid);
+    // As during an update: the old keeper still runs, its socket file is gone.
+    rmSync(first.socketPath, { force: true });
+    await expect(
+      runKeeper({ app: "hello", socketPath: first.socketPath, stateDir: first.stateDir, ownerKey: null, env: TEST_ENV, log: () => undefined }),
+    ).rejects.toThrow(/still runs/);
+    expect(isAliveForTest(s.pid ?? 0)).toBe(true);
   });
 });
 

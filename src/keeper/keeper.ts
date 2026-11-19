@@ -53,6 +53,7 @@ import {
   type SpawnSpec,
 } from "../protocol/index.js";
 import { SHIM, loginShell, sessionEnv } from "./env.js";
+import { processStamps } from "./proc.js";
 import { adoptPty, isAlive, spawnPty, type PtyHold } from "./pty.js";
 import { Screen } from "./screen.js";
 
@@ -127,6 +128,8 @@ interface Session {
   command: string;
   cwd: string;
   pid: number | null;
+  /** The wall-clock window (epoch ms) its process started in: with the pid, who to kill after a crash. */
+  spawnedWithin: [number, number] | null;
   startedAt: number;
   actions: SessionAction[];
   exit: SessionExit | null;
@@ -153,6 +156,7 @@ interface HandoffSession {
   command: string;
   cwd: string;
   pid: number | null;
+  spawnedWithin: [number, number] | null;
   startedAt: number;
   cols: number;
   rows: number;
@@ -174,6 +178,7 @@ interface SessionRecord {
   command: string;
   cwd: string;
   pid: number | null;
+  spawnedWithin: [number, number] | null;
   startedAt: number;
   actions: SessionAction[];
   exit: SessionExit | null;
@@ -194,6 +199,36 @@ function readKey(file: string | undefined): string | null {
     return readFileSync(file, "utf8").trim();
   } catch {
     return null;
+  }
+}
+
+function readKeeperFile(file: string): { pid: number; startSec: number | null } | null {
+  try {
+    const k = JSON.parse(readFileSync(file, "utf8")) as { pid?: unknown; startSec?: unknown };
+    if (typeof k.pid !== "number" || !Number.isInteger(k.pid) || k.pid <= 0) return null;
+    return { pid: k.pid, startSec: typeof k.startSec === "number" ? k.startSec : null };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * SIGKILL the process group a crashed keeper's session left running — only when `now` (what the
+ * pid names today) is provably the session's process: it leads its own group, as every session's
+ * process does, and it started inside the window the keeper recorded around the spawn. `ps` gives
+ * whole seconds, so a pid reused within the same second would pass; that needs the system's whole
+ * pid range to wrap in under a second. A session recorded without a window is never killed.
+ */
+function killLeftover(rec: SessionRecord, now: { pgid: number; startSec: number } | undefined): boolean {
+  const pid = rec.pid;
+  const window = rec.spawnedWithin;
+  if (!pid || !now || !window || now.pgid !== pid) return false;
+  if (now.startSec < Math.floor(window[0] / 1000) || now.startSec > Math.floor(window[1] / 1000)) return false;
+  try {
+    process.kill(-pid, "SIGKILL");
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -224,7 +259,8 @@ function answers(socketPath: string, timeoutMs = 1000): Promise<boolean> {
 /**
  * Run a keeper in this process: listen on its socket, adopt the sessions a previous keeper handed
  * over (`POMADE_KEEPER_HANDOFF`), and report sessions a crashed keeper left behind as
- * `lost-in-keeper-crash`. Rejects when the socket path is too long or another keeper serves it.
+ * `lost-in-keeper-crash`, killing the process group of any that still runs. Rejects when the socket
+ * path is too long, another keeper serves it, or the keeper recorded for `stateDir` still runs.
  */
 export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
   const env = options.env ?? process.env;
@@ -259,18 +295,42 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
       }
     });
 
+  // Which keeper serves this state folder: its pid and start time. A keeper that is not adopting a
+  // hand-off refuses to start while the recorded one still runs (an update under way, or a keeper
+  // that stopped answering): it would take sessions for lost that are not.
+  const keeperFile = join(stateDir, "keeper.json");
+  const handoffFile = env[HANDOFF_ENV];
+  const adopting = Boolean(handoffFile && existsSync(handoffFile));
+  const ownStartSec = processStamps([process.pid]).get(process.pid)?.startSec ?? null;
+  const claimStateDir = (): void => {
+    try {
+      writeFileSync(`${keeperFile}.tmp`, JSON.stringify({ pid: process.pid, startSec: ownStartSec }));
+      renameSync(`${keeperFile}.tmp`, keeperFile);
+    } catch (err) {
+      log(`keeper record: ${(err as Error).message}`);
+    }
+  };
+
   const socketDir = dirname(socketPath);
   if (!existsSync(socketDir)) {
     mkdirSync(socketDir, { recursive: true, mode: 0o700 });
     chmodSync(socketDir, 0o700);
   }
-  if (existsSync(socketPath)) {
-    if (await answers(socketPath)) throw new Error(`pomade-kit/keeper: a keeper already serves ${socketPath}`);
-    unlinkSync(socketPath);
+  if (existsSync(socketPath) && (await answers(socketPath))) throw new Error(`pomade-kit/keeper: a keeper already serves ${socketPath}`);
+  if (!adopting) {
+    const previous = readKeeperFile(keeperFile);
+    if (previous && previous.pid !== process.pid && previous.startSec !== null) {
+      if (processStamps([previous.pid]).get(previous.pid)?.startSec === previous.startSec) {
+        throw new Error(`pomade-kit/keeper: the keeper with pid ${previous.pid} still runs for ${stateDir}`);
+      }
+    }
   }
+  if (existsSync(socketPath)) unlinkSync(socketPath);
 
   const sessions = new Map<string, Session>();
   const clients = new Set<Client>();
+  /** Owner connections that asked for every session's `info` and `exit` (`watch`). */
+  const watchers = new Set<Client>();
   let server: Server | null = null;
   let handingOff = false;
   /** Sessions that ended while a hand-off was under way: handed over as ended, or finished here if
@@ -287,6 +347,7 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
       command: s.command,
       cwd: s.cwd,
       pid: s.pid,
+      spawnedWithin: s.spawnedWithin,
       startedAt: s.startedAt,
       actions: s.actions,
       exit: s.exit,
@@ -379,13 +440,16 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
     });
   };
 
+  /** Who hears about a session's `info` and `exit`: its attached clients and the watchers. */
+  const audience = (s: Session): Set<Client> => new Set([...s.viewers.keys(), ...watchers]);
+
   const broadcastInfo = (s: Session): void => {
-    for (const c of s.viewers.keys()) send(c, { type: "info", session: s.id, info: info(s) });
+    for (const c of audience(s)) send(c, { type: "info", session: s.id, info: info(s) });
   };
 
   // ── session lifecycle ───────────────────────────────────────────────────────
   const newSession = (
-    fields: Pick<Session, "id" | "title" | "command" | "cwd" | "pid" | "startedAt" | "actions" | "exit" | "log">,
+    fields: Pick<Session, "id" | "title" | "command" | "cwd" | "pid" | "spawnedWithin" | "startedAt" | "actions" | "exit" | "log">,
     cols: number,
     rows: number,
     hold: PtyHold | null,
@@ -454,7 +518,7 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
     s.logStream = null;
     log(`session ${s.id} ended: ${s.exit.reason} (code ${s.exit.code}, signal ${s.exit.signal})`);
     writeRecord(s);
-    for (const c of s.viewers.keys()) send(c, { type: "exit", session: s.id, exit: s.exit });
+    for (const c of audience(s)) send(c, { type: "exit", session: s.id, exit: s.exit });
     pruneExited();
   };
 
@@ -467,12 +531,14 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
     let program = spec.command !== undefined ? [loginShell(env), "-l", "-c", spec.command] : [...(spec.argv ?? [])];
     if (spec.background) program = ["/usr/sbin/taskpolicy", "-b", ...program];
     rmSync(statusFile(id), { force: true });
+    const spawnFrom = Date.now();
     const pty = spawnPty("/bin/sh", ["-c", SHIM, "pomade-keeper", statusFile(id), ...program], {
       cols,
       rows,
       cwd: spec.cwd,
       env: sessionEnv(env, spec.env),
     });
+    const spawnedWithin: [number, number] = [spawnFrom, Date.now()];
     const startedAt = Math.max(Date.now(), (previous?.startedAt ?? 0) + 1);
     const s = newSession(
       {
@@ -481,6 +547,7 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
         command: spec.command ?? (spec.argv ?? []).map(shellQuote).join(" "),
         cwd: spec.cwd,
         pid: pty.hold.pid,
+        spawnedWithin,
         startedAt,
         actions: spec.actions ?? [],
         exit: null,
@@ -509,6 +576,7 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
         command: rec.command,
         cwd: rec.cwd,
         pid: rec.pid,
+        spawnedWithin: rec.spawnedWithin ?? null,
         startedAt: rec.startedAt,
         actions: rec.actions,
         exit: rec.exit,
@@ -614,6 +682,8 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
     sessions.set(s.id, s);
     writeRecord(s);
     send(c, { type: "result", rid: m.rid, value: info(s) });
+    // Its attached clients got a snapshot; the watchers learn that it started.
+    for (const w of watchers) if (!s.viewers.has(w)) send(w, { type: "info", session: s.id, info: info(s) });
   };
 
   const handle = (c: Client, raw: unknown): void => {
@@ -644,6 +714,9 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
     if (OWNER_ONLY.includes(m.type) && c.role !== "owner") return fail(c, rid, "not-owner", `only ${app} may ${m.type}`);
     switch (m.type) {
       case "list":
+        return send(c, { type: "result", rid: m.rid, value: [...sessions.values()].map(info) });
+      case "watch":
+        watchers.add(c);
         return send(c, { type: "result", rid: m.rid, value: [...sessions.values()].map(info) });
       case "spawn":
         return spawnRequest(c, m);
@@ -735,6 +808,7 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
     sock.on("close", () => {
       clearTimeout(helloTimer);
       clients.delete(c);
+      watchers.delete(c);
       for (const id of c.attached.keys()) sessions.get(id)?.viewers.delete(c);
       c.attached.clear();
     });
@@ -782,6 +856,7 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
         command: s.command,
         cwd: s.cwd,
         pid: s.pid,
+        spawnedWithin: s.spawnedWithin,
         startedAt: s.startedAt,
         cols: s.screen.cols,
         rows: s.screen.rows,
@@ -851,17 +926,21 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
     for (const [s, e] of endedDuringHandoff) finishExit(s, e.code, e.signal);
     endedDuringHandoff.clear();
     await listen();
+    claimStateDir();
   };
 
   // ── start ──────────────────────────────────────────────────────────────────
-  const handoffFile = env[HANDOFF_ENV];
-  if (handoffFile && existsSync(handoffFile)) {
+  if (adopting && handoffFile) {
     const h = JSON.parse(readFileSync(handoffFile, "utf8")) as { from: number; sessions: HandoffSession[] };
     for (const rec of h.sessions) sessions.set(rec.id, adoptSession(rec));
     rmSync(handoffFile, { force: true });
     log(`adopted ${h.sessions.length} sessions from pid ${h.from}`);
   } else {
-    // Sessions a keeper was running when it died ended with it (the kernel hung up their PTYs).
+    // Sessions a keeper was running when it died: the kernel hung up their PTYs, which ends most
+    // programs. What still runs — a program that ignores the hang-up, or node-pty's spawn-helper
+    // caught before it reached the terminal — is killed with its process group, once the pid is
+    // proven to name the same process.
+    const lost: SessionRecord[] = [];
     for (const name of readdirSync(join(stateDir, "sessions"))) {
       if (!name.endsWith(".json")) continue;
       let rec: SessionRecord;
@@ -872,18 +951,24 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
         continue;
       }
       if (basename(name, ".json") !== rec.id) continue;
-      const s = newSession({ ...rec, log: null }, 80, 24, null);
-      if (!s.exit) {
-        const code = readStatus(rec.id);
-        s.exit = { code, signal: null, reason: "lost-in-keeper-crash", at: Date.now() };
-        writeRecord(s);
-        log(`session ${rec.id} was lost when the previous keeper ended`);
-      }
+      if (rec.exit) sessions.set(rec.id, newSession({ ...rec, spawnedWithin: rec.spawnedWithin ?? null, log: null }, 80, 24, null));
+      else lost.push(rec);
+    }
+    const stamps = processStamps(lost.flatMap((r) => (r.pid ? [r.pid] : [])));
+    for (const rec of lost) {
+      const killed = rec.pid !== null && stamps.has(rec.pid) && killLeftover(rec, stamps.get(rec.pid));
+      const s = newSession({ ...rec, spawnedWithin: rec.spawnedWithin ?? null, log: null }, 80, 24, null);
+      s.exit = { code: readStatus(rec.id), signal: killed ? "SIGKILL" : null, reason: "lost-in-keeper-crash", at: Date.now() };
+      writeRecord(s);
+      log(`session ${rec.id} was lost when the previous keeper ended`);
+      if (killed) log(`session ${rec.id}: killed the process group ${rec.pid} it left running`);
+      else if (rec.pid !== null && stamps.has(rec.pid)) log(`session ${rec.id}: pid ${rec.pid} runs but is not provably its process; left alone`);
       sessions.set(s.id, s);
     }
     pruneExited();
   }
   await listen();
+  claimStateDir();
   log(`keeper for ${app} listening on ${socketPath} (version ${version})`);
 
   return {
@@ -900,6 +985,7 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
         if (!s.exit && s.hold) s.hold.kill("SIGKILL");
         s.screen.dispose();
       }
+      if (readKeeperFile(keeperFile)?.pid === process.pid) rmSync(keeperFile, { force: true });
     },
   };
 }

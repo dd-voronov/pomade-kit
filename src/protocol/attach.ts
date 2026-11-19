@@ -159,6 +159,9 @@ export interface KeeperHello {
 export type KeeperRequest =
   | KeeperHello
   | { type: "list"; rid: string }
+  /** The owner only: answered with the sessions, as `list`; from then on this connection gets every
+   *  session's `info` (it started, or its title or actions changed) and `exit`, without its output. */
+  | { type: "watch"; rid: string }
   | { type: "spawn"; rid: string; spec: SpawnSpec }
   | {
       type: "attach";
@@ -194,7 +197,7 @@ export type KeeperRequest =
 export type KeeperRequestType = KeeperRequest["type"];
 
 /** Requests only the owner may send. */
-export const OWNER_ONLY: readonly KeeperRequestType[] = ["spawn", "update", "forget", "upgrade"];
+export const OWNER_ONLY: readonly KeeperRequestType[] = ["spawn", "update", "forget", "upgrade", "watch"];
 
 export type KeeperErrorCode =
   | "bad-request"
@@ -234,6 +237,7 @@ export type KeeperMessage =
   | { type: "output"; session: string; data: string; seq: number }
   | { type: "resized"; session: string; cols: number; rows: number }
   | { type: "exit"; session: string; exit: SessionExit }
+  /** To attached clients: the owner changed its title or actions. To watchers also: it started. */
   | { type: "info"; session: string; info: SessionInfo }
   | { type: "keeper-restarting"; reconnectAfterMs: number };
 
@@ -343,9 +347,10 @@ export function parseKeeperRequest(raw: unknown): { ok: true; value: KeeperReque
       if (typeof c.key === "string") client.key = c.key;
       return { ok: true, value: { type: "hello", protocol: raw.protocol, client } };
     }
-    case "list": {
+    case "list":
+    case "watch": {
       const r = needRid();
-      return r === null ? bad('"rid" is required') : { ok: true, value: { type: "list", rid: r } };
+      return r === null ? bad('"rid" is required') : { ok: true, value: { type: raw.type, rid: r } };
     }
     case "spawn": {
       const r = needRid();

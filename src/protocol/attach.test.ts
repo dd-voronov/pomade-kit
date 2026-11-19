@@ -106,6 +106,8 @@ describe("client → keeper requests", () => {
     [{ type: "hello", protocol: "1", client: { app: "hello", role: "owner" } }, false],
     [{ type: "list", rid: "1" }, true],
     [{ type: "list" }, false],
+    [{ type: "watch", rid: "1" }, true],
+    [{ type: "watch" }, false],
     [{ type: "spawn", rid: "1", spec: { title: "x", command: "true", cwd: "/" } }, true],
     [{ type: "spawn", rid: "1", spec: { title: "x", cwd: "/" } }, false],
     [{ type: "attach", rid: "1", session: "s" }, true],
@@ -136,8 +138,8 @@ describe("client → keeper requests", () => {
   it("names the rid of a bad request so the keeper can answer it", () => {
     expect(parseKeeperRequest({ type: "attach", rid: "7", session: "a b" })).toEqual({ ok: false, rid: "7", message: '"session" must be a session id' });
   });
-  it("spawn, update, forget and upgrade are the owner's", () => {
-    expect([...OWNER_ONLY].sort()).toEqual(["forget", "spawn", "update", "upgrade"]);
+  it("spawn, update, forget, upgrade and watch are the owner's", () => {
+    expect([...OWNER_ONLY].sort()).toEqual(["forget", "spawn", "update", "upgrade", "watch"]);
   });
 });
 

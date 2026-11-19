@@ -57,6 +57,10 @@ type Event = Exclude<KeeperMessage, { type: "welcome" | "reject" | "result" } | 
 export interface KeeperClient {
   readonly keeper: { version: string; pid: number };
   list(): Promise<SessionInfo[]>;
+  /** The owner only: the sessions now, and from then on every session's `info` (it started, or
+   *  its title or actions changed) and `exit` as events — without its output. Lasts as long as
+   *  this connection; after a keeper update, watch again on the new connection. */
+  watch(): Promise<SessionInfo[]>;
   /** The owner only. */
   spawn(spec: SpawnSpec): Promise<SessionInfo>;
   /** Attach: a `snapshot` (or a `delta` for `since`) arrives as an event before this resolves, then
@@ -141,6 +145,7 @@ function clientOver(sock: Socket, decoder: ReturnType<typeof createLineDecoder>,
   const client: KeeperClient = {
     keeper,
     list: () => request<SessionInfo[]>({ type: "list" }),
+    watch: () => request<SessionInfo[]>({ type: "watch" }),
     spawn: (spec) => request<SessionInfo>({ type: "spawn", spec }),
     attach: async (session, options = {}) => {
       await request({ type: "attach", session, ...options });
