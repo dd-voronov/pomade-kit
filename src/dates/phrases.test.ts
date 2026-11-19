@@ -307,7 +307,8 @@ describe("currentDay never moves backwards across DST", () => {
         expect(consecutive(sweep(new Date("2026-10-24T00:00:00Z"), new Date("2026-10-27T00:00:00Z"), b, 5))).toBe(true);
         expect(consecutive(sweep(new Date("2026-03-28T00:00:00Z"), new Date("2026-03-31T00:00:00Z"), b, 5))).toBe(true);
       }
-    });
+      // ~3 s alone: 96 boundaries × two 3-day sweeps at 5-minute steps; room for a loaded machine.
+    }, 30_000);
   });
 
   describe("America/New_York (fall 2026-11-01 02:00 → 01:00)", () => {

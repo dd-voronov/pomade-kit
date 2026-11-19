@@ -381,7 +381,7 @@ test("looks like Pomade on a dark Mac: Pomade's tokens and theme, not the Mac's 
   await expect(app(page).locator("body")).toHaveCSS("background-color", "rgb(250, 251, 252)");
   await expect(app(page).locator("body")).toHaveCSS("color", "rgb(31, 41, 51)");
   await expect(root()).toHaveCSS("color-scheme", "light");
-  if (process.env.HELLO_SHOTS) await page.screenshot({ path: `${process.env.HELLO_SHOTS}/theme-light-on-dark-mac.png` });
+  await page.screenshot({ path: process.env.HELLO_SHOTS ? `${process.env.HELLO_SHOTS}/theme-light-on-dark-mac.png` : test.info().outputPath("theme-light-on-dark-mac.png") });
 
   await page.evaluate(() => window.fakeHost.setTheme("dark"));
   await expect(root()).toHaveAttribute("data-theme", "dark");
