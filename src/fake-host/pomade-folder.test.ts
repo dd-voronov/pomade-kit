@@ -67,6 +67,7 @@ describe("the workspace's .pomade folder is out of reach", () => {
     ["files.symlink", (path) => ({ path: `${path}/l`, target: "Projects/a/README.md" })],
     ["files.removeSymlink", (path) => ({ path })],
     ["files.pickFolder", (path) => ({ initial: path })],
+    ["files.pickFile", (path) => ({ under: path })],
     ["tabs.openFile", (path) => ({ path })],
     ["tabs.openTerminal", (path) => ({ cwd: path })],
   ];

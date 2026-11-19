@@ -441,6 +441,19 @@ export interface PickFolderResult {
   path: string | null;
 }
 
+/** `files.pickFile` — ask the user for a file, optionally inside a folder and of given kinds. */
+export interface PickFileParams {
+  /** A workspace-relative folder that bounds the choice and where the picker starts; absent or `""` = the whole workspace. */
+  under?: string;
+  /** The extensions the picker offers, without the dot (`["md", "txt"]`), matched case-insensitively; absent = any file. */
+  extensions?: string[];
+}
+
+/** The chosen file, workspace-relative; `null` when the user cancelled. */
+export interface PickFileResult {
+  path: string | null;
+}
+
 // ── App state, own tab, overlay (pomade:E-027) ─────────────────────────────
 
 /** `state.get` — one key of the app's machine-local state. */
@@ -555,6 +568,7 @@ export interface HostMethods {
   "files.symlink": { params: SymlinkParams; result: Record<string, never> };
   "files.removeSymlink": { params: RemoveSymlinkParams; result: Record<string, never> };
   "files.pickFolder": { params: PickFolderParams; result: PickFolderResult };
+  "files.pickFile": { params: PickFileParams; result: PickFileResult };
   "state.get": { params: StateGetParams; result: StateGetResult };
   "state.set": { params: StateSetParams; result: Record<string, never> };
   "tabs.openApp": { params: OpenAppParams; result: Record<string, never> };
@@ -610,6 +624,7 @@ export const METHOD_CAPABILITY: Readonly<Record<MethodName, MethodCapability>> =
   "files.symlink": "files.symlink",
   "files.removeSymlink": "files.symlink",
   "files.pickFolder": "files.read",
+  "files.pickFile": "files.read",
   "state.get": null,
   "state.set": null,
   "tabs.openApp": null,

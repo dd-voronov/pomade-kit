@@ -53,6 +53,8 @@ export type {
   SetProjectAgentsParams,
   SymlinkParams,
   RemoveSymlinkParams,
+  PickFileParams,
+  PickFileResult,
   PickFolderParams,
   PickFolderResult,
   OpenAppParams,

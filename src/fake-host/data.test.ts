@@ -827,8 +827,8 @@ describe("files.pickFolder", () => {
     fh.answerPick("Projects/Pomade/notes/");
     expect(await host.files.pickFolder()).toEqual({ path: "Projects/Pomade/notes" });
     expect(fh.pickRequests).toEqual([
-      { root: "Projects/Pomade", initial: "Projects/Pomade/docs" },
-      { root: "", initial: "" },
+      { kind: "folder", root: "Projects/Pomade", initial: "Projects/Pomade/docs" },
+      { kind: "folder", root: "", initial: "" },
     ]);
   });
 
@@ -856,5 +856,58 @@ describe("files.pickFolder", () => {
     expect(f.errorOf("files.pickFolder", { initial: "../x" })).toBe("outside-workspace");
     const noRead = raw(fake({ manifest: { id: "x1", name: "X", version: "1.0.0", hostApi: 0, capabilities: ["project.read"] } }));
     expect(noRead.errorOf("files.pickFolder", {})).toBe("capability-denied");
+  });
+});
+
+describe("files.pickFile", () => {
+  const PICK_FILES = {
+    "Projects/Pomade/notes/plain.txt": "x",
+    "Projects/Pomade/notes/Day.MD": "# day\n",
+    "Projects/Pomade/notes/.hidden": "x",
+    "Projects/Pomade/docs/readme.md": "# r\n",
+    "Projects/Other/outside.md": "# o\n",
+  };
+
+  it("returns the scripted file, bounded by under; the picker starts at under", async () => {
+    const fh = fake({ files: PICK_FILES });
+    const host = await client(fh);
+    fh.answerPick("Projects/Pomade/docs/readme.md");
+    expect(await host.files.pickFile({ under: "Projects/Pomade" })).toEqual({ path: "Projects/Pomade/docs/readme.md" });
+    fh.answerPick("Projects/Other/outside.md");
+    expect(await host.files.pickFile()).toEqual({ path: "Projects/Other/outside.md" });
+    expect(fh.pickRequests).toEqual([
+      { kind: "file", root: "Projects/Pomade", initial: "Projects/Pomade" },
+      { kind: "file", root: "", initial: "" },
+    ]);
+  });
+
+  it("a file outside under, a folder or a file of another extension is refused and the picker asks again; no answer = cancelled", async () => {
+    const fh = fake({ files: PICK_FILES });
+    const host = await client(fh);
+    fh.answerPick("Projects/Other/outside.md");
+    fh.answerPick("Projects/Pomade/docs");
+    fh.answerPick("Projects/Pomade/notes/plain.txt");
+    fh.answerPick("Projects/Pomade/notes/.hidden");
+    fh.answerPick("Projects/Pomade/notes/Day.MD");
+    expect(await host.files.pickFile({ under: "Projects/Pomade", extensions: ["md"] })).toEqual({ path: "Projects/Pomade/notes/Day.MD" });
+    expect(fh.pickRequests).toEqual([{ kind: "file", root: "Projects/Pomade", initial: "Projects/Pomade", extensions: ["md"] }]);
+    expect(await host.files.pickFile({ under: "Projects/Pomade" })).toEqual({ path: null });
+    fh.answerPick(null);
+    fh.answerPick("Projects/Pomade/docs/readme.md");
+    expect(await host.files.pickFile()).toEqual({ path: null });
+  });
+
+  it("errors", async () => {
+    const fh = fake({ files: PICK_FILES });
+    const f = raw(fh);
+    expect(f.errorOf("files.pickFile", { under: "Projects/Nope" })).toBe("not-found");
+    expect(f.errorOf("files.pickFile", { under: "Projects/Pomade/docs/readme.md" })).toBe("not-found");
+    expect(f.errorOf("files.pickFile", { under: 3 })).toBe("invalid-params");
+    expect(f.errorOf("files.pickFile", { under: "../x" })).toBe("outside-workspace");
+    expect(f.errorOf("files.pickFile", { extensions: "md" })).toBe("invalid-params");
+    expect(f.errorOf("files.pickFile", { extensions: [] })).toBe("invalid-params");
+    expect(f.errorOf("files.pickFile", { extensions: [".md"] })).toBe("invalid-params");
+    const noRead = raw(fake({ manifest: { id: "x1", name: "X", version: "1.0.0", hostApi: 0, capabilities: ["project.read"] } }));
+    expect(noRead.errorOf("files.pickFile", {})).toBe("capability-denied");
   });
 });

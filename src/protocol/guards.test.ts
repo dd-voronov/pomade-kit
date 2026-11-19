@@ -268,6 +268,7 @@ describe("METHOD_CAPABILITY", () => {
       "files.symlink": "files.symlink",
       "files.removeSymlink": "files.symlink",
       "files.pickFolder": "files.read",
+      "files.pickFile": "files.read",
       "state.get": null,
       "state.set": null,
       "tabs.openApp": null,

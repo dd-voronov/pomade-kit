@@ -319,7 +319,7 @@ describe("surfaces, strip icons and routes", () => {
       if (r.status !== "connected") throw new Error(r.status);
       expect(r.host.welcome).toMatchObject({ surface, route: "" });
       await expect(r.host.info()).resolves.toMatchObject({ surface, route: "" });
-      for (const call of [() => r.host.files.pickFolder(), () => r.host.git.watch({}, () => undefined), () => r.host.overlay.open(), () => r.host.overlay.resize({ height: 300 }), () => r.host.overlay.close()]) {
+      for (const call of [() => r.host.files.pickFolder(), () => r.host.files.pickFile(), () => r.host.git.watch({}, () => undefined), () => r.host.overlay.open(), () => r.host.overlay.resize({ height: 300 }), () => r.host.overlay.close()]) {
         await expect(call()).rejects.toMatchObject({ code: "capability-denied", message: expect.stringMatching(/needs an app frame/) });
       }
       await expect(r.host.files.readFolder({ path: "Projects/Pomade" })).resolves.toMatchObject({ entries: expect.any(Array) });

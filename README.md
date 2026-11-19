@@ -214,6 +214,19 @@ root). `root` is a project id — absent or `"__workspace__"` for the whole work
 outside the root is refused in the dialog, which opens again until the user picks one inside or
 cancels.
 
+## Choose a file
+
+```ts
+const { path } = await host.files.pickFile({ under: "Projects/x/templates", extensions: ["md", "txt"] });  // files.read
+if (path !== null) save(path);   // workspace-relative; null = cancelled
+```
+
+Pomade opens its native file dialog at `under` (a workspace-relative folder; absent or `""` = the
+whole workspace; a missing folder is `not-found`). `extensions` (without the dot, matched
+case-insensitively) are the kinds the dialog offers; absent = any file. A file outside `under` or
+of another extension is refused in the dialog, which opens again until the user picks a fitting
+file or cancels.
+
 ## Symlinks
 
 Capability `files.symlink`, plus the folders in the manifest:
@@ -454,7 +467,7 @@ code, and the events. Test controls emit the events Pomade would:
 | `fake.readFile(path)` | — (returns the file's text: what the app's writes left) |
 | `fake.symlink(path, target)` | `create` (a link listings report as its target's kind) |
 | `fake.isSymlink(path)` | — (true when a symlink is at `path`) |
-| `fake.answerPick(path \| null)` | — (queues the user's next folder-picker choice; a folder outside the root is refused and the next answer used; none left = cancel). `fake.pickRequests` logs `{ root, initial }` per picker |
+| `fake.answerPick(path \| null)` | — (queues the user's next picker choice, a folder for `pickFolder` and a file for `pickFile`; an answer outside the root, of the wrong kind or, for `pickFile`, of another extension is refused and the next answer used; none left = cancel). `fake.pickRequests` logs `{ kind, root, initial }` per picker, plus `extensions` for `pickFile` (its `under` is both `root` and `initial`) |
 | `fake.setGitRepos(repos)` | `git.changed` to each git watch whose scope's repos changed |
 | `fake.openedTabs` | — (every `tabs.openFile` / `openTerminal` / `openApp`, in order: `{ kind: "file", projectId, path }` · `{ kind: "terminal", projectId, cwd, command?, title? }` · `{ kind: "app", projectId, route }`; the call switches the active project like Pomade) |
 | `fake.overlays` | — (every `overlay.open`, in order: `{ route, height?, anchor }` — `height` as given, absent when none; `anchor` `"center"` when none) |
@@ -958,7 +971,7 @@ if (up.status === "connected") up.host;      // up.launched: this call started i
   `rejected`. It throws only when the identity is not configured — no app id, no key.
 - Options override the environment: `socketPath`, `appId`, `key` / `keyFile`, `role`
   (`"backend"` | `"command"`, default `POMADE_CLIENT`, else `"command"`), `env`, `timeoutMs`.
-- Over the socket `files.pickFolder`, `git.watch`, `overlay.open`, `overlay.resize` and `overlay.close` are `capability-denied`
+- Over the socket `files.pickFolder`, `files.pickFile`, `git.watch`, `overlay.open`, `overlay.resize` and `overlay.close` are `capability-denied`
   (they need a frame); everything else is as for the app's frames, under its manifest.
 - `launchPomade()` connects when Pomade runs; otherwise it runs the launch Pomade recorded in
   `host.json` (`open -a` for the installed app), without `ELECTRON_RUN_AS_NODE`, and retries the

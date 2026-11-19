@@ -242,7 +242,7 @@ export class FakeHost {
   readonly overlays: FakeOpenedOverlay[] = [];
   /** Every height an overlay frame asked for with `overlay.resize`, in order, as given. */
   readonly overlayResizes: number[] = [];
-  /** Every folder picker the app opened (`files.pickFolder`), in order. */
+  /** Every picker the app opened (`files.pickFolder`, `files.pickFile`), in order. */
   readonly pickRequests: FakePickRequest[] = [];
   private readonly pickAnswers: (string | null)[] = [];
   private readonly writeFailures: { path: string; failure: FakeWriteFailure }[] = [];
@@ -450,8 +450,9 @@ export class FakeHost {
     return this.workspace.isLink(controlPath(path));
   }
 
-  /** Script the user's next folder-picker choice: a workspace-relative folder, or `null` to cancel.
-   *  Answers queue up; with none left a picker is cancelled. */
+  /** Script the user's next picker choice: a workspace-relative folder (for a folder picker) or
+   *  file (for a file picker), or `null` to cancel. Answers queue up; with none left a picker is
+   *  cancelled. */
   answerPick(path: string | null): void {
     if (path === null) {
       this.pickAnswers.push(null);
@@ -877,6 +878,7 @@ export class FakeHost {
       case "files.removeSymlink":
         return dispatchSymlinks(this.data, method, params);
       case "files.pickFolder":
+      case "files.pickFile":
         return dispatchPick(this.data, method, params);
       case "state.get": {
         const bad = checkStateKey(params.key);

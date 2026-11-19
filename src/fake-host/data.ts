@@ -61,9 +61,9 @@ export interface DataContext {
   projectUpdated(id: string, changes: ProjectChange[]): void;
   /** The manifest's `symlinks` folder patterns. */
   readonly symlinkScopes: readonly string[];
-  /** The folder picker's scripted answers (workspace-relative paths or `null` = cancel), in order. */
+  /** The pickers' scripted answers (workspace-relative paths or `null` = cancel), in order. */
   readonly pickAnswers: (string | null)[];
-  /** Every picker the app opened: its root and where it started. */
+  /** Every picker the app opened: its kind, its root and where it started. */
   readonly pickRequests: FakePickRequest[];
   /** Scripted write failures (`fake.failNextWrite`), in order; each fails the next write to its path once. */
   readonly writeFailures: { path: string; failure: FakeWriteFailure }[];
@@ -89,12 +89,15 @@ function scriptedFailure(ctx: DataContext, path: string): void {
   }
 }
 
-/** A folder picker the app opened (`files.pickFolder`), as the fake host records it. */
+/** A picker the app opened (`files.pickFolder` or `files.pickFile`), as the fake host records it. */
 export interface FakePickRequest {
-  /** The root folder, workspace-relative (`""` = the workspace). */
+  kind: "folder" | "file";
+  /** The root folder, workspace-relative (`""` = the workspace); a file picker's `under`. */
   root: string;
-  /** Where it started, workspace-relative. */
+  /** Where it started, workspace-relative; a file picker starts at `under`. */
   initial: string;
+  /** A file picker's extensions (lowercase, no dot); absent = any file. */
+  extensions?: string[];
 }
 
 function optionalString(p: Obj, key: string): string | undefined {
@@ -457,18 +460,54 @@ export function dispatchSymlinks(ctx: DataContext, method: SymlinkDataMethod, p:
   }
 }
 
-/** The folder picker of pomade:E-030. */
-export type PickDataMethod = Extract<MethodName, "files.pickFolder">;
+/** The pickers of pomade:E-030 and pomade:T-245. */
+export type PickDataMethod = Extract<MethodName, "files.pickFolder" | "files.pickFile">;
 
-/** `files.pickFolder` against scripted answers: an answer that is not a folder inside the root is
- *  refused like Pomade's dialog refuses it (the picker asks again: the next answer). No answer
- *  left = the user cancelled. */
-export function dispatchPick(ctx: DataContext, _method: PickDataMethod, p: Obj): unknown {
+/** A picker against scripted answers: an answer outside the root, of the wrong kind (a file for a
+ *  folder picker and the reverse) or, for a file picker, of another extension is refused like
+ *  Pomade's dialog refuses it (the picker asks again: the next answer). No answer left = the
+ *  user cancelled. */
+export function dispatchPick(ctx: DataContext, method: PickDataMethod, p: Obj): unknown {
+  return method === "files.pickFile" ? pickFile(ctx, p) : pickFolder(ctx, p);
+}
+
+function pickFile(ctx: DataContext, p: Obj): unknown {
+  const under = p.under === undefined ? "" : pathParam(p, "under");
+  const extensions = extensionsParam(p);
+  if (ctx.workspace.kindOf(under) !== "dir") throw new CallError("not-found", `${JSON.stringify(under)} is not a folder`);
+  ctx.pickRequests.push({ kind: "file", root: under, initial: under, ...(extensions ? { extensions } : {}) });
+  for (;;) {
+    const answer = ctx.pickAnswers.shift();
+    if (answer === undefined || answer === null) return { path: null };
+    if (!isInside(answer, under) || ctx.workspace.kindOf(answer) !== "file" || !ctx.workspace.isVisible(answer)) continue;
+    if (extensions && !extensions.includes(extensionOf(answer))) continue;
+    return { path: answer };
+  }
+}
+
+/** A file's extension, lowercase, without the dot; `""` when it has none (a leading dot is not one). */
+function extensionOf(path: string): string {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+}
+
+/** `extensions`: absent, or a non-empty list of bare extensions (letters and digits); lowercased. */
+function extensionsParam(p: Obj): string[] | undefined {
+  const v = p.extensions;
+  if (v === undefined) return undefined;
+  if (!Array.isArray(v) || v.length === 0 || !v.every((x) => typeof x === "string" && /^[A-Za-z0-9]+$/.test(x))) {
+    throw new CallError("invalid-params", '"extensions" must be a non-empty list of extensions without the dot');
+  }
+  return (v as string[]).map((x) => x.toLowerCase());
+}
+
+function pickFolder(ctx: DataContext, p: Obj): unknown {
   const rootId = optionalString(p, "root");
   const root = rootId === undefined || rootId === WORKSPACE_PROJECT_ID ? "" : ctx.project(rootId).root;
   const wanted = p.initial === undefined ? root : pathParam(p, "initial");
   const initial = isInside(wanted, root) && ctx.workspace.kindOf(wanted) === "dir" ? wanted : root;
-  ctx.pickRequests.push({ root, initial });
+  ctx.pickRequests.push({ kind: "folder", root, initial });
   for (;;) {
     const answer = ctx.pickAnswers.shift();
     if (answer === undefined || answer === null) return { path: null };

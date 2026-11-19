@@ -41,6 +41,8 @@ import {
   type SetProjectSettingsParams,
   type RemoveSymlinkParams,
   type SymlinkParams,
+  type PickFileParams,
+  type PickFileResult,
   type PickFolderParams,
   type PickFolderResult,
   type GitRepoState,
@@ -177,6 +179,8 @@ export interface HostClient {
     removeSymlink(params: RemoveSymlinkParams): Promise<void>;
     /** Ask the user for a folder inside a project (or the workspace); `path: null` = cancelled. */
     pickFolder(params?: PickFolderParams): Promise<PickFolderResult>;
+    /** Ask the user for a file, optionally under a folder and of given extensions; `path: null` = cancelled. */
+    pickFile(params?: PickFileParams): Promise<PickFileResult>;
   };
   readonly strip: {
     /** Badge one of the app's own strip icons; `count: 0` clears it, `urgent: true` paints it red. */
@@ -462,6 +466,7 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
         await call("files.removeSymlink", params);
       },
       pickFolder: (params = {}) => call("files.pickFolder", params),
+      pickFile: (params = {}) => call("files.pickFile", params),
     },
     strip: {
       async setBadge(params) {

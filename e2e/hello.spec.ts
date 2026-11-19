@@ -225,7 +225,7 @@ test("Choose folder… uses the host's folder picker, bounded by the project", a
   });
   await app(page).getByTestId("pick-folder").click();
   await expect(app(page).getByTestId("folder")).toHaveText("Projects/alpha/docs/roadmap/done");
-  expect(await page.evaluate(() => window.fakeHost.pickRequests)).toEqual([{ root: "Projects/alpha", initial: "Projects/alpha/docs/roadmap" }]);
+  expect(await page.evaluate(() => window.fakeHost.pickRequests)).toEqual([{ kind: "folder", root: "Projects/alpha", initial: "Projects/alpha/docs/roadmap" }]);
 });
 
 test("shows the project's git repos and follows git changes and project switches", async ({ page }) => {
