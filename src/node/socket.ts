@@ -154,8 +154,8 @@ export function connectSocket(options: SocketConnectOptions = {}): Promise<Socke
           settle({ status: "rejected", reason: msg.reason, hostApi: msg.hostApi });
         } else if (msg?.type === "welcome") {
           unlisten();
-          const { hostApi, pomadeVersion, appId: id, surface, route, project } = msg;
-          settle({ status: "connected", host: createClient(transport, { hostApi, pomadeVersion, appId: id, surface, route, project }, () => socket.end()) });
+          const { hostApi, pomadeVersion, appId: id, surface, route, project, theme } = msg;
+          settle({ status: "connected", host: createClient(transport, { hostApi, pomadeVersion, appId: id, surface, route, project, theme }, () => socket.end()) });
         }
       });
       transport.send({ channel: CHANNEL, type: "hello", hostApi: HOST_API_VERSION, client: { appId, key, role } });

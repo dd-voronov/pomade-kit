@@ -80,7 +80,7 @@ describe("connectSocket", () => {
     expect(hellos).toEqual([
       { channel: "pomade", type: "hello", hostApi: 0, client: { appId: "pomade-agents", key: "secret-key", role: "backend" } },
     ]);
-    expect(r.host.welcome).toEqual({ hostApi: 0, pomadeVersion: "9.9.9", appId: "pomade-agents", surface: "backend", route: "", project: PROJECT });
+    expect(r.host.welcome).toEqual({ hostApi: 0, pomadeVersion: "9.9.9", appId: "pomade-agents", surface: "backend", route: "", project: PROJECT, theme: "light" });
     await expect(r.host.info()).resolves.toEqual({ echo: "host.info" });
     r.host.close();
   });

@@ -4,20 +4,33 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Hello</title>
+    <!-- Pomade's design tokens (pomade-kit/tokens.css) come in through src/main.ts. -->
     <style>
-      body { font: 13px/1.4 -apple-system, system-ui, sans-serif; margin: 16px; color: #222; }
+      body { font: var(--fs-base)/var(--lh) var(--font-ui); margin: var(--space-4); color: var(--text); background: var(--bg); }
+      h1 { font-size: var(--fs-xl); font-weight: var(--fw-semibold); margin: 0 0 var(--space-3); }
+      p { margin: var(--space-2) 0; }
+      button { font: inherit; color: var(--text); background: var(--panel-raised); border: 1px solid var(--border-strong);
+        border-radius: var(--radius-md); padding: 2px var(--space-2); min-height: var(--hit-target); cursor: pointer; }
+      button:hover:not(:disabled) { background: var(--panel); }
+      button:active:not(:disabled) { background: var(--active-bg); }
+      button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+      button:disabled { color: var(--text-faint); cursor: default; }
       table { border-collapse: collapse; }
-      th, td { text-align: left; padding: 2px 12px 2px 0; }
-      .error { color: #b00; }
-      body.overlay { margin: 12px; }
-      body.overlay textarea { box-sizing: border-box; display: block; width: 100%; font: inherit; padding: 6px 8px; resize: none; overflow: hidden; }
-      .skill-notice { display: flex; gap: 12px; align-items: center; margin: 0 0 12px; padding: 8px 10px;
-        border: 1px solid #c9dde6; border-radius: 6px; background: #eef6fa; }
+      th, td { text-align: left; padding: 2px var(--space-3) 2px 0; }
+      th { color: var(--text-muted); font-weight: var(--fw-medium); }
+      .error { color: var(--danger); }
+      body.overlay { margin: var(--space-3); }
+      body.overlay textarea { box-sizing: border-box; display: block; width: 100%; font: inherit; color: var(--text);
+        background: var(--panel-raised); border: 1px solid var(--border-strong); border-radius: var(--radius-md);
+        padding: 6px var(--space-2); resize: none; overflow: hidden; }
+      .skill-notice { display: flex; gap: var(--space-3); align-items: center; margin: 0 0 var(--space-3); padding: var(--space-2) 10px;
+        border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--accent-soft); }
       .skill-notice p { margin: 0; flex: 1; }
-      .about { margin: 8px 0 12px; padding: 8px 10px; border: 1px solid #e2e8ec; border-radius: 6px; background: #fafbfc; }
-      .about h2 { margin: 0 0 6px; font-size: 13px; }
+      .about { margin: var(--space-2) 0 var(--space-3); padding: var(--space-2) 10px; border: 1px solid var(--border);
+        border-radius: var(--radius-md); background: var(--panel-raised); }
+      .about h2 { margin: 0 0 6px; font-size: var(--fs-base); }
       .about ul { margin: 0; padding-left: 18px; }
-      code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+      code { font: var(--fs-sm) var(--font-mono); word-break: break-all; }
       [hidden] { display: none !important; }
     </style>
   </head>

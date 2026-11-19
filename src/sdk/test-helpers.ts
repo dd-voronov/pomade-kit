@@ -41,6 +41,7 @@ export const WELCOME = {
   surface: "tab",
   route: "",
   project: PROJECT,
+  theme: "light",
 } as const;
 
 /** A keydown event as the forwarder reads it. */

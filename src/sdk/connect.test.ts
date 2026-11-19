@@ -43,7 +43,7 @@ describe("connect — handshake", () => {
     const r = await h.promise;
     expect(r.status).toBe("connected");
     if (r.status !== "connected") return;
-    expect(r.host.welcome).toEqual({ hostApi: 0, pomadeVersion: "0.3.0", appId: "hello", surface: "tab", route: "", project: PROJECT });
+    expect(r.host.welcome).toEqual({ hostApi: 0, pomadeVersion: "0.3.0", appId: "hello", surface: "tab", route: "", project: PROJECT, theme: "light" });
     // The handshake listener is gone; the client's own listener remains.
     expect(mock.listenerCount()).toBe(1);
   });
@@ -62,6 +62,7 @@ describe("connect — handshake", () => {
       icon: "board",
       route: "needs-you",
       project: PROJECT,
+      theme: "light",
     });
   });
 

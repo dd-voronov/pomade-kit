@@ -127,7 +127,7 @@ describe("parseAppMessage", () => {
 });
 
 describe("parseHostMessage", () => {
-  const welcome = { channel: "pomade", type: "welcome", hostApi: 0, pomadeVersion: "0.3.0", appId: "a1", surface: "tab", route: "", project };
+  const welcome = { channel: "pomade", type: "welcome", hostApi: 0, pomadeVersion: "0.3.0", appId: "a1", surface: "tab", route: "", project, theme: "light" };
 
   it("welcome", () => {
     expect(parseHostMessage(welcome)).toEqual(welcome);
@@ -147,6 +147,23 @@ describe("parseHostMessage", () => {
     expect(parseHostMessage({ ...welcome, pomadeVersion: undefined })).toBeNull();
     expect(parseHostMessage({ ...welcome, appId: 1 })).toBeNull();
     expect(parseHostMessage({ ...welcome, hostApi: "0" })).toBeNull();
+  });
+
+  it("welcome theme: light or dark; a welcome that names none is light; anything else is ignored", () => {
+    expect(parseHostMessage({ ...welcome, theme: "dark" })).toEqual({ ...welcome, theme: "dark" });
+    expect(parseHostMessage({ ...welcome, theme: undefined })).toEqual(welcome);
+    expect(parseHostMessage({ ...welcome, theme: "blue" })).toBeNull();
+    expect(parseHostMessage({ ...welcome, theme: null })).toBeNull();
+    expect(parseHostMessage({ ...welcome, theme: 1 })).toBeNull();
+  });
+
+  it("theme.changed carries a theme; anything else is ignored", () => {
+    const ev = (payload: unknown) => ({ channel: "pomade", type: "event", name: "theme.changed", payload });
+    expect(parseHostMessage(ev({ theme: "dark" }))).toEqual(ev({ theme: "dark" }));
+    expect(parseHostMessage(ev({ theme: "light", extra: 1 }))).toEqual(ev({ theme: "light" }));
+    expect(parseHostMessage(ev({ theme: "blue" }))).toBeNull();
+    expect(parseHostMessage(ev("dark"))).toBeNull();
+    expect(parseHostMessage(ev(null))).toBeNull();
   });
 
   it("reject, every reason", () => {

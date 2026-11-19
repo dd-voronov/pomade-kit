@@ -20,7 +20,7 @@ const BASE = { id: "pomade-runner", name: "Runner", version: "0.1.0", hostApi: 0
 const DECLARED: ManifestEvents = { publish: ["run.started", "run.finished"], subscribe: ["project.renamed", "pomade-agents:session.closed"] };
 
 describe("event names", () => {
-  it("platform events are the documented ten", () => {
+  it("platform events are the documented eleven", () => {
     expect(PLATFORM_EVENTS).toEqual([
       "pomade.ready",
       "project.created",
@@ -29,6 +29,7 @@ describe("event names", () => {
       "project.opened",
       "project.changed",
       "project.updated",
+      "theme.changed",
       "agentTab.exited",
       "agentTab.changed",
       "attachedTab.action",

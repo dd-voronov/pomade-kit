@@ -247,6 +247,7 @@ test("hears platform events it subscribes to: Pomade ready (sticky), a project r
     "project.removed",
     "project.renamed",
     "project.updated",
+    "theme.changed",
   ]);
   await page.evaluate(() => window.fakeHost.ready());
   await expect(app(page).getByTestId("events")).toHaveText("Last event: Pomade ready");
@@ -370,4 +371,20 @@ test("Trash scratch files deletes every file in scratch/ in one call; the status
   expect(await page.evaluate(() => ["a", "b"].map((n) => { try { window.fakeHost.readFile(`Projects/alpha/scratch/${n}.md`); return "kept"; } catch { return "gone"; } }))).toEqual(["gone", "gone"]);
   await app(page).getByTestId("scratch-new").click();
   await expect(app(page).getByTestId("scratch-status")).toHaveText(/^Created Projects\/alpha\/scratch\/scratch-\d+\.md$/);
+});
+
+test("looks like Pomade on a dark Mac: Pomade's tokens and theme, not the Mac's appearance", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  const root = () => app(page).locator("html");
+  await expect(root()).toHaveAttribute("data-theme", "light");
+  // Pomade's --bg and --text (pomade-kit/tokens.css), and light native controls.
+  await expect(app(page).locator("body")).toHaveCSS("background-color", "rgb(250, 251, 252)");
+  await expect(app(page).locator("body")).toHaveCSS("color", "rgb(31, 41, 51)");
+  await expect(root()).toHaveCSS("color-scheme", "light");
+  if (process.env.HELLO_SHOTS) await page.screenshot({ path: `${process.env.HELLO_SHOTS}/theme-light-on-dark-mac.png` });
+
+  await page.evaluate(() => window.fakeHost.setTheme("dark"));
+  await expect(root()).toHaveAttribute("data-theme", "dark");
+  await page.evaluate(() => window.fakeHost.setTheme("light"));
+  await expect(root()).toHaveAttribute("data-theme", "light");
 });

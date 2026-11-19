@@ -4,6 +4,7 @@
 import {
   CHANNEL,
   CLIENT_ROLES,
+  isTheme,
   ERROR_CODES,
   type ErrorCode,
   type ErrorPayload,
@@ -169,7 +170,8 @@ export function parseHostMessage(v: unknown): HostToAppMessage | null {
         isSurface(m.surface) &&
         (m.icon === undefined || typeof m.icon === "string") &&
         typeof m.route === "string" &&
-        isProjectRef(m.project)
+        isProjectRef(m.project) &&
+        (m.theme === undefined || isTheme(m.theme))
         ? {
             channel: CHANNEL,
             type: "welcome",
@@ -180,6 +182,8 @@ export function parseHostMessage(v: unknown): HostToAppMessage | null {
             ...(typeof m.icon === "string" ? { icon: m.icon } : {}),
             route: m.route,
             project: m.project,
+            // A Pomade that names no theme has only its light one.
+            theme: m.theme ?? "light",
           }
         : null;
     case "request":
@@ -277,6 +281,10 @@ function parseBusEvent(name: unknown, payload: unknown): HostToAppMessage | null
       return isProjectRef(payload) ? { channel: CHANNEL, type: "event", name: bus.name, payload } : null;
     case "project.changed":
       return isProjectRef(payload) ? { channel: CHANNEL, type: "event", name: bus.name, payload } : null;
+    case "theme.changed":
+      return isObj(payload) && isTheme(payload.theme)
+        ? { channel: CHANNEL, type: "event", name: bus.name, payload: { theme: payload.theme } }
+        : null;
     case "project.renamed":
       return isObj(payload) && isProjectRef(payload.project) && isProjectRef(payload.previous)
         ? { channel: CHANNEL, type: "event", name: bus.name, payload: { project: payload.project, previous: payload.previous } }

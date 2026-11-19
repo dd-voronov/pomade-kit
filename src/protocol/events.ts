@@ -6,7 +6,7 @@ import { APP_ID_RE } from "./manifest.js";
 import { isJsonValue } from "./state.js";
 import type { AttachedTabActionPayload } from "./attach.js";
 import type { AgentTabChangedPayload } from "./agent-tabs.js";
-import type { JsonValue, ProjectInfo, ProjectRef } from "./types.js";
+import type { JsonValue, ProjectInfo, ProjectRef, ThemeChangedPayload } from "./types.js";
 
 /** The events Pomade itself publishes, in the order they are documented. */
 export const PLATFORM_EVENTS = [
@@ -17,6 +17,7 @@ export const PLATFORM_EVENTS = [
   "project.opened",
   "project.changed",
   "project.updated",
+  "theme.changed",
   "agentTab.exited",
   "agentTab.changed",
   "attachedTab.action",
@@ -79,6 +80,8 @@ export interface PlatformEvents {
   "project.changed": ProjectRef;
   /** A project's group, visible agents or this app's settings for it changed. */
   "project.updated": ProjectUpdatedPayload;
+  /** Pomade's theme changed. Every frame gets it without subscribing. */
+  "theme.changed": ThemeChangedPayload;
   "agentTab.exited": AgentTabExitedPayload;
   /** An agent tab joined or left the list, or its session, title, state or project changed (pomade:E-033). */
   "agentTab.changed": AgentTabChangedPayload;

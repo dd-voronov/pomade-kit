@@ -61,8 +61,8 @@ export function connect(options: ConnectOptions = {}): Promise<ConnectResult> {
       if (msg?.type === "reject") {
         settle({ status: "rejected", reason: msg.reason, hostApi: msg.hostApi });
       } else if (msg?.type === "welcome") {
-        const { hostApi, pomadeVersion, appId, surface, icon, route, project } = msg;
-        const welcome = { hostApi, pomadeVersion, appId, surface, ...(icon !== undefined ? { icon } : {}), route, project };
+        const { hostApi, pomadeVersion, appId, surface, icon, route, project, theme } = msg;
+        const welcome = { hostApi, pomadeVersion, appId, surface, ...(icon !== undefined ? { icon } : {}), route, project, theme };
         const forward = { escape: surface === "overlay" };
         const stopKeys = keySource ? installKeyForwarder(keySource, (m) => transport.send(m), forward) : undefined;
         const host = createClient(transport, welcome, stopKeys);

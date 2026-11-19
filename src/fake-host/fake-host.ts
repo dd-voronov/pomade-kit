@@ -50,6 +50,7 @@ import {
   type OverlayAnchor,
   type ProjectChange,
   type ProjectRef,
+  type Theme,
   type RosterAgent,
   type StripIcon,
   type Surface,
@@ -114,6 +115,8 @@ export interface FakeHostOptions {
   manifest?: unknown;
   /** Default "0.0.0-fake". */
   pomadeVersion?: string;
+  /** Pomade's theme at start (`welcome.theme`). Default "light". */
+  theme?: Theme;
   /** The Host API version this host speaks. Default `HOST_API_VERSION`. */
   hostApi?: number;
   /** Entry names hidden from `readFolder` and watches. Default Pomade's tree ignore list. */
@@ -290,6 +293,7 @@ export class FakeHost {
   private readonly projectAgents = new Map<string, string[]>();
   private readonly projectSettings = new Map<string, Record<string, JsonValue>>();
   private active: ProjectRef;
+  private themeNow: Theme;
   private readonly frames = new Set<Frame>();
   private nextWatchId = 1;
   private batched: FileChange[] | null = null;
@@ -329,6 +333,7 @@ export class FakeHost {
     this.strip = parsed.manifest.strip ?? [];
     this.shortcuts = parsed.manifest.shortcuts ?? [];
     this.pomadeVersion = options.pomadeVersion ?? "0.0.0-fake";
+    this.themeNow = options.theme ?? "light";
     this.hostApi = options.hostApi ?? HOST_API_VERSION;
     this.workspace = new Workspace(options.files ?? {}, options.ignore ?? DEFAULT_IGNORE, options.now ?? Date.now);
     this.groupList = (options.groups ?? []).map((g) => ({ ...g }));
@@ -547,6 +552,18 @@ export class FakeHost {
     this.bus.publish("project.changed", { ...next });
   }
 
+  /** Change Pomade's theme; emits `theme.changed` when it changes. */
+  setTheme(theme: Theme): void {
+    if (theme === this.themeNow) return;
+    this.themeNow = theme;
+    this.bus.publish("theme.changed", { theme });
+  }
+
+  /** Pomade's theme now. */
+  get theme(): Theme {
+    return this.themeNow;
+  }
+
   /** Rename, move or regroup a project, or change its visible agents, as the user does in Pomade;
    *  its id stays. Emits `project.renamed` for a new name or folder, `project.updated` for a new
    *  group or agent list, and `project.changed` when it is the active project and its name or
@@ -720,7 +737,7 @@ export class FakeHost {
     this.agentTabModel.close(tabId, state);
   }
 
-  /** The bus event names the app's frames subscribe to now (each once), `project.changed` included. */
+  /** The bus event names the app's frames subscribe to now (each once), `project.changed` and `theme.changed` included. */
   get subscriptions(): string[] {
     const names = new Set<string>();
     for (const frame of this.frames) for (const name of frame.bus?.subscriptions() ?? []) names.add(name);
@@ -790,14 +807,14 @@ export class FakeHost {
       return;
     }
     frame.welcomed = true;
-    // Every frame hears `project.changed` (its welcome carries the project), subscribed or not; a
-    // socket client hears only what it subscribes to.
+    // Every frame hears `project.changed` and `theme.changed` (its welcome carries the project and
+    // the theme), subscribed or not; a socket client hears only what it subscribes to.
     frame.bus = this.bus.open(
       {
         appId: this.manifest.id,
         deliver: (name, payload) => frame.post({ channel: CHANNEL, type: "event", name, payload } as HostToAppMessage),
       },
-      isSocketSurface(frame.target.surface) ? [] : ["project.changed"],
+      isSocketSurface(frame.target.surface) ? [] : ["project.changed", "theme.changed"],
     );
     frame.post({
       channel: CHANNEL,
@@ -807,6 +824,7 @@ export class FakeHost {
       appId: this.manifest.id,
       ...frame.target,
       project: { ...this.active },
+      theme: this.themeNow,
     });
   }
 

@@ -2,6 +2,7 @@
 
 export { connect, type ConnectOptions, type ConnectResult } from "./connect.js";
 export { HostError, type ApiHandler, type AppCallOptions, type FileWatch, type GitWatch, type HostClient, type Welcome } from "./client.js";
+export { applyTheme, followTheme, THEME_ATTRIBUTE, type ThemeRoot } from "./theme.js";
 export { postMessageTransport, type MessageWindow, type Transport } from "./transport.js";
 export {
   installKeyForwarder,
@@ -18,6 +19,7 @@ export type {
   FrameTarget,
   HostInfo,
   ProjectRef,
+  Theme,
   SetBadgeParams,
   Surface,
   ReadFolderParams,

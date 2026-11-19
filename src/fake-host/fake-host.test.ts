@@ -71,8 +71,29 @@ describe("handshake", () => {
         surface: "tab",
         route: "",
         project: { id: "pomade", kind: "project", name: "Pomade", root: "Projects/Pomade" },
+        theme: "light",
       },
     ]);
+  });
+
+  it("welcome carries the theme (default light); setTheme reaches every frame unsubscribed, once per change", () => {
+    const host = fake({ theme: "dark" });
+    const a = raw(host);
+    const b = raw(host);
+    a.hello();
+    b.hello();
+    expect(a.got[0]).toMatchObject({ type: "welcome", theme: "dark" });
+    expect(host.theme).toBe("dark");
+    host.setTheme("dark");
+    host.setTheme("light");
+    for (const f of [a, b]) expect(f.events()).toEqual([{ channel: "pomade", type: "event", name: "theme.changed", payload: { theme: "light" } }]);
+    expect(host.theme).toBe("light");
+    const later = raw(host);
+    later.hello();
+    expect(later.got[0]).toMatchObject({ type: "welcome", theme: "light" });
+    const plain = raw(fake());
+    plain.hello();
+    expect(plain.got[0]).toMatchObject({ type: "welcome", theme: "light" });
   });
 
   it("an app speaking a newer Host API → reject needs-newer-pomade", () => {
@@ -1193,7 +1214,7 @@ describe("events (pomade:E-031)", () => {
     host.emitEvent("pomade-agents:session.closed", { sessionId: "s1" });
     expect(evs(b, "pomade-agents:session.closed")).toEqual([{ sessionId: "s1" }]);
     expect(() => host.emitEvent("nope", 1)).toThrow(/not a platform event/);
-    expect(host.subscriptions).toEqual(["pomade-agents:session.closed", "pomade-runner:run.finished", "project.changed"]);
+    expect(host.subscriptions).toEqual(["pomade-agents:session.closed", "pomade-runner:run.finished", "project.changed", "theme.changed"]);
   });
 
   it("hasSubscribers follows other apps' subscriptions, with subscribersChanged news", () => {

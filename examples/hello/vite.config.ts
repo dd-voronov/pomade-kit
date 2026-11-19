@@ -11,6 +11,7 @@ export default defineConfig({
     alias: {
       "pomade-kit/sdk": fileURLToPath(new URL("../../src/sdk/index.ts", import.meta.url)),
       "pomade-kit/protocol": fileURLToPath(new URL("../../src/protocol/index.ts", import.meta.url)),
+      "pomade-kit/tokens.css": fileURLToPath(new URL("../../src/tokens/tokens.css", import.meta.url)),
     },
   },
   build: { outDir: "dist", emptyOutDir: true },

@@ -150,6 +150,7 @@ describe("handshake", () => {
       surface: "backend",
       route: "",
       project: { id: "alpha", kind: "project", name: "Alpha", root: "Projects/alpha" },
+      theme: "light",
     });
     const command = await client(server, "command");
     expect(command.welcome.surface).toBe("command");

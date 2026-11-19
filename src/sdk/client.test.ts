@@ -6,8 +6,8 @@ import { mockTransport, PROJECT, WELCOME } from "./test-helpers.js";
 function setup() {
   const mock = mockTransport();
   const onClose = vi.fn();
-  const { hostApi, pomadeVersion, appId, surface, route, project } = WELCOME;
-  const host = createClient(mock.transport, { hostApi, pomadeVersion, appId, surface, route, project }, onClose);
+  const { hostApi, pomadeVersion, appId, surface, route, project, theme } = WELCOME;
+  const host = createClient(mock.transport, { hostApi, pomadeVersion, appId, surface, route, project, theme }, onClose);
   const calls = () => mock.sent.filter((m): m is CallMessage => m.type === "call");
   const lastCall = () => {
     const c = calls().at(-1);
@@ -397,8 +397,8 @@ describe("onClose", () => {
     const mock = mockTransport();
     let end: (() => void) | null = null;
     const transport = { ...mock.transport, onEnd: (cb: () => void) => ((end = cb), () => (end = null)) };
-    const { hostApi, pomadeVersion, appId, route, project } = WELCOME;
-    const host = createClient(transport, { hostApi, pomadeVersion, appId, surface: "backend", route, project });
+    const { hostApi, pomadeVersion, appId, route, project, theme } = WELCOME;
+    const host = createClient(transport, { hostApi, pomadeVersion, appId, surface: "backend", route, project, theme });
     const closed = vi.fn();
     host.onClose(closed);
     const pending = host.info();

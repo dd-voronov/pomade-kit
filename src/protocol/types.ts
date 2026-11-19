@@ -43,6 +43,16 @@ export type ClientRole = "backend" | "command";
 
 export const CLIENT_ROLES: readonly ClientRole[] = ["backend", "command"];
 
+/** Pomade's theme (HOST-API §3 `welcome`, §4 `theme.changed`). Pomade's design tokens key each
+ *  theme by `data-theme` on the root element (`pomade-kit/tokens.css`, `followTheme`). */
+export type Theme = "light" | "dark";
+
+export const THEMES: readonly Theme[] = ["light", "dark"];
+
+export function isTheme(v: unknown): v is Theme {
+  return (THEMES as readonly unknown[]).includes(v);
+}
+
 /** What a frame was opened for — carried by `welcome` and `host.info` (HOST-API §3). */
 export interface FrameTarget {
   surface: Surface;
@@ -669,9 +679,15 @@ export interface RouteChangedPayload {
   route: string;
 }
 
+/** `theme.changed` — Pomade's theme changed. */
+export interface ThemeChangedPayload {
+  theme: Theme;
+}
+
 /** Event name → payload. */
 export interface HostEvents {
   "project.changed": ProjectRef;
+  "theme.changed": ThemeChangedPayload;
   "files.changed": FilesChangedPayload;
   "state.changed": StateChangedPayload;
   "route.changed": RouteChangedPayload;
@@ -716,6 +732,8 @@ export interface WelcomeMessage extends FrameTarget {
   pomadeVersion: string;
   appId: string;
   project: ProjectRef;
+  /** Pomade's theme now; `theme.changed` follows each change. */
+  theme: Theme;
 }
 
 /** `unauthorized` — socket only: the app id, key or role is not one Pomade issued (HOST-API §3 "Socket"). */

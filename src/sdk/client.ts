@@ -10,6 +10,7 @@ import {
   type MethodParams,
   type MethodResult,
   type ProjectRef,
+  type Theme,
   type ReadFolderParams,
   type ReadFolderResult,
   type SetBadgeParams,
@@ -94,13 +95,15 @@ export class HostError extends Error {
 }
 
 /** What the host said in `welcome`: versions, app id, what the frame was opened for (`surface`,
- *  `icon`, `route`) and the project it was opened in. */
+ *  `icon`, `route`), the project it was opened in and Pomade's theme then. */
 export interface Welcome extends FrameTarget {
   hostApi: number;
   pomadeVersion: string;
   appId: string;
   /** The project the frame was opened in. */
   project: ProjectRef;
+  /** Pomade's theme at the handshake; `host.theme` follows it. */
+  theme: Theme;
 }
 
 /** Serves one API method: `params` as the caller sent them; `from` is the calling app's id
@@ -241,6 +244,12 @@ export interface HostClient {
      *  declared methods. A method without a handler answers `unknown-method`. */
     serve(handlers: Record<string, ApiHandler>): Promise<ApiServeResult>;
   };
+  readonly theme: {
+    /** Pomade's theme now: the welcome's, then each `theme.changed`. */
+    get(): Theme;
+    /** Called with the new theme on every `theme.changed`; returns an unsubscribe function. */
+    onChange(callback: (theme: Theme) => void): () => void;
+  };
   /** Called with the new route when Pomade navigates this frame's tab (`welcome.route` is the first); returns an unsubscribe function. */
   onRouteChange(callback: (route: string) => void): () => void;
   readonly git: {
@@ -286,6 +295,8 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
   const projectListeners = new Set<(project: ProjectRef) => void>();
   const stateListeners = new Set<(key: string, value: JsonValue | null) => void>();
   const routeListeners = new Set<(route: string) => void>();
+  const themeListeners = new Set<(theme: Theme) => void>();
+  let theme = welcome.theme;
   const gitWatches = new Map<string, (repos: GitRepoState[]) => void>();
   // Bus subscriptions: handlers by event name, and the host subscription each name rides.
   const busHandlers = new Map<string, Set<(payload: unknown) => void>>();
@@ -340,6 +351,10 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
           break;
         case "route.changed":
           for (const cb of [...routeListeners]) cb(msg.payload.route);
+          break;
+        case "theme.changed":
+          theme = msg.payload.theme;
+          for (const cb of [...themeListeners]) cb(theme);
           break;
         case "git.changed":
           gitWatches.get(msg.payload.watchId)?.(msg.payload.repos);
@@ -400,6 +415,7 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
     subscriberListeners.clear();
     stateListeners.clear();
     routeListeners.clear();
+    themeListeners.clear();
     const error = new Error("pomade-kit: client is closed");
     for (const p of pending.values()) p.reject(error);
     pending.clear();
@@ -545,6 +561,13 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
       serve(handlers) {
         apiHandlers = { ...handlers };
         return call("api.serve", {});
+      },
+    },
+    theme: {
+      get: () => theme,
+      onChange(callback) {
+        themeListeners.add(callback);
+        return () => themeListeners.delete(callback);
       },
     },
     onRouteChange(callback) {

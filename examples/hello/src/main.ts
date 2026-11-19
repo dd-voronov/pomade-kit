@@ -16,11 +16,14 @@
 // "Quick note…" opens the same overlay as Cmd+Shift+J from the panel or tab (`overlay.open`).
 // "New scratch file" makes a file in the project's scratch/ folder; "Trash scratch files" moves
 // every file there to the Trash in one `files.delete` call and says how each one went.
+// It looks like Pomade: Pomade's design tokens and its theme, whatever the Mac's appearance.
 // Built only on pomade-kit's SDK.
 
+import "pomade-kit/tokens.css";
 import { joinPath } from "pomade-kit/protocol";
 import {
   connect,
+  followTheme,
   HostError,
   type FileEntry,
   type FileWatch,
@@ -400,6 +403,7 @@ async function main(): Promise<void> {
   const result = await connect();
   switch (result.status) {
     case "connected":
+      followTheme(result.host);
       if (result.host.welcome.surface === "overlay") startQuickNote(result.host);
       else startApp(result.host);
       return;
