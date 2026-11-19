@@ -55,6 +55,9 @@ export interface Manifest {
   calls?: string[];
   /** Command-line entries Pomade puts on PATH (pomade:E-028); absent when none. */
   commands?: AppCommand[];
+  /** The paths outside the workspace the app reads or writes, as written (`~/.claude/`,
+   *  `/etc/hosts`): Pomade shows them at install. For people, not a sandbox; absent when none. */
+  outsideWorkspace?: string[];
 }
 
 /** One command an app ships (manifest `commands[]`, HOST-API §1). */
@@ -124,6 +127,7 @@ const KNOWN_KEYS = new Set([
   "api",
   "calls",
   "commands",
+  "outsideWorkspace",
 ]);
 
 /** One invalid field. */
@@ -220,6 +224,7 @@ export function parseManifest(value: unknown): ManifestParseResult {
   const api = m.api === undefined ? undefined : parseApi(m.api, errors);
   const calls = m.calls === undefined ? undefined : parseCalls(m.calls, m.id, errors);
   const commands = m.commands === undefined ? undefined : parseCommands(m.commands, m.id, errors);
+  const outsideWorkspace = m.outsideWorkspace === undefined ? undefined : parseOutsideWorkspace(m.outsideWorkspace, errors);
 
   if (errors.length > 0) return { ok: false, errors, ...errors[0]! };
 
@@ -242,6 +247,7 @@ export function parseManifest(value: unknown): ManifestParseResult {
   if (api !== undefined) manifest.api = api;
   if (calls !== undefined) manifest.calls = calls;
   if (commands !== undefined) manifest.commands = commands;
+  if (outsideWorkspace !== undefined) manifest.outsideWorkspace = outsideWorkspace;
   const unsupportedKeys = Object.keys(m).filter((k) => !KNOWN_KEYS.has(k));
   return { ok: true, manifest, unsupportedKeys };
 }
@@ -462,6 +468,46 @@ function parseCalls(raw: unknown, ownId: unknown, errors: ManifestError[]): stri
       errors.push({ field: at, message: `"${at}" names the app itself; an app always reaches its own API` });
     } else if (out.includes(item)) {
       errors.push({ field: at, message: `"${at}" repeats the app ${JSON.stringify(item)}` });
+    } else {
+      out.push(item);
+    }
+  });
+  return out;
+}
+
+/** An `outsideWorkspace` entry may be at most this long. */
+export const OUTSIDE_PATH_MAX_LENGTH = 1024;
+
+/** An `outsideWorkspace` entry: absolute (`/etc/hosts`) or under the home folder (`~/.claude/`);
+ *  no `.` or `..` segment, no empty segment but a trailing `/` (a folder), no backslash. */
+export function isOutsideWorkspacePath(p: string): boolean {
+  if (p.length > OUTSIDE_PATH_MAX_LENGTH || p.includes("\\")) return false;
+  let rest: string;
+  if (p.startsWith("~/")) rest = p.slice(2);
+  else if (p.startsWith("/") && p !== "/") rest = p.slice(1);
+  else return false;
+  if (rest.endsWith("/")) rest = rest.slice(0, -1);
+  if (rest === "") return false;
+  return rest.split("/").every((seg) => seg !== "" && seg !== "." && seg !== "..");
+}
+
+/** `outsideWorkspace` (HOST-API §1): the paths outside the workspace the app uses, kept as written;
+ *  errors name the entry by index, a repeated path is reported on the later entry. */
+function parseOutsideWorkspace(raw: unknown, errors: ManifestError[]): string[] {
+  if (!Array.isArray(raw)) {
+    errors.push({ field: "outsideWorkspace", message: `"outsideWorkspace" must be an array of paths ${received(raw)}` });
+    return [];
+  }
+  const out: string[] = [];
+  (raw as unknown[]).forEach((item, i) => {
+    const at = `outsideWorkspace[${i}]`;
+    if (typeof item !== "string" || !isOutsideWorkspacePath(item)) {
+      errors.push({
+        field: at,
+        message: `"${at}" must be an absolute path or one starting with "~/", without "." or ".." segments ${received(item)}`,
+      });
+    } else if (out.includes(item)) {
+      errors.push({ field: at, message: `"${at}" repeats the path ${JSON.stringify(item)}` });
     } else {
       out.push(item);
     }

@@ -432,6 +432,21 @@ describe("the socket", () => {
     expect(second.keeper.sessions()).toEqual([]);
   });
 
+  it("keeps its state in POMADE_APP_STATE/keeper; without it, in app-state next to the socket's user data", async () => {
+    const dir = tmpDir();
+    const appState = join(dir, "ud/app-state/hello");
+    const base = { app: "hello", ownerKey: null, log: () => undefined };
+    const withEnv = await runKeeper({ ...base, socketPath: join(dir, "a.sock"), env: { ...TEST_ENV, POMADE_APP_STATE: appState } });
+    const derived = await runKeeper({ ...base, socketPath: join(dir, "ud2/run/keepers/hello.sock"), env: TEST_ENV });
+    try {
+      expect(withEnv.stateDir).toBe(join(appState, "keeper"));
+      expect(derived.stateDir).toBe(join(dir, "ud2/app-state/hello/keeper"));
+    } finally {
+      await withEnv.close();
+      await derived.close();
+    }
+  });
+
   it("creates the socket's folder private (0700)", async () => {
     const dir = tmpDir();
     const { statSync } = await import("node:fs");
@@ -442,9 +457,9 @@ describe("the socket", () => {
 });
 
 describe("sessionEnv", () => {
-  it("drops the runtime switch and the app's identity, sets the terminal variables, keeps LANG", () => {
+  it("drops the runtime switch and the app's identity and state folder, sets the terminal variables, keeps LANG", () => {
     const env = sessionEnv(
-      { PATH: "/bin", ELECTRON_RUN_AS_NODE: "1", POMADE_APP_ID: "a", POMADE_APP_KEY_FILE: "/k", POMADE_CLIENT: "backend", POMADE_KEEPER_SOCKET: "/s", LANG: "de_DE.UTF-8", POMADE_SOCKET: "/p" },
+      { PATH: "/bin", ELECTRON_RUN_AS_NODE: "1", POMADE_APP_ID: "a", POMADE_APP_KEY_FILE: "/k", POMADE_CLIENT: "backend", POMADE_KEEPER_SOCKET: "/s", POMADE_APP_STATE: "/st", LANG: "de_DE.UTF-8", POMADE_SOCKET: "/p" },
       { FOO: "bar", TERM: "dumb" },
     );
     expect(env).toEqual({ PATH: "/bin", LANG: "de_DE.UTF-8", POMADE_SOCKET: "/p", TERM: "dumb", TERM_PROGRAM: "Apple_Terminal", TERM_PROGRAM_VERSION: "453", POMADE: "1", FOO: "bar" });

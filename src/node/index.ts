@@ -2,7 +2,7 @@
 // local socket, reconnecting, and finding the workspace with Pomade closed.
 
 export { pomadeUserData, postNotice, queueNotice, type PomadeTarget, type PostNoticeOptions, type PostNoticeResult } from "./notices.js";
-export { pomadeHome, readHostRecord, resolveWorkspace, type Env } from "./home.js";
+export { appStateDir, pomadeHome, readHostRecord, resolveWorkspace, type Env } from "./home.js";
 export {
   connectSocket,
   socketTransport,

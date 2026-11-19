@@ -561,3 +561,34 @@ describe("commands", () => {
     expect(!r.ok && r.errors[0]?.message).toMatch(/one of Pomade's own commands/);
   });
 });
+
+describe("outsideWorkspace", () => {
+  it("absolute and home paths, kept as written; absent when not declared", () => {
+    const paths = ["~/.claude/", "~/.codex/", "~/.zshrc", "/etc/hosts", "/Volumes/Data/"];
+    const r = parseManifest({ ...valid, outsideWorkspace: paths });
+    expect(r.ok && r.manifest.outsideWorkspace).toEqual(paths);
+    expect(r.ok && r.unsupportedKeys).toEqual([]);
+    const none = parseManifest(valid);
+    expect(none.ok && "outsideWorkspace" in none.manifest).toBe(false);
+  });
+
+  it.each<[string, unknown]>([
+    ["outsideWorkspace", "~/.claude/"],
+    ["outsideWorkspace[0]", [3]],
+    ["outsideWorkspace[0]", [""]],
+    ["outsideWorkspace[0]", [".claude"]],
+    ["outsideWorkspace[0]", ["~"]],
+    ["outsideWorkspace[0]", ["~/"]],
+    ["outsideWorkspace[0]", ["/"]],
+    ["outsideWorkspace[0]", ["~user/.claude"]],
+    ["outsideWorkspace[0]", ["~/../etc"]],
+    ["outsideWorkspace[0]", ["/a/./b"]],
+    ["outsideWorkspace[0]", ["/a//b"]],
+    ["outsideWorkspace[0]", ["C:\\Users"]],
+    ["outsideWorkspace[0]", [`/${"a".repeat(1024)}`]],
+    ["outsideWorkspace[1]", ["~/.claude/", "~/.claude/"]],
+  ])("%s is invalid: %j", (field, outsideWorkspace) => {
+    const r = parseManifest({ ...valid, outsideWorkspace });
+    expect(!r.ok && r.errors.map((e) => e.field)).toEqual([field]);
+  });
+});

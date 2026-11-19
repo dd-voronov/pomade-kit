@@ -7,7 +7,7 @@
 // own tab at a route, and badges its strip icon with the number of tickets — it starts on launch,
 // so the badge is there before the panel is opened; its Cmd+Shift+J overlay takes a quick note
 // into the app state; it shows the project's git repos live. On the event bus it shows the last
-// platform event it heard (Pomade ready, a project renamed); its Greet button publishes a
+// platform event it heard (Pomade ready, a project renamed or removed); its Greet button publishes a
 // `greeted` event and is enabled only while another app listens. "Notify me" posts a Pomade notice
 // whose click opens the roadmap in the app's own tab, in the project the notice is about. Its
 // always-on backend keeps a ticking demo service in a keeper (`public/backend/`); "Open the
@@ -128,6 +128,7 @@ async function useEvents(host: HostClient): Promise<void> {
   greet.addEventListener("click", () => void host.events.publish("greeted", { from: host.welcome.surface }));
   await host.events.subscribe("pomade.ready", () => heard("Pomade ready"));
   await host.events.subscribe("project.renamed", ({ project, previous }) => heard(`${previous.name} renamed to ${project.name}`));
+  await host.events.subscribe("project.removed", (project) => heard(`${project.name} removed`));
   listeners(await host.events.hasSubscribers("greeted"));
 }
 

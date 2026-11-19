@@ -25,7 +25,7 @@ The package installs from a git tag: npm clones it, installs its dev dependencie
 | `pomade-kit/schedule` | the schedule format: `parseSchedule` with readable errors, the occurrence engine, `describeSchedule`, `formatSchedule` | browser and Node |
 | `pomade-kit/dates` | date phrases: `parseDatePhrase` (`fri`, `tomorrow`, `+3d`, `nov 20`, `tonight 23:00`, `in 2 hours`) and `currentDay` with a day boundary | browser and Node |
 | `pomade-kit/scanners` | terminal output readers: `MarkerScanner` (Pomade's shell markers), `AttentionScanner` (bell, notifications), `AgentStateScanner` (claude/codex working, idle, waiting at a permission or trust prompt) | browser and Node |
-| `pomade-kit/node` | the Host API over Pomade's socket for backends and commands (`connectSocket`, `stayConnected`, `launchPomade`), `resolveWorkspace()`; `postNotice()` — a notice from a backend or command, with Pomade open or closed; the attach protocol's client (`connectKeeper`, `followSession`, `startKeeper`) | Node |
+| `pomade-kit/node` | the Host API over Pomade's socket for backends and commands (`connectSocket`, `stayConnected`, `launchPomade`), `resolveWorkspace()`, `appStateDir()`; `postNotice()` — a notice from a backend or command, with Pomade open or closed; the attach protocol's client (`connectKeeper`, `followSession`, `startKeeper`) | Node |
 | `pomade-kit/keeper` | the keeper: holds an app's terminal sessions so they outlive Pomade, and serves the attach protocol (`runKeeper`). Needs `node-pty` (a peer dependency) | Node |
 
 ## Connect to Pomade
@@ -374,6 +374,7 @@ host.events.onSubscribersChange((name, subscribed) => { /* first subscriber came
 | `pomade.ready` | `{}` | Pomade restored the workspace's tabs. Sticky: a later subscription gets it at once |
 | `project.created` | `ProjectRef` | a project was added |
 | `project.renamed` | `{ project, previous }` (`ProjectRef`s) | a project's name or folder changed |
+| `project.removed` | `ProjectRef` — the project as it was | a project left the workspace (the user removed it); its id is never used again — drop what you keep for it |
 | `project.opened` | `ProjectRef` | a project (or the Workspace scope) became active for the first time since Pomade started |
 | `project.changed` | `ProjectRef` | the active project changed; every frame gets it without subscribing |
 | `project.updated` | `{ project: ProjectInfo, changes }` — `changes` ⊆ `"group"` · `"agents"` · `"settings"` (`PROJECT_CHANGES` order) | a project moved to another group or its group path changed, its visible agents changed, or the app's own settings for it changed. `settings` goes **only to the app whose settings changed**; a write by the app itself is heard too |
@@ -382,7 +383,9 @@ host.events.onSubscribersChange((name, subscribed) => { /* first subscriber came
 
 **App events** travel as `<appId>:<event>` (`pomade-runner:run.finished`); an event name is
 dot-separated lowerCamel words (`EVENT_NAME_RE`, at most 64 characters). A published event reaches
-every subscribed frame of every app — hidden ones too — except the publishing frame itself.
+every subscribed frame of every app — hidden ones too — except the publishing frame itself. An app
+may subscribe to its own events (`"subscribe": ["pomade-runner:run.finished"]` in `pomade-runner`):
+its backend publishes, its frames hear it.
 Subscriptions end with the frame (a reload subscribes again). `EventBus` (`pomade-kit/protocol`)
 is the bookkeeping Pomade and the fake host share; `checkPublish` / `checkSubscribe` /
 `checkHasSubscribers` are their call checks.
@@ -460,6 +463,7 @@ code, and the events. Test controls emit the events Pomade would:
 | `fake.batch(() => …)` | the changes inside as one `files.changed` per watch |
 | `fake.setActiveProject(id \| null)` | `project.changed` |
 | `fake.updateProject(id, { name?, root?, group?, visibleAgents? })` | `project.renamed` to its subscribers when the name or folder changed, `project.updated` when the group or the visible agents changed, and `project.changed` when it is the active project and its name or folder changed (the id stays) |
+| `fake.removeProject(id)` | `project.removed` (the project as it was) to its subscribers, then `project.changed` to the Workspace scope when it was the active project; its group, agents and settings go with it |
 | `fake.clickNotice(index?)` | — (the user clicks a notice the app posted, default the last: its action runs as in Pomade, landing in `openedTabs`). `fake.notices` lists every `notices.post`, normalized |
 | `fake.ready()` | `pomade.ready` (sticky: later subscriptions get it at once) |
 | `fake.renameAgentTab(tabId, title)` / `fake.updateAgentTab(tabId, { sessionId?, state?, projectId?, … })` / `fake.closeAgentTab(tabId)` | `agentTab.changed` naming what changed (the user renamed it; a session bound, a state change, a move; it left the list). Seed tabs with `agentTabs`, the launchable roster with `roster` (default claude, codex), resumable sessions with `sessions`; `fake.agentTabs`, `fake.openedAgentTabs`, `fake.focusedAgentTabs` record what happened |
@@ -686,6 +690,18 @@ another app's), never `pomade` / `pomade-git` (`RESERVED_COMMANDS`); `entry` is 
 in the build; `title` is optional. The command runs with Pomade's runtime, with or without Pomade
 running: it reaches its app's API through `connectSocket()` and finds the workspace with
 `resolveWorkspace()`.
+
+`outsideWorkspace` lists the paths outside the workspace the app reads or writes — for people:
+Pomade shows them at install; it is not a sandbox:
+
+```jsonc
+"outsideWorkspace": ["~/.claude/", "~/.codex/", "~/.zshrc"]
+```
+
+Each entry is absolute (`/etc/hosts`) or starts with `~/` (the home folder); a trailing `/` marks a
+folder; no `.` or `..` segment, no empty segment, no backslash, at most 1024 characters
+(`isOutsideWorkspacePath`); unique. Entries are kept as written. Invalid ones are reported as
+`"outsideWorkspace[i]"`.
 
 ## Write one frontmatter field
 
@@ -1030,6 +1046,7 @@ const keeper = stayConnected({}, {
 keeper.stop();
 
 const root = resolveWorkspace();   // POMADE_WORKSPACE, else the pointer Pomade records; null if none
+const state = appStateDir();       // POMADE_APP_STATE: <userData>/app-state/<id>/, Pomade creates it
 
 // An always-on backend (or a command) that needs Pomade: start it the way it recorded, and wait.
 const up = await launchPomade({ readyTimeoutMs: 60000 });
@@ -1052,6 +1069,10 @@ if (up.status === "connected") up.host;      // up.launched: this call started i
   — agents running in Pomade's terminals at or below an absolute folder; for an app it is
   `capability-denied` (`PLATFORM_CAPABILITY`). They reach app APIs with `host.apps.call` like apps.
 - `host.onClose(cb)` runs when the client closes — `close()`, or Pomade went away.
+- `appStateDir()` is the app's machine-local state folder, `POMADE_APP_STATE`
+  (`<userData>/app-state/<id>/`, absolute) — run history, captured output, caches, a control
+  socket the backend and its commands share. Pomade sets it for the app's backend (the login item
+  too) and every one of its commands, and creates the folder; `null` elsewhere.
 - `pomadeHome()` is the Pomade home a command belongs to (`POMADE_HOME`, else the stable Pomade's
   `~/.pomade`); `readHostRecord()` reads what Pomade records there (`host.json`: its socket and
   how to launch it).
@@ -1114,7 +1135,7 @@ f.input("q"); f.paste("text"); f.resize(100, 30); await f.stop(); f.close();   /
 so attaching never calls the owner (`PLATFORM` rule 4): a **session reference** is
 `{ app, session }` (`SessionRef`, `checkSessionRef`). macOS caps a socket path at 103 bytes;
 `keeperSocketProblem()` says why a path is too long, and `runKeeper` / `startKeeper` refuse one with
-that message. The keeper's own records live in `stateDir` (default
+that message. The keeper's own records live in `stateDir` (default `<POMADE_APP_STATE>/keeper`, i.e.
 `<userData>/app-state/<appId>/keeper`): one record per session, exit statuses, its log.
 
 **The protocol** (`pomade-kit/protocol`, `ATTACH_PROTOCOL` = 1): one JSON object per line over the
@@ -1152,7 +1173,7 @@ its own channel (Pomade publishes `attachedTab.action` to the owner), never over
 - Every session runs under a small shell shim that writes its exit status to the state folder, so a
   keeper that is not the session's parent (after an update) still learns how it ended. Sessions get
   a terminal's environment (`TERM=xterm-256color`, `TERM_PROGRAM=Apple_Terminal`, `LANG` when unset —
-  as in Pomade's own terminals) without the keeper's runtime switch and the app's identity
+  as in Pomade's own terminals) without the keeper's runtime switch and the app's identity and state folder
   (`sessionEnv`); a `command` runs in the user's login shell, which brings the user's `PATH`.
 - A headless xterm per session parses every byte — the same xterm line (5.5) and Unicode 11 width
   tables as Pomade's renderer, so both agree on every cell.
@@ -1174,7 +1195,7 @@ its own channel (Pomade publishes `attachedTab.action` to the owner), never over
 
 `examples/hello/` — the smallest app: tells once (and in its About view) where its shipped skill is, lists the active project's `docs/roadmap/` frontmatter rows,
 shows the project's git repos, and follows project, file and git events. On the bus it shows the
-last platform event it heard (Pomade ready, a project renamed) and publishes `greeted` from a
+last platform event it heard (Pomade ready, a project renamed or removed) and publishes `greeted` from a
 button that is enabled only while another app listens; "Notify me" posts a notice whose click opens
 its roadmap tab in the project the notice is about. "Quick note…" opens its Cmd+Shift+J overlay
 from the panel or tab (`overlay.open`); "New scratch file" / "Trash scratch files" make files in the

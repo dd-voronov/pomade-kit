@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { pomadeHome, readHostRecord, resolveWorkspace } from "./index.js";
+import { appStateDir, pomadeHome, readHostRecord, resolveWorkspace } from "./index.js";
 
 let home: string;
 beforeEach(() => {
@@ -15,6 +15,15 @@ describe("pomadeHome", () => {
     expect(pomadeHome({ POMADE_HOME: "/x/home/" })).toBe("/x/home");
     expect(pomadeHome({ POMADE_HOME: "rel" })).toBe(resolve("rel"));
     expect(pomadeHome({})).toBe(join(homedir(), ".pomade"));
+  });
+});
+
+describe("appStateDir", () => {
+  it("POMADE_APP_STATE, absolute; null without it", () => {
+    expect(appStateDir({ POMADE_APP_STATE: "/ud/app-state/hello/" })).toBe("/ud/app-state/hello");
+    expect(appStateDir({ POMADE_APP_STATE: "rel" })).toBe(resolve("rel"));
+    expect(appStateDir({ POMADE_APP_STATE: "" })).toBeNull();
+    expect(appStateDir({})).toBeNull();
   });
 });
 

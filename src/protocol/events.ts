@@ -13,6 +13,7 @@ export const PLATFORM_EVENTS = [
   "pomade.ready",
   "project.created",
   "project.renamed",
+  "project.removed",
   "project.opened",
   "project.changed",
   "project.updated",
@@ -71,6 +72,8 @@ export interface PlatformEvents {
   "pomade.ready": Record<string, never>;
   "project.created": ProjectRef;
   "project.renamed": ProjectRenamedPayload;
+  /** A project left the workspace (the user removed it): the project as it was; its id is gone for good. */
+  "project.removed": ProjectRef;
   /** A project (or the Workspace scope) became active for the first time since Pomade started. */
   "project.opened": ProjectRef;
   "project.changed": ProjectRef;
@@ -175,7 +178,7 @@ export interface HasSubscribersResult {
 export interface ManifestEvents {
   /** The app's own event names (unqualified), unique. */
   publish: string[];
-  /** Platform events and other apps' events (`<appId>:<event>`), unique. */
+  /** Platform events and apps' events (`<appId>:<event>`, the app's own included), unique. */
   subscribe: string[];
 }
 

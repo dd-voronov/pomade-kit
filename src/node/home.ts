@@ -36,6 +36,13 @@ export function resolveWorkspace(env: Env = process.env): string | null {
   return pointer && isAbsolute(pointer) ? pointer : null;
 }
 
+/** The app's machine-local state folder (`POMADE_APP_STATE`, `<userData>/app-state/<id>/`): run
+ *  history, captured output, caches. `null` outside an app's backend or command. */
+export function appStateDir(env: Env = process.env): string | null {
+  const value = env[POMADE_ENV.appState];
+  return value ? resolve(value) : null;
+}
+
 /** The host record Pomade writes at start (`<home>/host.json`): its socket and how to launch it. */
 export function readHostRecord(env: Env = process.env): HostRecord | null {
   const text = readText(join(pomadeHome(env), HOME_FILES.host));

@@ -36,6 +36,8 @@ export const POMADE_ENV = {
   role: "POMADE_CLIENT",
   /** The workspace root (absolute). */
   workspace: "POMADE_WORKSPACE",
+  /** The app's machine-local state folder (`<userData>/app-state/<id>/`, absolute); Pomade creates it. */
+  appState: "POMADE_APP_STATE",
   /** Backends only: where the app's keeper binds its socket (`keeperSocketPath`, pomade:E-034). */
   keeperSocket: "POMADE_KEEPER_SOCKET",
 } as const;

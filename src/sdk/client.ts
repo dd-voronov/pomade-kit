@@ -351,6 +351,7 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
         case "pomade.ready":
         case "project.created":
         case "project.renamed":
+        case "project.removed":
         case "project.opened":
         case "project.updated":
         case "agentTab.exited":

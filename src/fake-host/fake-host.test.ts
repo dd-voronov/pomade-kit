@@ -1141,6 +1141,21 @@ describe("events (pomade:E-031)", () => {
     expect(evs(b, "project.changed")).toEqual([project]);
   });
 
+  it("removeProject: project.removed to subscribers with the project as it was, then project.changed when it was active", () => {
+    const host = fake({ manifest: { ...manifest, events: { subscribe: ["project.removed"] } }, activeProject: "pomade" });
+    const r = raw(host);
+    r.hello();
+    expect(r.call("events.subscribe", { name: "project.removed" }).ok).toBe(true);
+    host.removeProject("kit");
+    host.removeProject("pomade");
+    expect(evs(r, "project.removed")).toEqual([
+      { id: "kit", kind: "project", name: "pomade-kit", root: "Projects/pomade-kit" },
+      { id: "pomade", kind: "project", name: "Pomade", root: "Projects/Pomade" },
+    ]);
+    expect(evs(r, "project.changed")).toEqual([{ id: "__workspace__", kind: "workspace", name: "Workspace", root: "" }]);
+    expect(() => host.removeProject("pomade")).toThrow(/no project/);
+  });
+
   it("refuses undeclared and malformed names", () => {
     const r = raw(fake({ manifest }));
     r.hello();

@@ -6,13 +6,14 @@ import { userInfo } from "node:os";
 
 import { POMADE_ENV } from "../protocol/index.js";
 
-/** Names never passed from the keeper to a session: its runtime switch and the app's identity. */
+/** Names never passed from the keeper to a session: its runtime switch and the app's identity and state folder. */
 const STRIP = new Set<string>([
   "ELECTRON_RUN_AS_NODE",
   POMADE_ENV.appId,
   POMADE_ENV.keyFile,
   POMADE_ENV.role,
   POMADE_ENV.keeperSocket,
+  POMADE_ENV.appState,
   "POMADE_KEEPER_HANDOFF",
 ]);
 

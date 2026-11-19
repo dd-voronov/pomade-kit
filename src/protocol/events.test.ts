@@ -20,11 +20,12 @@ const BASE = { id: "pomade-runner", name: "Runner", version: "0.1.0", hostApi: 0
 const DECLARED: ManifestEvents = { publish: ["run.started", "run.finished"], subscribe: ["project.renamed", "pomade-agents:session.closed"] };
 
 describe("event names", () => {
-  it("platform events are the documented nine", () => {
+  it("platform events are the documented ten", () => {
     expect(PLATFORM_EVENTS).toEqual([
       "pomade.ready",
       "project.created",
       "project.renamed",
+      "project.removed",
       "project.opened",
       "project.changed",
       "project.updated",
@@ -153,6 +154,8 @@ describe("bus events on the wire", () => {
     expect(ev("pomade.ready", {})).toMatchObject({ name: "pomade.ready", payload: {} });
     expect(ev("project.created", project)).toMatchObject({ name: "project.created", payload: project });
     expect(ev("project.opened", project)).toMatchObject({ name: "project.opened" });
+    expect(ev("project.removed", project)).toEqual({ channel: "pomade", type: "event", name: "project.removed", payload: project });
+    expect(ev("project.removed", { id: "p1" })).toBeNull();
     expect(ev("project.renamed", { project, previous: { ...project, name: "Old" } })).toMatchObject({
       payload: { project, previous: { ...project, name: "Old" } },
     });

@@ -64,8 +64,8 @@ export interface KeeperOptions {
   app?: string;
   /** Where to listen. Default `POMADE_KEEPER_SOCKET` (`<userData>/run/keepers/<app>.sock`). */
   socketPath?: string;
-  /** Session records, exit statuses, hand-off files and the log. Default
-   *  `<userData>/app-state/<app>/keeper`, next to the socket's user-data folder. */
+  /** Session records, exit statuses, hand-off files and the log. Default `<POMADE_APP_STATE>/keeper`;
+   *  without that variable, `<userData>/app-state/<app>/keeper` next to the socket's user-data folder. */
   stateDir?: string;
   /** What an `owner` hello must present. Default: the content of `POMADE_APP_KEY_FILE`. `null`
    *  accepts the owner without a key (tests). */
@@ -234,7 +234,9 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
   if (!socketPath) throw new Error(`pomade-kit/keeper: no socket — pass "socketPath" or set ${POMADE_ENV.keeperSocket}`);
   const tooLong = socketPathProblem(socketPath);
   if (tooLong) throw new Error(`pomade-kit/keeper: ${tooLong}`);
-  const stateDir = options.stateDir ?? join(dirname(dirname(dirname(socketPath))), "app-state", app, "keeper");
+  const appState = env[POMADE_ENV.appState];
+  const stateDir =
+    options.stateDir ?? (appState ? join(appState, "keeper") : join(dirname(dirname(dirname(socketPath))), "app-state", app, "keeper"));
   const ownerKey = options.ownerKey === undefined ? readKey(env[POMADE_ENV.keyFile]) : options.ownerKey;
   const version = options.version ?? "0";
   const scrollback = options.scrollback ?? DEFAULTS.scrollback;

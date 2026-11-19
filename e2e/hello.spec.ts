@@ -240,12 +240,20 @@ test("shows the project's git repos and follows git changes and project switches
   await expect(app(page).getByTestId("git")).toHaveText("Git: no repository");
 });
 
-test("hears platform events it subscribes to: Pomade ready (sticky), a project renamed", async ({ page }) => {
-  await expect.poll(() => page.evaluate(() => window.fakeHost.subscriptions)).toEqual(["pomade.ready", "project.changed", "project.renamed", "project.updated"]);
+test("hears platform events it subscribes to: Pomade ready (sticky), a project renamed, a project removed", async ({ page }) => {
+  await expect.poll(() => page.evaluate(() => window.fakeHost.subscriptions)).toEqual([
+    "pomade.ready",
+    "project.changed",
+    "project.removed",
+    "project.renamed",
+    "project.updated",
+  ]);
   await page.evaluate(() => window.fakeHost.ready());
   await expect(app(page).getByTestId("events")).toHaveText("Last event: Pomade ready");
   await page.evaluate(() => window.fakeHost.updateProject("beta", { name: "Beta 2" }));
   await expect(app(page).getByTestId("events")).toHaveText("Last event: Beta renamed to Beta 2");
+  await page.evaluate(() => window.fakeHost.removeProject("beta"));
+  await expect(app(page).getByTestId("events")).toHaveText("Last event: Beta 2 removed");
   // A frame loaded after Pomade was ready still hears it.
   await app(page).locator("body").evaluate(() => location.reload());
   await expect(app(page).getByTestId("events")).toHaveText("Last event: Pomade ready");

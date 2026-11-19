@@ -272,6 +272,7 @@ function parseBusEvent(name: unknown, payload: unknown): HostToAppMessage | null
     case "pomade.ready":
       return isObj(payload) ? { channel: CHANNEL, type: "event", name: bus.name, payload: {} } : null;
     case "project.created":
+    case "project.removed":
     case "project.opened":
       return isProjectRef(payload) ? { channel: CHANNEL, type: "event", name: bus.name, payload } : null;
     case "project.changed":

@@ -584,6 +584,23 @@ export class FakeHost {
     this.bus.publish("project.changed", { ...project });
   }
 
+  /** Remove a project from the workspace, as the user does in Pomade: its group, agents and settings
+   *  go with it. Emits `project.removed` (the project as it was), then `project.changed` to the
+   *  Workspace scope when it was the active project — as Pomade does. */
+  removeProject(id: string): void {
+    const at = this.projects.findIndex((p) => p.id === id);
+    if (at === -1) throw new Error(`fake host: no project ${JSON.stringify(id)}`);
+    const [project] = this.projects.splice(at, 1);
+    this.projectGroup.delete(id);
+    this.projectAgents.delete(id);
+    this.projectSettings.delete(id);
+    this.refreshGitWatches();
+    this.bus.publish("project.removed", { ...project! });
+    if (this.active.id !== id) return;
+    this.active = { ...WORKSPACE_SCOPE };
+    this.bus.publish("project.changed", { ...WORKSPACE_SCOPE });
+  }
+
   /** `project.updated` to its subscribers; a `settings` change reaches only this app (the fake host's one app). */
   private publishProjectUpdated(id: string, changes: ProjectChange[]): void {
     const project = this.data.listProjects().projects.find((p) => p.id === id);

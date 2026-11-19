@@ -680,6 +680,7 @@ export interface HostEvents {
   "pomade.ready": Record<string, never>;
   "project.created": ProjectRef;
   "project.renamed": ProjectRenamedPayload;
+  "project.removed": ProjectRef;
   "project.opened": ProjectRef;
   "project.updated": ProjectUpdatedPayload;
   "agentTab.exited": AgentTabExitedPayload;
