@@ -171,3 +171,25 @@ test("the app's own tab: opened from the UI, focused again, and moved to a new r
   await expect(frame(page, "tab-app-tab-2").getByTestId("route")).toHaveText("Route: today");
   host.close();
 });
+
+test("keyed output tabs: one per run, retitled and closed from inside the tab", async ({ page }) => {
+  const panel = frame(page, "panel");
+  await panel.getByTestId("open-output-scraper").click();
+  await panel.getByTestId("open-output-deploy").click();
+  await panel.getByTestId("open-output-scraper").click();
+  await expect.poll(() => world.fake.appTabs).toEqual([
+    { tabId: "app-tab-1", projectId: "alpha", route: "output/scraper", key: "output:scraper", kind: "output", title: "Scraper · output" },
+    { tabId: "app-tab-2", projectId: "alpha", route: "output/deploy", key: "output:deploy", kind: "output", title: "Deploy · output" },
+  ]);
+  await expect.poll(() => world.fake.appTabChanges.map((c) => c.change)).toEqual(["open", "open", "focus"]);
+  // Deploy's tab to the front again.
+  await panel.getByTestId("open-output-deploy").click();
+  await expect.poll(() => world.fake.appTabChanges.at(-1)).toMatchObject({ change: "focus", tab: { tabId: "app-tab-2" } });
+  const deploy = frame(page, "tab-app-tab-2");
+  await expect(deploy.getByTestId("tab-key")).toHaveText("Keyed tab output:deploy · kind output");
+  await expect(frame(page, "panel").getByTestId("keyed")).toBeHidden();
+  await deploy.getByTestId("retitle-tab").click();
+  await expect.poll(() => world.fake.appTabs[1]?.title).toBe("Deploy · done");
+  await deploy.getByTestId("close-tab").click();
+  await expect.poll(() => world.fake.appTabs.map((t) => t.key)).toEqual(["output:scraper"]);
+});

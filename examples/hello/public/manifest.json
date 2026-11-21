@@ -18,6 +18,12 @@
       "action": "panel"
     }
   ],
+  "tabKinds": {
+    "output": {
+      "title": "Output",
+      "icon": "output.svg"
+    }
+  },
   "startOnLaunch": true,
   "shortcuts": [
     {

@@ -14,6 +14,9 @@
 // ticker" opens it in an attached terminal tab, whose Restart header action the backend serves.
 // "Ask the backend" calls the app's own API (`status`), which its backend serves through Pomade's broker.
 // "Quick note…" opens the same overlay as Cmd+Shift+J from the panel or tab (`overlay.open`).
+// "Open Scraper output" / "Open Deploy output" open keyed tabs of the app's `output` tab kind (one per
+// key per project; opened again, focused); inside such a tab the app retitles it (`tabs.setTitle`) and
+// closes it (`tabs.close`).
 // "New scratch file" makes a file in the project's scratch/ folder; "Trash scratch files" moves
 // every file there to the Trash in one `files.delete` call and says how each one went.
 // It looks like Pomade: Pomade's design tokens and its theme, whatever the Mac's appearance.
@@ -180,6 +183,24 @@ async function askBackend(host: HostClient): Promise<void> {
   }
 }
 
+/** Keyed tabs of the `output` tab kind: one per run, titled by the app. */
+function useOutputTabs(host: HostClient): void {
+  for (const run of ["Scraper", "Deploy"]) {
+    const id = run.toLowerCase();
+    el(`open-output-${id}`).addEventListener(
+      "click",
+      () => void host.tabs.openApp({ key: `output:${id}`, kind: "output", title: `${run} · output`, route: `output/${id}` }),
+    );
+  }
+  const { key, kind } = host.welcome;
+  if (key === undefined) return;
+  el("keyed").hidden = false;
+  el("tab-key").textContent = `Keyed tab ${key}${kind !== undefined ? ` · kind ${kind}` : ""}`;
+  const run = key.replace(/^output:/, "");
+  el("retitle-tab").addEventListener("click", () => void host.tabs.setTitle(`${run.charAt(0).toUpperCase()}${run.slice(1)} · done`));
+  el("close-tab").addEventListener("click", () => void host.tabs.close());
+}
+
 function startApp(host: HostClient): void {
   void countLaunches(host);
   void showSkills(host);
@@ -207,6 +228,7 @@ function startApp(host: HostClient): void {
   const open = el("open-tab");
   open.hidden = false;
   open.addEventListener("click", () => void host.tabs.openApp({ route: "roadmap" }));
+  useOutputTabs(host);
   let watch: FileWatch | null = null;
   let gitWatch: GitWatch | null = null;
   let generation = 0;
