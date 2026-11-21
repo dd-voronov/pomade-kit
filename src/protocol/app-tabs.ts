@@ -1,5 +1,5 @@
 // An app's own tabs (Host API §4 "Own tab"): the rules for `tabs.openApp`'s params, keyed tabs and
-// `tabs.setTitle`. Pure; Pomade and the fake host both check calls with these.
+// `tabs.setTitle`, `tabs.setRoute`. Pure; Pomade and the fake host both check calls with these.
 
 import type { AppTabKind, OpenAppParams } from "./types.js";
 
@@ -12,6 +12,11 @@ export const TAB_KIND_ID_RE = /^[a-z][a-z0-9-]{0,31}$/;
 /** Why `title` is not a valid tab title (a string that is not blank), or null when it is. */
 export function checkTabTitle(title: unknown): string | null {
   return typeof title === "string" && title.trim() !== "" ? null : '"title" must be a non-empty string';
+}
+
+/** Why `route` is not a valid `tabs.setRoute` route (a string; "" is the app's default view), or null when it is. */
+export function checkTabRoute(route: unknown): string | null {
+  return typeof route === "string" ? null : '"route" must be a string';
 }
 
 /** `tabs.openApp` params as the host serves them: `route` defaulted to `""`, `title` trimmed. */

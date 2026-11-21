@@ -293,6 +293,7 @@ describe("METHOD_CAPABILITY", () => {
       "state.get": null,
       "state.set": null,
       "tabs.openApp": null,
+      "tabs.setRoute": null,
       "tabs.setTitle": null,
       "tabs.close": null,
       "overlay.open": null,

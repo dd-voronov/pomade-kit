@@ -798,6 +798,87 @@ describe("keyed tabs (tabs.openApp key, tabs.setTitle, tabs.close)", () => {
   });
 });
 
+describe("tabs.setRoute", () => {
+  function tabFrame(host: FakeHost, tabId: string) {
+    const got: HostToAppMessage[] = [];
+    const frame = host.attach((m) => got.push(m), { tabId });
+    let id = 0;
+    const call = (method: string, params?: unknown) => {
+      frame.receive({ channel: "pomade", type: "call", id: String(++id), method, params });
+      return got.at(-1);
+    };
+    frame.receive({ channel: "pomade", type: "hello", hostApi: 0 });
+    const routes = () => got.flatMap((m) => (m.type === "event" && m.name === "route.changed" ? [m.payload.route] : []));
+    return { call, routes };
+  }
+
+  it("records the icon-less tab's route with no route.changed back; openApp to the old route navigates again; host.info answers it", () => {
+    const host = fake({ manifest: STRIP_MANIFEST });
+    const opener = raw(host);
+    opener.hello();
+    opener.call("tabs.openApp", { route: "card/1" });
+    const f = tabFrame(host, host.appTabs[0]!.tabId);
+    expect(f.call("tabs.setRoute", { route: "" })).toMatchObject({ ok: true, value: {} });
+    expect(f.routes()).toEqual([]);
+    expect(host.appTabs[0]?.route).toBe("");
+    expect(f.call("host.info")).toMatchObject({ ok: true, value: { route: "" } });
+    opener.call("tabs.openApp", { route: "card/1" });
+    expect(f.routes()).toEqual(["card/1"]);
+    expect(host.appTabChanges.map((c) => `${c.change} ${c.tab.route}`)).toEqual(["open card/1", "route ", "route card/1", "focus card/1"]);
+  });
+
+  it("records a keyed tab's route", () => {
+    const host = fake({ manifest: STRIP_MANIFEST });
+    const opener = raw(host);
+    opener.hello();
+    opener.call("tabs.openApp", { key: "a", route: "output/a" });
+    const f = tabFrame(host, host.appTabs[0]!.tabId);
+    f.call("tabs.setRoute", { route: "output/a/log" });
+    opener.call("tabs.openApp", { key: "a", route: "output/a" });
+    expect(f.routes()).toEqual(["output/a"]);
+  });
+
+  it("an icon's tab: openApp to the icon's route navigates back; a strip icon click is a plain focus", () => {
+    const host = fake({ manifest: STRIP_MANIFEST });
+    const tab = host.openAppTab({ icon: "board" });
+    const f = tabFrame(host, tab.tabId);
+    f.call("tabs.setRoute", { route: "board/card/3" });
+    host.openAppTab({ icon: "board" });
+    expect(host.appTabs[0]).toMatchObject({ icon: "board", route: "board/card/3" });
+    expect(f.routes()).toEqual([]);
+    const opener = raw(host);
+    opener.hello();
+    opener.call("tabs.openApp", { route: "board" });
+    expect(f.routes()).toEqual(["board"]);
+    expect(host.appTabs).toHaveLength(1);
+  });
+
+  it.each<[string, unknown]>([
+    ["no route", {}],
+    ["a number", { route: 1 }],
+  ])("%s → invalid-params", (_label, params) => {
+    const host = fake({ manifest: STRIP_MANIFEST });
+    const tab = host.openAppTab();
+    expect(tabFrame(host, tab.tabId).call("tabs.setRoute", params)).toMatchObject({ ok: false, error: { code: "invalid-params" } });
+  });
+
+  it("is for a tab frame: a panel's or an overlay's is invalid-params, a socket client's capability-denied", () => {
+    const host = fake({ manifest: { ...STRIP_MANIFEST, backend: { entry: "b.mjs", mode: "with-pomade" } } });
+    for (const surface of ["panel", "overlay"] as const) {
+      const got: HostToAppMessage[] = [];
+      const frame = host.attach((m) => got.push(m), { surface, icon: "planner" });
+      frame.receive({ channel: "pomade", type: "hello", hostApi: 0 });
+      frame.receive({ channel: "pomade", type: "call", id: "1", method: "tabs.setRoute", params: { route: "a" } });
+      expect(got.at(-1)).toMatchObject({ ok: false, error: { code: "invalid-params" } });
+    }
+    const got: HostToAppMessage[] = [];
+    const backend = host.attach((m) => got.push(m), { surface: "backend" });
+    backend.receive({ channel: "pomade", type: "hello", hostApi: 0 });
+    backend.receive({ channel: "pomade", type: "call", id: "1", method: "tabs.setRoute", params: { route: "a" } });
+    expect(got.at(-1)).toMatchObject({ ok: false, error: { code: "capability-denied" } });
+  });
+});
+
 describe("socket surfaces in memory (backend, command)", () => {
   it("hear no project.changed unless subscribed, and their keys are ignored", () => {
     const host = fake({ activeProject: "pomade", manifest: { id: "a1", name: "A", version: "1.0.0", hostApi: 0, capabilities: [], backend: { entry: "b.mjs", mode: "with-pomade" }, events: { subscribe: ["project.changed"] } } });

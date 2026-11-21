@@ -66,6 +66,7 @@ else if (result.status === "rejected") {
   await host.tabs.openApp({ route: "planner/today" });               // open or focus own tab at a route
   await host.tabs.openApp({ route: "board", projectId: "<project id>" }); // …in another project (switches to it)
   await host.tabs.openApp({ key: "output:r42", kind: "output", title: "Scraper · output", route: "output/r42" }); // a keyed tab
+  await host.tabs.setRoute("");                 // this frame navigated by itself: Pomade records its tab's route
   await host.tabs.setTitle("Scraper · done");   // retitle this frame's own tab (unless the user renamed it)
   await host.tabs.close();                      // close this frame's own tab
   host.onRouteChange((route) => { /* Pomade navigated this tab: render `route` */ });
@@ -115,9 +116,15 @@ else if (result.status === "rejected") {
   "icon": "output.svg" } }`): the tab shows its icon (else the app's). `title` or `kind` without
   `key`, a bad key, a blank title or an undeclared kind is `invalid-params`. Without `key`, `openApp`
   is as above — a notice's `openApp` action and an app shortcut never open a keyed tab.
+- `host.tabs.setRoute(route)` tells Pomade the route the frame's own tab is at after the app navigated
+  by itself (a card closed): Pomade records it for that tab — icon-less, keyed or an icon's — and
+  sends no `route.changed` back. From then on `host.info()`, a reload and a restart use it, and a
+  later `openApp`, notice or app shortcut to any other route navigates the tab (`route.changed`) —
+  the route Pomade last sent included. An icon's tab clicked from its strip icon is only focused: it
+  stays where the app is. Any string is a route (`checkTabRoute`); a non-string is `invalid-params`.
 - `host.tabs.setTitle(title)` retitles the frame's own tab — any of the app's tabs — unless the
   user renamed it (then it resolves and changes nothing). `host.tabs.close()` closes the frame's own
-  tab as the user's close does; the answer arrives first. Both only from a tab frame: a panel's or an
+  tab as the user's close does; the answer arrives first. `setRoute`, `setTitle` and `close` only from a tab frame: a panel's or an
   overlay's call is `invalid-params`, a backend's or a command's `capability-denied` (frame-only).
 - `host.close()` detaches the client: no more events, pending calls reject.
 
@@ -536,13 +543,15 @@ code, and the events. Test controls emit the events Pomade would:
 
 **The app's own tabs.** `tabs.openApp` (and a notice's `openApp` action, and `fake.openAppTab`)
 opens or focuses the app's tab as Pomade does: a route that a strip icon's tab renders (an icon with
-action `tab` or `both` whose `route` equals it) is that icon's tab — one per icon per project, never
-navigated; any other route is the app's one icon-less tab per project, opened at that route or
+action `tab` or `both` whose `route` equals it) is that icon's tab — one per icon per project, navigated
+back to that route only when `tabs.setRoute` moved it (a strip icon click, `fake.openAppTab({ icon })`,
+only focuses it); any other route is the app's one icon-less tab per project, opened at that route or
 navigated to it (`route` change, then `focus`). With `key`, it is that keyed tab — one per key per
 project, opened at `route` with its title (`title`, else its kind's, else the app's name), or
-navigated (`route`), retitled (`title`) and focused. The project becomes active. `tabs.setTitle` and
-`tabs.close` from a frame attached with `{ tabId }` retitle (`title`) and close (`close`, after the
-answer; the frame's `onClose` runs) that tab. A frame attached with
+navigated (`route`), retitled (`title`) and focused. The project becomes active. `tabs.setRoute`,
+`tabs.setTitle` and `tabs.close` from a frame attached with `{ tabId }` record that tab's route
+(`route`, no `route.changed` to the caller; another frame showing the tab is navigated), retitle
+(`title`) and close (`close`, after the answer; the frame's `onClose` runs) that tab. A frame attached with
 `{ tabId }` (`attach`, `createTransport`, `mountApp`) shows that tab: it opens at the tab's icon and
 route and gets `route.changed` when the tab moves; its own `navigate(route)` moves the tab. A
 browser harness mounts a frame for every `open` it hears from `fake.onAppTab`:
@@ -1098,7 +1107,7 @@ if (r.status === "not-running") {
 
 // A backend: stay connected across Pomade restarts (back-off 250 ms → 5 s).
 const keeper = stayConnected({}, {
-  onConnect(host) { /* register, watch, … */ },
+  async onConnect(host) { /* register, watch, … — when Pomade quits mid-way, the rejection is dropped and this runs again on the reconnect */ },
   onDisconnect() { /* Pomade quit or restarted */ },
 });
 keeper.stop();

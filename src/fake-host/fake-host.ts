@@ -28,6 +28,7 @@ import {
   METHOD_CAPABILITY,
   WORKSPACE_PROJECT_ID,
   checkOverlayAnchor,
+  checkTabRoute,
   checkTabTitle,
   type CheckedOpenAppParams,
   checkOverlayHeight,
@@ -1080,6 +1081,13 @@ export class FakeHost {
         frame.onOverlayResize?.(params.height as number);
         return {};
       }
+      case "tabs.setRoute": {
+        if (frame.target.surface !== "tab") throw new CallError("invalid-params", "tabs.setRoute is only for a tab frame");
+        const bad = checkTabRoute(params.route);
+        if (bad) throw new CallError("invalid-params", bad);
+        this.recordRoute(frame, params.route as string);
+        return {};
+      }
       case "tabs.setTitle": {
         if (frame.target.surface !== "tab") throw new CallError("invalid-params", "tabs.setTitle is only for a tab frame");
         const bad = checkTabTitle(params.title);
@@ -1185,13 +1193,14 @@ export class FakeHost {
     return this.strip.find((s) => s.action !== "panel" && s.route === route)?.id;
   }
 
-  /** Open or focus the app's tab for `icon` in `projectId`, as Pomade's tab strip does: an open
-   *  icon-less tab is navigated to `route`; the project becomes active. */
+  /** Open or focus the app's tab for `icon` in `projectId`, as Pomade's tab strip does: an open tab
+   *  is navigated to `route` when given (`tabs.openApp`; a strip icon click gives none — a plain
+   *  focus); the project becomes active. */
   private openOwnTab(projectId: string, icon: string | undefined, route: string | undefined): AppTabRecord {
     let tab = this.appTabList.find((t) => t.projectId === projectId && t.key === undefined && t.icon === icon);
     const changes: FakeAppTabChange["change"][] = [];
     if (tab) {
-      if (icon === undefined && route !== undefined && tab.route !== route) {
+      if (route !== undefined && tab.route !== route) {
         tab.route = route;
         changes.push("route");
       }
@@ -1266,6 +1275,17 @@ export class FakeHost {
     this.appTabList.splice(this.appTabList.indexOf(tab), 1);
     this.tabChanged("close", tab);
     for (const frame of [...tab.frames]) frame.onClose?.();
+  }
+
+  /** `tabs.setRoute`: the frame navigated by itself — its route (and its app tab's) is recorded with no
+   *  `route.changed` back to it; another frame showing the same tab is navigated there. */
+  private recordRoute(frame: Frame, route: string): void {
+    frame.target.route = route;
+    const tab = frame.tab;
+    if (!tab || tab.route === route) return;
+    tab.route = route;
+    for (const other of tab.frames) if (other !== frame) this.navigateFrame(other, route);
+    this.tabChanged("route", tab);
   }
 
   /** Navigate an app tab and every frame showing it. */

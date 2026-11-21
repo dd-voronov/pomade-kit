@@ -246,6 +246,18 @@ describe("tabs.openApp and route changes", () => {
     expect(await a).toBeUndefined();
   });
 
+  it("setRoute sends { route } and resolves void; a refusal rejects", async () => {
+    const t = setup();
+    const a = t.host.tabs.setRoute("");
+    expect(t.lastCall()).toMatchObject({ method: "tabs.setRoute", params: { route: "" } });
+    t.ok(t.lastCall().id, {});
+    expect(await a).toBeUndefined();
+    const b = t.host.tabs.setRoute("card/2");
+    expect(t.lastCall()).toMatchObject({ method: "tabs.setRoute", params: { route: "card/2" } });
+    t.fail(t.lastCall().id, "invalid-params");
+    await expect(b).rejects.toMatchObject({ code: "invalid-params" });
+  });
+
   it("setTitle sends { title } and close sends {}; both resolve void, a refusal rejects", async () => {
     const t = setup();
     const a = t.host.tabs.setTitle("Deploy · output");

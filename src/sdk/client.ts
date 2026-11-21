@@ -200,6 +200,10 @@ export interface HostClient {
      *  With `key`: the keyed tab for that key — opened right of the active tab, or focused and navigated to `route`;
      *  `title` and `kind` give it its title and app tab kind (manifest `tabKinds`). */
     openApp(params?: OpenAppParams): Promise<void>;
+    /** Tell Pomade the route this frame's own tab is at after navigating by itself: Pomade records it (no
+     *  `route.changed` back), so a later `openApp`, notice or shortcut to another route navigates the tab, and
+     *  `host.info`, a reload and a restart use it. Only for `welcome.surface === "tab"`. */
+    setRoute(route: string): Promise<void>;
     /** Retitle this frame's own tab (any of the app's tabs) — unless the user renamed it. Only for `welcome.surface === "tab"`. */
     setTitle(title: string): Promise<void>;
     /** Close this frame's own tab, as the user's close does. Only for `welcome.surface === "tab"`. */
@@ -508,6 +512,9 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
       },
       async openApp(params = {}) {
         await call("tabs.openApp", params);
+      },
+      async setRoute(route) {
+        await call("tabs.setRoute", { route });
       },
       async setTitle(title) {
         await call("tabs.setTitle", { title });

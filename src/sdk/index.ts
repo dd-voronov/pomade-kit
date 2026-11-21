@@ -60,6 +60,7 @@ export type {
   PickFolderParams,
   PickFolderResult,
   OpenAppParams,
+  SetTabRouteParams,
   SetTabTitleParams,
   AppTabKind,
   OpenOverlayParams,

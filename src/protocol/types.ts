@@ -510,6 +510,12 @@ export interface OpenAppParams {
   kind?: string;
 }
 
+/** `tabs.setRoute` — a tab frame tells the host the route it navigated to by itself. */
+export interface SetTabRouteParams {
+  /** The route the frame renders now ("" = the app's default view). */
+  route: string;
+}
+
 /** `tabs.setTitle` — a tab frame retitles its own tab (unless the user renamed it). */
 export interface SetTabTitleParams {
   /** Trimmed, non-empty. */
@@ -608,6 +614,7 @@ export interface HostMethods {
   "state.get": { params: StateGetParams; result: StateGetResult };
   "state.set": { params: StateSetParams; result: Record<string, never> };
   "tabs.openApp": { params: OpenAppParams; result: Record<string, never> };
+  "tabs.setRoute": { params: SetTabRouteParams; result: Record<string, never> };
   "tabs.setTitle": { params: SetTabTitleParams; result: Record<string, never> };
   "tabs.close": { params: Record<string, never>; result: Record<string, never> };
   "overlay.open": { params: OpenOverlayParams; result: Record<string, never> };
@@ -666,6 +673,7 @@ export const METHOD_CAPABILITY: Readonly<Record<MethodName, MethodCapability>> =
   "state.get": null,
   "state.set": null,
   "tabs.openApp": null,
+  "tabs.setRoute": null,
   "tabs.setTitle": null,
   "tabs.close": null,
   "overlay.open": null,

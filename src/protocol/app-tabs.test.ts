@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { APP_TAB_KEY_RE, checkOpenAppParams, checkTabTitle } from "./app-tabs.js";
+import { APP_TAB_KEY_RE, checkOpenAppParams, checkTabRoute, checkTabTitle } from "./app-tabs.js";
 
 const KINDS = { output: { title: "Output", icon: "output.svg" } };
 
@@ -59,5 +59,12 @@ describe("tabs.setTitle title", () => {
     expect(checkTabTitle("A")).toBeNull();
     expect(checkTabTitle(" A ")).toBeNull();
     for (const bad of ["", "  ", 1, null, undefined]) expect(checkTabTitle(bad)).toBe('"title" must be a non-empty string');
+  });
+});
+
+describe("tabs.setRoute route", () => {
+  it("any string, the empty default view included", () => {
+    for (const ok of ["", "card/1", " a b "]) expect(checkTabRoute(ok)).toBeNull();
+    for (const bad of [1, null, undefined, {}]) expect(checkTabRoute(bad)).toBe('"route" must be a string');
   });
 });
