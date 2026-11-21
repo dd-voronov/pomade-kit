@@ -327,7 +327,7 @@ describe("lifetime", () => {
     let disconnects = 0;
     const keeper = stayConnected(
       { env: server.env(), minDelayMs: 20, maxDelayMs: 50 },
-      { onConnect: (host) => connects.push(host.welcome.surface), onDisconnect: () => disconnects++ },
+      { onConnect: (host) => void connects.push(host.welcome.surface), onDisconnect: () => disconnects++ },
     );
     cleanups.push(() => keeper.stop());
     await until(() => server.clients().length === 1, "the backend");

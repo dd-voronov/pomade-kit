@@ -134,7 +134,7 @@ describe("stayConnected", () => {
     const events: string[] = [];
     const keeper = stayConnected(
       { env: ENV(), minDelayMs: 20, maxDelayMs: 40 },
-      { onConnect: (host) => events.push(`connect ${host.welcome.appId}`), onDisconnect: () => events.push("disconnect") },
+      { onConnect: (host) => void events.push(`connect ${host.welcome.appId}`), onDisconnect: () => events.push("disconnect") },
     );
     try {
       await new Promise((r) => setTimeout(r, 60));
@@ -145,6 +145,31 @@ describe("stayConnected", () => {
       await expect.poll(() => events).toEqual(["connect pomade-agents", "disconnect"]);
       await listen();
       await expect.poll(() => events).toEqual(["connect pomade-agents", "disconnect", "connect pomade-agents"]);
+    } finally {
+      keeper.stop();
+    }
+  });
+
+  it("an async onConnect cut short by the connection ending is dropped quietly, and runs again on the reconnect", async () => {
+    await listen();
+    let connects = 0;
+    const keeper = stayConnected(
+      { env: ENV(), minDelayMs: 20, maxDelayMs: 40 },
+      {
+        async onConnect(host) {
+          connects += 1;
+          if (connects > 1) return;
+          // Pomade quits while the backend is still setting up: its call rejects as the client closes.
+          const pending = host.info();
+          await closeServer();
+          await pending;
+        },
+      },
+    );
+    try {
+      await expect.poll(() => connects).toBe(1);
+      await listen();
+      await expect.poll(() => connects).toBe(2);
     } finally {
       keeper.stop();
     }
@@ -168,7 +193,7 @@ describe("stayConnected and a missing key file", () => {
     await listen();
     const keyFile = join(dir, "late-key");
     const connected: string[] = [];
-    const keeper = stayConnected({ env: { ...ENV(), POMADE_APP_KEY_FILE: keyFile }, minDelayMs: 10, maxDelayMs: 20 }, { onConnect: (h) => connected.push(h.welcome.appId) });
+    const keeper = stayConnected({ env: { ...ENV(), POMADE_APP_KEY_FILE: keyFile }, minDelayMs: 10, maxDelayMs: 20 }, { onConnect: (h) => void connected.push(h.welcome.appId) });
     try {
       await new Promise((r) => setTimeout(r, 50));
       expect(connected).toEqual([]);

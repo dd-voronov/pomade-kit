@@ -164,8 +164,10 @@ export function connectSocket(options: SocketConnectOptions = {}): Promise<Socke
 }
 
 export interface StayConnectedHandlers {
-  /** A new connection, after start and after every reconnect. */
-  onConnect(host: HostClient): void;
+  /** A new connection, after start and after every reconnect. It may be async: when the connection
+   *  ends while it runs, its rejection (a call rejected as the client closed) is dropped — the
+   *  reconnect runs it again; any other rejection is left unhandled, as a thrown error would be. */
+  onConnect(host: HostClient): void | Promise<void>;
   /** The connection ended (Pomade quit or restarted); a reconnect follows. */
   onDisconnect?(): void;
   /** Pomade refused the hello (wrong key, version mismatch); retried at the longest interval. */
@@ -218,7 +220,13 @@ export function stayConnected(options: StayConnectedOptions, handlers: StayConne
         handlers.onDisconnect?.();
         retry(min);
       });
-      handlers.onConnect(result.host);
+      const host = result.host;
+      const connected = handlers.onConnect(host);
+      if (connected instanceof Promise) {
+        void connected.catch((err: unknown) => {
+          if (current === host) throw err;
+        });
+      }
       return;
     }
     if (result.status === "rejected") {
