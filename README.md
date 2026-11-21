@@ -17,7 +17,7 @@ The package installs from a git tag: npm clones it, installs its dev dependencie
 
 | Import | What | Runs in |
 |---|---|---|
-| `pomade-kit/protocol` | Host API v0 in code: messages, `ProjectRef`, `FileEntry`, `FileChange`, error codes, `Manifest` + `parseManifest`, strip icons (`StripIcon`, `resolveFrameTarget`), shortcuts (`AppShortcut`, `parseChord`, `formatChord`, `chordMatches`), app state rules, the event bus (`PLATFORM_EVENTS`, event name and payload rules, `parseManifestEvents`, the `EventBus` both hosts run), `HOST_API_VERSION`, message guards, workspace path rules, `readFrontmatter` | browser and Node |
+| `pomade-kit/protocol` | Host API v0 in code: messages, `ProjectRef`, `FileEntry`, `FileChange`, error codes, `Manifest` + `parseManifest`, strip icons (`StripIcon`, `resolveFrameTarget`), app tabs (`AppTabKind`, `APP_TAB_KEY_RE`, `checkOpenAppParams`, `checkTabTitle`), shortcuts (`AppShortcut`, `parseChord`, `formatChord`, `chordMatches`), app state rules, the event bus (`PLATFORM_EVENTS`, event name and payload rules, `parseManifestEvents`, the `EventBus` both hosts run), `HOST_API_VERSION`, message guards, workspace path rules, `readFrontmatter` | browser and Node |
 | `pomade-kit/sdk` | `connect()` and the typed client | browser (any `Transport` elsewhere) |
 | `pomade-kit/fake-host` | the Host API in memory, for standalone runs and tests | browser and Node |
 | `pomade-kit/fake-host/node` | the fake host's socket side: an app's backend and commands connect to it as to Pomade (`serveFakeHost`) | Node |
@@ -41,8 +41,8 @@ else if (result.status === "rejected") {
 } else {
   const host = result.host;
   host.welcome.project;                         // the project the frame was opened in
-  const { surface, icon, route } = host.welcome; // what the frame was opened for — render `route`
-  await host.info();                            // { pomadeVersion, hostApi, appId, surface, icon?, route, skills }
+  const { surface, icon, route, key, kind } = host.welcome; // what the frame was opened for — render `route`
+  await host.info();                            // { pomadeVersion, hostApi, appId, surface, icon?, route, key?, kind?, skills }
   await host.project.getActive();               // ProjectRef; the Workspace scope when none
   const off = host.project.onChange((project) => { /* switch */ });
 
@@ -65,6 +65,9 @@ else if (result.status === "rejected") {
 
   await host.tabs.openApp({ route: "planner/today" });               // open or focus own tab at a route
   await host.tabs.openApp({ route: "board", projectId: "<project id>" }); // …in another project (switches to it)
+  await host.tabs.openApp({ key: "output:r42", kind: "output", title: "Scraper · output", route: "output/r42" }); // a keyed tab
+  await host.tabs.setTitle("Scraper · done");   // retitle this frame's own tab (unless the user renamed it)
+  await host.tabs.close();                      // close this frame's own tab
   host.onRouteChange((route) => { /* Pomade navigated this tab: render `route` */ });
 
   try {
@@ -84,7 +87,8 @@ else if (result.status === "rejected") {
   `preventDefault()`. `connect({ keySource: null })` turns it off.
 - One bundle serves every surface. `surface` is `"tab"`, `"panel"` or `"overlay"`; `icon` is the manifest
   `strip` icon the frame was opened for (absent for a tab from the new-tab menu); `route` is that
-  icon's `route` on a tab, its `panelRoute` (else `route`) on a panel, `""` without an icon.
+  icon's `route` on a tab, its `panelRoute` (else `route`) on a panel, `""` without an icon. A
+  keyed tab's frame also gets its `key` and `kind` (absent on every other frame).
 - `host.strip.setBadge` badges one of the app's own strip icons from any of its frames; an icon
   the manifest does not declare is `invalid-params`. Pomade clears an app's badges when its frames
   reload; the app sets them again.
@@ -102,6 +106,19 @@ else if (result.status === "rejected") {
   app's one icon-less tab, navigated to the route. A frame already showing that tab gets
   `route.changed` (`host.onRouteChange`); `host.welcome.route` stays the route the frame opened
   with, `host.info()` answers the current one.
+- **Keyed tabs** — `host.tabs.openApp({ key, title?, kind?, route?, projectId? })`: one tab per
+  (app, key, project). `key` matches `APP_TAB_KEY_RE` (`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`). Not open
+  → a new tab at `route`, right of the active tab, focused, its project made active. Open → focused;
+  navigated to `route` when it differs (`route.changed`); retitled when `title` is given. `title`
+  (trimmed, non-empty) is the tab's title exactly as given; default: the kind's `title`, else the
+  app's name. `kind` names one of the manifest's `tabKinds` (`{ "output": { "title": "Output",
+  "icon": "output.svg" } }`): the tab shows its icon (else the app's). `title` or `kind` without
+  `key`, a bad key, a blank title or an undeclared kind is `invalid-params`. Without `key`, `openApp`
+  is as above — a notice's `openApp` action and an app shortcut never open a keyed tab.
+- `host.tabs.setTitle(title)` retitles the frame's own tab — any of the app's tabs — unless the
+  user renamed it (then it resolves and changes nothing). `host.tabs.close()` closes the frame's own
+  tab as the user's close does; the answer arrives first. Both only from a tab frame: a panel's or an
+  overlay's call is `invalid-params`, a backend's or a command's `capability-denied` (frame-only).
 - `host.close()` detaches the client: no more events, pending calls reject.
 
 ## Look like Pomade — design tokens and theme
@@ -510,9 +527,10 @@ code, and the events. Test controls emit the events Pomade would:
 | `fake.isSymlink(path)` | — (true when a symlink is at `path`) |
 | `fake.answerPick(path \| null)` | — (queues the user's next picker choice, a folder for `pickFolder` and a file for `pickFile`; an answer outside the root, of the wrong kind or, for `pickFile`, of another extension is refused and the next answer used; none left = cancel). `fake.pickRequests` logs `{ kind, root, initial }` per picker, plus `extensions` for `pickFile` (its `under` is both `root` and `initial`) |
 | `fake.setGitRepos(repos)` | `git.changed` to each git watch whose scope's repos changed |
-| `fake.openedTabs` | — (every `tabs.openFile` / `openTerminal` / `openApp`, in order: `{ kind: "file", projectId, path }` · `{ kind: "terminal", projectId, cwd, command?, title? }` · `{ kind: "app", projectId, route }`; the call switches the active project like Pomade) |
+| `fake.openedTabs` | — (every `tabs.openFile` / `openTerminal` / `openApp`, in order: `{ kind: "file", projectId, path }` · `{ kind: "terminal", projectId, cwd, command?, title? }` · `{ kind: "app", projectId, route, key?, title?, tabKind? }`; the call switches the active project like Pomade) |
 | `fake.openAppTab({ projectId?, icon?, route? })` | `project.changed` when the project changes (the user opens the app's tab from the new-tab menu, or a strip icon whose action opens a tab; an open one is focused — the icon-less one navigated to `route`; returns the tab) |
-| `fake.appTabs` · `fake.appTabChanges` · `fake.onAppTab(listener)` | — (the app's own tabs as Pomade's tab strip keeps them, below: the open tabs `{ tabId, projectId, icon?, route }`, every `{ change: "open" \| "focus" \| "route", tab }` in order, and a listener for each as it happens; returns its unsubscribe) |
+| `fake.appTabs` · `fake.appTabChanges` · `fake.onAppTab(listener)` | — (the app's own tabs as Pomade's tab strip keeps them, below: the open tabs `{ tabId, projectId, icon?, route, key?, kind?, title?, renamed? }`, every `{ change: "open" \| "focus" \| "route" \| "title" \| "close", tab }` in order, and a listener for each as it happens; returns its unsubscribe) |
+| `fake.renameAppTab(tabId, title)` · `fake.closeAppTab(tabId)` | — (the user renames one of the app's tabs — `tabs.setTitle` and `openApp`'s `title` then leave it — or closes it: it leaves `fake.appTabs`, and the frames showing it get `onClose`) |
 | `fake.overlays` | — (every `overlay.open`, in order: `{ route, height?, anchor }` — `height` as given, absent when none; `anchor` `"center"` when none) |
 | `fake.overlayResizes` | — (every height an overlay frame asked for with `overlay.resize`, in order, as given) |
 
@@ -520,7 +538,11 @@ code, and the events. Test controls emit the events Pomade would:
 opens or focuses the app's tab as Pomade does: a route that a strip icon's tab renders (an icon with
 action `tab` or `both` whose `route` equals it) is that icon's tab — one per icon per project, never
 navigated; any other route is the app's one icon-less tab per project, opened at that route or
-navigated to it (`route` change, then `focus`). The project becomes active. A frame attached with
+navigated to it (`route` change, then `focus`). With `key`, it is that keyed tab — one per key per
+project, opened at `route` with its title (`title`, else its kind's, else the app's name), or
+navigated (`route`), retitled (`title`) and focused. The project becomes active. `tabs.setTitle` and
+`tabs.close` from a frame attached with `{ tabId }` retitle (`title`) and close (`close`, after the
+answer; the frame's `onClose` runs) that tab. A frame attached with
 `{ tabId }` (`attach`, `createTransport`, `mountApp`) shows that tab: it opens at the tab's icon and
 route and gets `route.changed` when the tab moves; its own `navigate(route)` moves the tab. A
 browser harness mounts a frame for every `open` it hears from `fake.onAppTab`:
@@ -1247,7 +1269,7 @@ its own channel (Pomade publishes `attachedTab.action` to the owner), never over
 shows the project's git repos, and follows project, file and git events. On the bus it shows the
 last platform event it heard (Pomade ready, a project renamed or removed) and publishes `greeted` from a
 button that is enabled only while another app listens; "Notify me" posts a notice whose click opens
-its roadmap tab in the project the notice is about. "Quick note…" opens its Cmd+Shift+J overlay
+its roadmap tab in the project the notice is about. "Open Scraper output" / "Open Deploy output" open keyed tabs of its `output` tab kind, which retitle and close themselves. "Quick note…" opens its Cmd+Shift+J overlay
 from the panel or tab (`overlay.open`); "New scratch file" / "Trash scratch files" make files in the
 project's `scratch/` folder and move them all to the Trash in one `files.delete`. Its always-on backend (`public/backend/`) keeps the app's keeper running with a
 demo ticker in it; "Open the ticker" opens that session in an attached tab, and the tab's Restart
