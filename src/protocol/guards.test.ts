@@ -135,6 +135,10 @@ describe("parseHostMessage", () => {
     expect(parseHostMessage(panel)).toEqual(panel);
     expect(parseHostMessage({ ...welcome, icon: "board", route: "board" })).toEqual({ ...welcome, icon: "board", route: "board" });
     expect(parseHostMessage({ ...welcome, extra: 1 })).toEqual(welcome);
+    const keyed = { ...welcome, route: "output/r1", key: "output:r1", kind: "output" };
+    expect(parseHostMessage(keyed)).toEqual(keyed);
+    expect(parseHostMessage({ ...welcome, key: 1 })).toBeNull();
+    expect(parseHostMessage({ ...welcome, kind: 1 })).toBeNull();
     expect(parseHostMessage({ ...welcome, surface: "backend" })).toEqual({ ...welcome, surface: "backend" });
     expect(parseHostMessage({ ...welcome, surface: "command" })).toEqual({ ...welcome, surface: "command" });
     expect(parseHostMessage({ ...welcome, surface: "popup" })).toBeNull();
@@ -289,6 +293,8 @@ describe("METHOD_CAPABILITY", () => {
       "state.get": null,
       "state.set": null,
       "tabs.openApp": null,
+      "tabs.setTitle": null,
+      "tabs.close": null,
       "overlay.open": null,
       "overlay.resize": null,
       "overlay.close": null,

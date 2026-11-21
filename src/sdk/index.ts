@@ -60,6 +60,8 @@ export type {
   PickFolderParams,
   PickFolderResult,
   OpenAppParams,
+  SetTabTitleParams,
+  AppTabKind,
   OpenOverlayParams,
   OverlayAnchor,
   ResizeOverlayParams,

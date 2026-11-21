@@ -3,6 +3,7 @@
 
 import { removeField, setBody, setField, setKeyLines, type FieldWriteResult } from "../frontmatter/index.js";
 import {
+  checkOpenAppParams,
   checkSessionRef,
   isInside,
   isMarkdownPath,
@@ -15,6 +16,8 @@ import {
   symlinkScopeCovers,
   FILES_DELETE_MAX_PATHS,
   WORKSPACE_PROJECT_ID,
+  type AppTabKind,
+  type CheckedOpenAppParams,
   type DeleteFileResult,
   type FileChange,
   type GroupInfo,
@@ -34,7 +37,7 @@ export type FakeOpenedTab =
   | { kind: "file"; projectId: string; path: string }
   | { kind: "terminal"; projectId: string; cwd: string; command?: string; title?: string }
   | { kind: "attached"; projectId: string; session: SessionRef; title?: string }
-  | { kind: "app"; projectId: string; route: string };
+  | { kind: "app"; projectId: string; route: string; key?: string; title?: string; tabKind?: string };
 
 /** A sidebar group of the fake host (`FakeHostOptions.groups`). */
 export interface FakeGroup {
@@ -52,8 +55,10 @@ export interface DataContext {
   project(id: string | undefined): ProjectRef;
   /** Make `id` the active project (emits `project.changed` when it changes). */
   activate(id: string): void;
-  /** Open or focus the app's own tab at `route` in project `id` and make that project active (`tabs.openApp`). */
-  openApp(id: string, route: string): void;
+  /** Open or focus the app's own tab in project `id` (checked params of `tabs.openApp`) and make that project active. */
+  openApp(id: string, params: CheckedOpenAppParams): void;
+  /** The manifest's `tabKinds`. */
+  readonly tabKinds: Readonly<Record<string, AppTabKind>> | undefined;
   readonly openedTabs: FakeOpenedTab[];
   listProjects(): ProjectListResult;
   /** Per project: its visible agents and this app's settings. */
@@ -323,10 +328,19 @@ export function dispatchTabs(ctx: DataContext, method: TabDataMethod, p: Obj): u
       return {};
     }
     case "tabs.openApp": {
-      const route = optionalString(p, "route") ?? "";
-      const project = ctx.project(optionalString(p, "projectId"));
-      ctx.openedTabs.push({ kind: "app", projectId: project.id, route });
-      ctx.openApp(project.id, route);
+      const checked = checkOpenAppParams(p, ctx.tabKinds);
+      if (!checked.ok) throw new CallError("invalid-params", checked.message);
+      const { route, projectId, key, title, kind } = checked.value;
+      const project = ctx.project(projectId);
+      ctx.openedTabs.push({
+        kind: "app",
+        projectId: project.id,
+        route,
+        ...(key !== undefined ? { key } : {}),
+        ...(title !== undefined ? { title } : {}),
+        ...(kind !== undefined ? { tabKind: kind } : {}),
+      });
+      ctx.openApp(project.id, checked.value);
       return {};
     }
   }

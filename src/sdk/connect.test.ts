@@ -66,6 +66,15 @@ describe("connect — handshake", () => {
     });
   });
 
+  it("a keyed tab's welcome exposes its key and kind", async () => {
+    const mock = mockTransport();
+    const h = start(mock);
+    mock.deliver({ ...WELCOME, route: "output/r1", key: "output:r1", kind: "output" });
+    const r = await h.promise;
+    if (r.status !== "connected") throw new Error(r.status);
+    expect(r.host.welcome).toMatchObject({ surface: "tab", route: "output/r1", key: "output:r1", kind: "output" });
+  });
+
   it.each(["needs-newer-pomade", "app-too-old"] as const)("reject %s → rejected result, nothing left listening", async (reason) => {
     const mock = mockTransport();
     const h = start(mock);

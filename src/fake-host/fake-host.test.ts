@@ -665,6 +665,139 @@ describe("the app's own tabs (tabs.openApp)", () => {
   });
 });
 
+describe("keyed tabs (tabs.openApp key, tabs.setTitle, tabs.close)", () => {
+  const KEYED_MANIFEST = { ...STRIP_MANIFEST, tabKinds: { output: { title: "Output", icon: "output.svg" } } };
+
+  it("one tab per (key, project): opened at its route with its title, focused, navigated and retitled again", async () => {
+    const host = fake({ activeProject: "pomade", manifest: KEYED_MANIFEST });
+    const app = await client(host);
+    await app.tabs.openApp({ key: "a", kind: "output", title: "Scraper · output", route: "output/a" });
+    await app.tabs.openApp({ key: "b", kind: "output", route: "output/b" });
+    await app.tabs.openApp({ key: "c", route: "today" });
+    await app.tabs.openApp({ key: "a", route: "output/a2", title: "Scraper · done" });
+    await app.tabs.openApp({ key: "a", route: "output/a", projectId: "kit" });
+    // The icon-less tab is not a keyed tab.
+    await app.tabs.openApp({ route: "today" });
+    expect(host.appTabs).toEqual([
+      { tabId: "app-tab-1", projectId: "pomade", route: "output/a2", key: "a", kind: "output", title: "Scraper · done" },
+      { tabId: "app-tab-2", projectId: "pomade", route: "output/b", key: "b", kind: "output", title: "Output" },
+      { tabId: "app-tab-3", projectId: "pomade", route: "today", key: "c", title: "Planner" },
+      { tabId: "app-tab-4", projectId: "kit", route: "output/a", key: "a", title: "Planner" },
+      { tabId: "app-tab-5", projectId: "kit", route: "today" },
+    ]);
+    expect(host.appTabChanges.map((c) => `${c.change} ${c.tab.tabId}`)).toEqual([
+      "open app-tab-1",
+      "open app-tab-2",
+      "open app-tab-3",
+      "route app-tab-1",
+      "title app-tab-1",
+      "focus app-tab-1",
+      "open app-tab-4",
+      "open app-tab-5",
+    ]);
+    expect(host.openedTabs[0]).toEqual({ kind: "app", projectId: "pomade", route: "output/a", key: "a", title: "Scraper · output", tabKind: "output" });
+  });
+
+  it.each<[string, unknown]>([
+    ["a bad key", { key: "a/b" }],
+    ["kind without key", { kind: "output" }],
+    ["title without key", { title: "A" }],
+    ["an unknown kind", { key: "a", kind: "log" }],
+    ["a blank title", { key: "a", title: " " }],
+  ])("%s → invalid-params, nothing opens", (_label, params) => {
+    const host = fake({ manifest: KEYED_MANIFEST });
+    const f = raw(host);
+    f.hello();
+    expect(f.errorOf("tabs.openApp", params)).toBe("invalid-params");
+    expect(host.appTabs).toEqual([]);
+  });
+
+  it("a keyed tab's frame welcomes with its key and kind, host.info too, and follows its route", () => {
+    const host = fake({ manifest: KEYED_MANIFEST });
+    const opener = raw(host);
+    opener.hello();
+    opener.call("tabs.openApp", { key: "a", kind: "output", route: "output/a" });
+    const got: HostToAppMessage[] = [];
+    const frame = host.attach((m) => got.push(m), { tabId: host.appTabs[0]!.tabId });
+    frame.receive({ channel: "pomade", type: "hello", hostApi: 0 });
+    expect(got[0]).toMatchObject({ type: "welcome", surface: "tab", route: "output/a", key: "a", kind: "output" });
+    expect(got[0]).not.toHaveProperty("icon");
+    opener.call("tabs.openApp", { key: "a", route: "output/a2" });
+    expect(got.filter((m) => m.type === "event")).toEqual([{ channel: "pomade", type: "event", name: "route.changed", payload: { route: "output/a2" } }]);
+    frame.receive({ channel: "pomade", type: "call", id: "1", method: "host.info" });
+    expect(got.at(-1)).toMatchObject({ type: "result", ok: true, value: { surface: "tab", route: "output/a2", key: "a", kind: "output" } });
+    // Other frames carry neither.
+    expect(opener.got[0]).not.toHaveProperty("key");
+    expect(opener.got[0]).not.toHaveProperty("kind");
+  });
+
+  it("setTitle retitles the frame's own tab unless the user renamed it; openApp's title then leaves it too", () => {
+    const host = fake({ manifest: KEYED_MANIFEST });
+    const opener = raw(host);
+    opener.hello();
+    opener.call("tabs.openApp", { key: "a", kind: "output" });
+    const tabId = host.appTabs[0]!.tabId;
+    const got: HostToAppMessage[] = [];
+    const frame = host.attach((m) => got.push(m), { tabId });
+    let id = 0;
+    const call = (method: string, params?: unknown) => {
+      frame.receive({ channel: "pomade", type: "call", id: String(++id), method, params });
+      return got.at(-1);
+    };
+    frame.receive({ channel: "pomade", type: "hello", hostApi: 0 });
+    expect(call("tabs.setTitle", { title: " Deploy · output " })).toMatchObject({ ok: true, value: {} });
+    expect(host.appTabs[0]?.title).toBe("Deploy · output");
+    expect(call("tabs.setTitle", { title: "" })).toMatchObject({ ok: false, error: { code: "invalid-params" } });
+    host.renameAppTab(tabId, "Mine");
+    expect(call("tabs.setTitle", { title: "Other" })).toMatchObject({ ok: true });
+    opener.call("tabs.openApp", { key: "a", title: "Other" });
+    expect(host.appTabs[0]).toMatchObject({ title: "Mine", renamed: true });
+  });
+
+  it("close closes the frame's own tab after its answer; the user's close does the same", async () => {
+    const host = fake({ manifest: KEYED_MANIFEST });
+    const opener = raw(host);
+    opener.hello();
+    opener.call("tabs.openApp", { key: "a" });
+    opener.call("tabs.openApp", { key: "b" });
+    const [a, b] = host.appTabs;
+    const onClose = vi.fn();
+    const got: HostToAppMessage[] = [];
+    const frame = host.attach((m) => got.push(m), { tabId: b!.tabId, onClose });
+    frame.receive({ channel: "pomade", type: "hello", hostApi: 0 });
+    frame.receive({ channel: "pomade", type: "call", id: "1", method: "tabs.close" });
+    expect(got.at(-1)).toMatchObject({ type: "result", ok: true });
+    expect(onClose).not.toHaveBeenCalled();
+    await flush();
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(host.appTabs.map((t) => t.key)).toEqual(["a"]);
+    expect(host.appTabChanges.at(-1)).toMatchObject({ change: "close", tab: { key: "b" } });
+    host.closeAppTab(a!.tabId);
+    expect(host.appTabs).toEqual([]);
+    // Opened again: a new tab.
+    opener.call("tabs.openApp", { key: "a" });
+    expect(host.appTabs.map((t) => t.tabId)).toEqual(["app-tab-3"]);
+  });
+
+  it("setTitle and close are for a tab frame: a panel's or an overlay's is invalid-params, a socket client's capability-denied", () => {
+    const host = fake({ manifest: { ...KEYED_MANIFEST, backend: { entry: "b.mjs", mode: "with-pomade" } } });
+    for (const surface of ["panel", "overlay"] as const) {
+      const got: HostToAppMessage[] = [];
+      const frame = host.attach((m) => got.push(m), { surface, icon: "planner" });
+      frame.receive({ channel: "pomade", type: "hello", hostApi: 0 });
+      frame.receive({ channel: "pomade", type: "call", id: "1", method: "tabs.setTitle", params: { title: "A" } });
+      expect(got.at(-1)).toMatchObject({ ok: false, error: { code: "invalid-params" } });
+      frame.receive({ channel: "pomade", type: "call", id: "2", method: "tabs.close" });
+      expect(got.at(-1)).toMatchObject({ ok: false, error: { code: "invalid-params" } });
+    }
+    const got: HostToAppMessage[] = [];
+    const backend = host.attach((m) => got.push(m), { surface: "backend" });
+    backend.receive({ channel: "pomade", type: "hello", hostApi: 0 });
+    backend.receive({ channel: "pomade", type: "call", id: "1", method: "tabs.close" });
+    expect(got.at(-1)).toMatchObject({ ok: false, error: { code: "capability-denied" } });
+  });
+});
+
 describe("socket surfaces in memory (backend, command)", () => {
   it("hear no project.changed unless subscribed, and their keys are ignored", () => {
     const host = fake({ activeProject: "pomade", manifest: { id: "a1", name: "A", version: "1.0.0", hostApi: 0, capabilities: [], backend: { entry: "b.mjs", mode: "with-pomade" }, events: { subscribe: ["project.changed"] } } });

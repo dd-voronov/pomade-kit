@@ -28,6 +28,8 @@ import {
   METHOD_CAPABILITY,
   WORKSPACE_PROJECT_ID,
   checkOverlayAnchor,
+  checkTabTitle,
+  type CheckedOpenAppParams,
   checkOverlayHeight,
   checkStateKey,
   normalizeVisibleAgents,
@@ -166,7 +168,8 @@ export interface FrameOptions {
   /** The app tab (`fake.appTabs`) the frame shows: it opens as that tab, at its icon and route, and
    *  follows the tab's route changes (`route.changed`). Unknown ids throw. */
   tabId?: string;
-  /** An overlay frame asked to close (`overlay.close`, or a forwarded Escape): close it here, as Pomade does. */
+  /** An overlay frame asked to close (`overlay.close`, or a forwarded Escape), or a tab frame closed its tab
+   *  (`tabs.close`): close it here, as Pomade does. */
   onClose?: () => void;
   /** A tab or panel frame opened its overlay (`overlay.open`, after its result): mount it here, as Pomade does. */
   onOverlayOpen?: (overlay: FakeOpenedOverlay) => void;
@@ -193,19 +196,28 @@ export interface FakeBadge {
 }
 
 /** One of the app's own tabs in Pomade's tab strip (`tabs.openApp`, `fake.openAppTab`): one per
- *  strip icon per project, and one icon-less tab per project. */
+ *  strip icon per project, one icon-less tab per project, and one keyed tab per key per project. */
 export interface FakeAppTab {
   tabId: string;
   projectId: string;
-  /** The strip icon the tab is for; absent for the icon-less tab. */
+  /** The strip icon the tab is for; absent for the icon-less tab and keyed tabs. */
   icon?: string;
   /** The route the tab renders now. */
   route: string;
+  /** A keyed tab's key; absent for other tabs. */
+  key?: string;
+  /** A keyed tab's app tab kind, when it has one. */
+  kind?: string;
+  /** A keyed tab's title: the app's (`tabs.openApp` `title`, `tabs.setTitle`), else its kind's title, else
+   *  the app's name; the user's once they renamed it (`fake.renameAppTab`). Absent for other tabs. */
+  title?: string;
+  /** The user renamed the tab (`fake.renameAppTab`): the app's titles no longer change it. */
+  renamed?: boolean;
 }
 
-/** What happened to an app tab: opened (and focused), focused, or navigated to a new route. */
+/** What happened to an app tab: opened (and focused), focused, navigated to a new route, retitled, or closed. */
 export interface FakeAppTabChange {
-  change: "open" | "focus" | "route";
+  change: "open" | "focus" | "route" | "title" | "close";
   tab: FakeAppTab;
 }
 
@@ -253,6 +265,8 @@ interface Frame {
 
 interface AppTabRecord extends FakeAppTab {
   frames: Set<Frame>;
+  /** A keyed tab's title came from the app (`title`, `tabs.setTitle`), not from its kind or the app's name. */
+  appTitled?: boolean;
 }
 
 /** Calls whose project is optional and, for a socket client, defaults to the Workspace scope (HOST-API §3 "Socket"). */
@@ -369,7 +383,11 @@ export class FakeHost {
         return { ...project };
       },
       activate: (id) => this.setActiveProject(id === WORKSPACE_PROJECT_ID ? null : id),
-      openApp: (projectId, route) => this.openOwnTab(projectId, this.iconForRoute(route), route),
+      openApp: (projectId, params) => {
+        if (params.key !== undefined) this.openKeyedTab(projectId, params.key, params);
+        else this.openOwnTab(projectId, this.iconForRoute(params.route), params.route);
+      },
+      tabKinds: parsed.manifest.tabKinds,
       openedTabs: this.openedTabs,
       listProjects: () => listProjects(this.groupList, this.projects, this.projectGroup),
       projectAgents: this.projectAgents,
@@ -412,8 +430,11 @@ export class FakeHost {
       surface === "overlay"
         ? resolveOverlayTarget(this.shortcuts, open.shortcut)
         : resolveFrameTarget(this.strip, surface, tab ? tab.icon : open.icon);
-    if (tab) target.route = tab.route;
-    else if (open.route !== undefined) target.route = open.route;
+    if (tab) {
+      target.route = tab.route;
+      if (tab.key !== undefined) target.key = tab.key;
+      if (tab.kind !== undefined) target.kind = tab.kind;
+    } else if (open.route !== undefined) target.route = open.route;
     const frame: Frame = {
       post,
       target,
@@ -705,6 +726,19 @@ export class FakeHost {
     }
     const projectId = this.data.project(open.projectId).id;
     return publicTab(this.openOwnTab(projectId, open.icon, open.icon === undefined ? open.route : undefined));
+  }
+
+  /** The user renames one of the app's tabs: its title is theirs, and `tabs.setTitle` / `tabs.openApp` `title` no longer change it. */
+  renameAppTab(tabId: string, title: string): void {
+    const tab = this.appTab(tabId);
+    tab.title = title;
+    tab.renamed = true;
+    this.tabChanged("title", tab);
+  }
+
+  /** The user closes one of the app's tabs: it leaves `appTabs` and the frames showing it are closed (`onClose`). */
+  closeAppTab(tabId: string): void {
+    this.closeTab(this.appTab(tabId));
   }
 
   /** Pomade's agent tabs now, in tab order (a snapshot). */
@@ -1046,6 +1080,32 @@ export class FakeHost {
         frame.onOverlayResize?.(params.height as number);
         return {};
       }
+      case "tabs.setTitle": {
+        if (frame.target.surface !== "tab") throw new CallError("invalid-params", "tabs.setTitle is only for a tab frame");
+        const bad = checkTabTitle(params.title);
+        if (bad) throw new CallError("invalid-params", bad);
+        const tab = frame.tab;
+        if (tab && !tab.renamed) {
+          const title = (params.title as string).trim();
+          if (tab.title !== title) {
+            tab.title = title;
+            tab.appTitled = true;
+            this.tabChanged("title", tab);
+          }
+        }
+        return {};
+      }
+      case "tabs.close": {
+        if (frame.target.surface !== "tab") throw new CallError("invalid-params", "tabs.close is only for a tab frame");
+        const tab = frame.tab;
+        // After the result is posted, like Pomade: the frame hears its answer, then its tab goes away.
+        setTimeout(() => {
+          if (tab) {
+            if (this.appTabList.includes(tab)) this.closeTab(tab);
+          } else frame.onClose?.();
+        }, 0);
+        return {};
+      }
       case "overlay.close":
         if (frame.target.surface !== "overlay") throw new CallError("invalid-params", "overlay.close is only for an overlay frame");
         // After the result is posted, like Pomade: the frame hears its answer, then goes away.
@@ -1128,7 +1188,7 @@ export class FakeHost {
   /** Open or focus the app's tab for `icon` in `projectId`, as Pomade's tab strip does: an open
    *  icon-less tab is navigated to `route`; the project becomes active. */
   private openOwnTab(projectId: string, icon: string | undefined, route: string | undefined): AppTabRecord {
-    let tab = this.appTabList.find((t) => t.projectId === projectId && t.icon === icon);
+    let tab = this.appTabList.find((t) => t.projectId === projectId && t.key === undefined && t.icon === icon);
     const changes: FakeAppTabChange["change"][] = [];
     if (tab) {
       if (icon === undefined && route !== undefined && tab.route !== route) {
@@ -1154,6 +1214,58 @@ export class FakeHost {
       this.tabChanged(change, tab);
     }
     return tab;
+  }
+
+  /** Open or focus the app's keyed tab for `key` in `projectId`, as Pomade does: a new one at `route`, titled
+   *  `title`, else its kind's title, else the app's name; an open one navigated to `route` and retitled to
+   *  `title` (unless the user renamed it). The project becomes active. */
+  private openKeyedTab(projectId: string, key: string, params: CheckedOpenAppParams): AppTabRecord {
+    let tab = this.appTabList.find((t) => t.projectId === projectId && t.key === key);
+    const changes: FakeAppTabChange["change"][] = [];
+    if (tab) {
+      if (tab.route !== params.route) {
+        tab.route = params.route;
+        changes.push("route");
+      }
+      if (params.title !== undefined && !tab.renamed && tab.title !== params.title) {
+        tab.title = params.title;
+        tab.appTitled = true;
+        changes.push("title");
+      }
+      changes.push("focus");
+    } else {
+      const kind = params.kind === undefined ? undefined : this.manifest.tabKinds?.[params.kind];
+      tab = {
+        tabId: `app-tab-${this.nextAppTab++}`,
+        projectId,
+        route: params.route,
+        key,
+        ...(params.kind !== undefined ? { kind: params.kind } : {}),
+        title: params.title ?? kind?.title ?? this.manifest.name.trim(),
+        appTitled: params.title !== undefined,
+        frames: new Set(),
+      };
+      this.appTabList.push(tab);
+      changes.push("open");
+    }
+    this.setActiveProject(projectId === WORKSPACE_PROJECT_ID ? null : projectId);
+    for (const change of changes) {
+      if (change === "route") for (const frame of tab.frames) this.navigateFrame(frame, tab.route);
+      this.tabChanged(change, tab);
+    }
+    return tab;
+  }
+
+  private appTab(tabId: string): AppTabRecord {
+    const tab = this.appTabList.find((t) => t.tabId === tabId);
+    if (!tab) throw new Error(`fake host: no app tab ${JSON.stringify(tabId)}`);
+    return tab;
+  }
+
+  private closeTab(tab: AppTabRecord): void {
+    this.appTabList.splice(this.appTabList.indexOf(tab), 1);
+    this.tabChanged("close", tab);
+    for (const frame of [...tab.frames]) frame.onClose?.();
   }
 
   /** Navigate an app tab and every frame showing it. */
@@ -1248,7 +1360,16 @@ function withWorkspaceDefault(params: unknown): unknown {
 }
 
 function publicTab(tab: AppTabRecord): FakeAppTab {
-  return { tabId: tab.tabId, projectId: tab.projectId, ...(tab.icon !== undefined ? { icon: tab.icon } : {}), route: tab.route };
+  return {
+    tabId: tab.tabId,
+    projectId: tab.projectId,
+    ...(tab.icon !== undefined ? { icon: tab.icon } : {}),
+    route: tab.route,
+    ...(tab.key !== undefined ? { key: tab.key } : {}),
+    ...(tab.kind !== undefined ? { kind: tab.kind } : {}),
+    ...(tab.title !== undefined ? { title: tab.title } : {}),
+    ...(tab.renamed ? { renamed: true } : {}),
+  };
 }
 
 function asCallError(error: ErrorPayload): CallError {

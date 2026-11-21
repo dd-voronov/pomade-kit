@@ -95,7 +95,7 @@ export class HostError extends Error {
 }
 
 /** What the host said in `welcome`: versions, app id, what the frame was opened for (`surface`,
- *  `icon`, `route`), the project it was opened in and Pomade's theme then. */
+ *  `icon`, `route`; a keyed tab's `key` and `kind`), the project it was opened in and Pomade's theme then. */
 export interface Welcome extends FrameTarget {
   hostApi: number;
   pomadeVersion: string;
@@ -196,8 +196,14 @@ export interface HostClient {
     openTerminal(params: OpenTerminalParams): Promise<void>;
     /** Open (or focus) a terminal tab attached to a session an app's keeper holds (`tabs.open`). */
     openAttached(params: OpenAttachedParams): Promise<void>;
-    /** Open or focus this app's own tab at `route` (default ""), in `projectId` (default the active project). */
+    /** Open or focus this app's own tab at `route` (default ""), in `projectId` (default the active project).
+     *  With `key`: the keyed tab for that key — opened right of the active tab, or focused and navigated to `route`;
+     *  `title` and `kind` give it its title and app tab kind (manifest `tabKinds`). */
     openApp(params?: OpenAppParams): Promise<void>;
+    /** Retitle this frame's own tab (any of the app's tabs) — unless the user renamed it. Only for `welcome.surface === "tab"`. */
+    setTitle(title: string): Promise<void>;
+    /** Close this frame's own tab, as the user's close does. Only for `welcome.surface === "tab"`. */
+    close(): Promise<void>;
   };
   readonly state: {
     /** The value stored under `key`, or `null` when it is not set. Shared by all of the app's frames. */
@@ -502,6 +508,12 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
       },
       async openApp(params = {}) {
         await call("tabs.openApp", params);
+      },
+      async setTitle(title) {
+        await call("tabs.setTitle", { title });
+      },
+      async close() {
+        await call("tabs.close", {});
       },
     },
     state: {

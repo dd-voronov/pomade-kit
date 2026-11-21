@@ -60,6 +60,19 @@ export interface FrameTarget {
   icon?: string;
   /** The route the app renders on this surface; "" = the app's default view. */
   route: string;
+  /** A keyed tab's key (`tabs.openApp` with `key`); absent for every other frame. */
+  key?: string;
+  /** A keyed tab's app tab kind (manifest `tabKinds`), when it was opened with one; absent otherwise. */
+  kind?: string;
+}
+
+/** One app tab kind (manifest `tabKinds`, HOST-API §1): the default title and the icon of the
+ *  keyed tabs opened with it. */
+export interface AppTabKind {
+  /** The tab's title when the app gives none. Trimmed, non-empty. */
+  title: string;
+  /** Path inside the build folder; falls back to the app's icon. */
+  icon?: string;
 }
 
 /** What clicking a strip icon does: fill the side panel, open (or focus) a tab, or both. */
@@ -488,6 +501,19 @@ export interface OpenAppParams {
   route?: string;
   /** The project whose tab strip gets the tab (a `ProjectRef.id`, the Workspace scope included); default the active project. Pomade switches to it. */
   projectId?: string;
+  /** A keyed tab: one per (app, key, project), opened right of the active tab or focused (`APP_TAB_KEY_RE`).
+   *  Without it the call opens the icon-less tab or an icon's tab. */
+  key?: string;
+  /** The keyed tab's title exactly as given (trimmed, non-empty); needs `key`. Default: the kind's title, else the app's name. */
+  title?: string;
+  /** The keyed tab's app tab kind (a manifest `tabKinds` id); needs `key`. Gives the tab its icon and default title. */
+  kind?: string;
+}
+
+/** `tabs.setTitle` — a tab frame retitles its own tab (unless the user renamed it). */
+export interface SetTabTitleParams {
+  /** Trimmed, non-empty. */
+  title: string;
 }
 
 /** Where an overlay opens when the user has not moved it: `"center"` of the pane area, or
@@ -582,6 +608,8 @@ export interface HostMethods {
   "state.get": { params: StateGetParams; result: StateGetResult };
   "state.set": { params: StateSetParams; result: Record<string, never> };
   "tabs.openApp": { params: OpenAppParams; result: Record<string, never> };
+  "tabs.setTitle": { params: SetTabTitleParams; result: Record<string, never> };
+  "tabs.close": { params: Record<string, never>; result: Record<string, never> };
   "overlay.open": { params: OpenOverlayParams; result: Record<string, never> };
   "overlay.resize": { params: ResizeOverlayParams; result: Record<string, never> };
   "overlay.close": { params: Record<string, never>; result: Record<string, never> };
@@ -638,6 +666,8 @@ export const METHOD_CAPABILITY: Readonly<Record<MethodName, MethodCapability>> =
   "state.get": null,
   "state.set": null,
   "tabs.openApp": null,
+  "tabs.setTitle": null,
+  "tabs.close": null,
   "overlay.open": null,
   "overlay.resize": null,
   "overlay.close": null,

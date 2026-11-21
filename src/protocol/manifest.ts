@@ -5,11 +5,13 @@ import { CHORD_FORMAT, formatChord, parseChord } from "./shortcuts.js";
 import { parseManifestEvents, type ManifestEvents } from "./events.js";
 import { PLATFORM_CLIENT_ID } from "./socket.js";
 import { API_METHOD_MAX_LENGTH, API_METHOD_RE } from "./broker.js";
+import { TAB_KIND_ID_RE } from "./app-tabs.js";
 import {
   CAPABILITIES,
   SHORTCUT_ACTIONS,
   STRIP_ACTIONS,
   type AppShortcut,
+  type AppTabKind,
   type Capability,
   type FrameTarget,
   type ShortcutAction,
@@ -35,6 +37,8 @@ export interface Manifest {
   capabilities: Capability[];
   /** The app's left-strip icons, in manifest order; absent when the manifest declares none. */
   strip?: StripIcon[];
+  /** The app's tab kinds (`tabs.openApp` `kind`), by id; absent when the manifest declares none. */
+  tabKinds?: Record<string, AppTabKind>;
   /** Folder patterns where the app may create and remove symlinks (`files.symlink`): workspace-
    *  relative folders whose `*` segments match any one folder name (segments `Projects`, `*`,
    *  `links` = the `links` folder of every folder in `Projects`); absent when the manifest declares none. */
@@ -118,6 +122,7 @@ const KNOWN_KEYS = new Set([
   "icon",
   "capabilities",
   "strip",
+  "tabKinds",
   "symlinks",
   "startOnLaunch",
   "shortcuts",
@@ -209,6 +214,7 @@ export function parseManifest(value: unknown): ManifestParseResult {
     }
   }
   const strip = m.strip === undefined ? undefined : parseStrip(m.strip, errors);
+  const tabKinds = m.tabKinds === undefined ? undefined : parseTabKinds(m.tabKinds, errors);
   const symlinks = m.symlinks === undefined ? undefined : parseSymlinkScopes(m.symlinks, errors);
   if (m.startOnLaunch !== undefined) {
     if (typeof m.startOnLaunch !== "boolean") {
@@ -238,6 +244,7 @@ export function parseManifest(value: unknown): ManifestParseResult {
   if (m.entry !== undefined) manifest.entry = m.entry as string;
   if (m.icon !== undefined) manifest.icon = m.icon as string;
   if (strip !== undefined) manifest.strip = strip;
+  if (tabKinds !== undefined) manifest.tabKinds = tabKinds;
   if (symlinks !== undefined) manifest.symlinks = symlinks;
   if (m.startOnLaunch !== undefined) manifest.startOnLaunch = m.startOnLaunch as boolean;
   if (shortcuts !== undefined) manifest.shortcuts = shortcuts;
@@ -304,6 +311,39 @@ function parseStrip(raw: unknown, errors: ManifestError[]): StripIcon[] {
     if (item.panelRoute !== undefined) icon.panelRoute = item.panelRoute as string;
     out.push(icon);
   });
+  return out;
+}
+
+/** `tabKinds` (HOST-API §1): an object of app tab kinds by id. Errors name the kind by id
+ *  (`"tabKinds.output.icon"`); keys a kind carries beyond the known ones are ignored. */
+function parseTabKinds(raw: unknown, errors: ManifestError[]): Record<string, AppTabKind> {
+  if (!isObject(raw)) {
+    errors.push({ field: "tabKinds", message: `"tabKinds" must be an object of tab kinds by id ${received(raw)}` });
+    return {};
+  }
+  const out: Record<string, AppTabKind> = {};
+  for (const [id, item] of Object.entries(raw)) {
+    const at = `tabKinds.${id}`;
+    if (!TAB_KIND_ID_RE.test(id)) {
+      errors.push({ field: at, message: `"${at}": the id must match ${TAB_KIND_ID_RE.source}` });
+      continue;
+    }
+    if (!isObject(item)) {
+      errors.push({ field: at, message: `"${at}" must be an object ${received(item)}` });
+      continue;
+    }
+    const before = errors.length;
+    if (typeof item.title !== "string" || item.title.trim() === "") {
+      errors.push({ field: `${at}.title`, message: `"${at}.title" must be a non-empty string ${received(item.title)}` });
+    }
+    if (item.icon !== undefined && (typeof item.icon !== "string" || !isInnerPath(item.icon))) {
+      errors.push({ field: `${at}.icon`, message: `"${at}.icon" must be a relative path inside the build folder ${received(item.icon)}` });
+    }
+    if (errors.length > before) continue;
+    const kind: AppTabKind = { title: (item.title as string).trim() };
+    if (item.icon !== undefined) kind.icon = item.icon as string;
+    out[id] = kind;
+  }
   return out;
 }
 

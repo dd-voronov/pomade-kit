@@ -215,6 +215,45 @@ describe("parseManifest — strip", () => {
   });
 });
 
+describe("parseManifest — tabKinds", () => {
+  it("absent: no tabKinds on the manifest", () => {
+    const r = parseManifest(valid);
+    expect(r.ok && r.manifest).not.toHaveProperty("tabKinds");
+  });
+
+  it("reads kinds by id, trims titles, keeps the optional icon, ignores unknown keys", () => {
+    const r = parseManifest({
+      ...valid,
+      tabKinds: { output: { title: " Output ", icon: "img/output.svg", color: "x" }, "run-log": { title: "Log" } },
+    });
+    expect(r.ok && r.manifest.tabKinds).toEqual({ output: { title: "Output", icon: "img/output.svg" }, "run-log": { title: "Log" } });
+  });
+
+  it.each<[string, unknown, string[]]>([
+    ["not an object", ["output"], ["tabKinds"]],
+    ["id with a capital", { Output: { title: "O" } }, ["tabKinds.Output"]],
+    ["id of 33 characters", { ["a".repeat(33)]: { title: "O" } }, [`tabKinds.${"a".repeat(33)}`]],
+    ["kind not an object", { output: "Output" }, ["tabKinds.output"]],
+    ["missing title", { output: {} }, ["tabKinds.output.title"]],
+    ["blank title", { output: { title: " " } }, ["tabKinds.output.title"]],
+    ["icon outside the build", { output: { title: "O", icon: "../o.svg" } }, ["tabKinds.output.icon"]],
+    ["absolute icon", { output: { title: "O", icon: "/o.svg" } }, ["tabKinds.output.icon"]],
+    ["every bad kind", { output: { icon: 1 }, ok: { title: "Ok" }, bad: null }, ["tabKinds.output.title", "tabKinds.output.icon", "tabKinds.bad"]],
+  ])("%s → the error names the entry", (_label, tabKinds, fields) => {
+    expect(errorFields(parseManifest({ ...valid, tabKinds }))).toEqual(fields);
+  });
+
+  it("the message names the field and the value received", () => {
+    const r = parseManifest({ ...valid, tabKinds: { output: { title: "O", icon: 3 } } });
+    expect(r.ok ? [] : r.errors.map((e) => e.message)).toEqual(['"tabKinds.output.icon" must be a relative path inside the build folder (got 3)']);
+  });
+
+  it("tabKinds is a known key, not an unsupported one", () => {
+    const r = parseManifest({ ...valid, tabKinds: {} });
+    expect(r.ok && r.unsupportedKeys).toEqual([]);
+  });
+});
+
 describe("parseManifest — startOnLaunch", () => {
   const panel = { id: "planner", title: "Planner", action: "panel" };
   const tab = { id: "log", title: "Log", action: "tab" };

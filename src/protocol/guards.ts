@@ -170,6 +170,8 @@ export function parseHostMessage(v: unknown): HostToAppMessage | null {
         isSurface(m.surface) &&
         (m.icon === undefined || typeof m.icon === "string") &&
         typeof m.route === "string" &&
+        (m.key === undefined || typeof m.key === "string") &&
+        (m.kind === undefined || typeof m.kind === "string") &&
         isProjectRef(m.project) &&
         (m.theme === undefined || isTheme(m.theme))
         ? {
@@ -181,6 +183,8 @@ export function parseHostMessage(v: unknown): HostToAppMessage | null {
             surface: m.surface,
             ...(typeof m.icon === "string" ? { icon: m.icon } : {}),
             route: m.route,
+            ...(typeof m.key === "string" ? { key: m.key } : {}),
+            ...(typeof m.kind === "string" ? { kind: m.kind } : {}),
             project: m.project,
             // A Pomade that names no theme has only its light one.
             theme: m.theme ?? "light",

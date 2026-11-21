@@ -235,6 +235,29 @@ describe("tabs.openApp and route changes", () => {
     await expect(b).rejects.toMatchObject({ code: "not-found" });
   });
 
+  it("openApp sends a keyed tab's key, title and kind as given", async () => {
+    const t = setup();
+    const a = t.host.tabs.openApp({ key: "output:r1", kind: "output", title: "Scraper · output", route: "output/r1", projectId: "p1" });
+    expect(t.lastCall()).toMatchObject({
+      method: "tabs.openApp",
+      params: { key: "output:r1", kind: "output", title: "Scraper · output", route: "output/r1", projectId: "p1" },
+    });
+    t.ok(t.lastCall().id, {});
+    expect(await a).toBeUndefined();
+  });
+
+  it("setTitle sends { title } and close sends {}; both resolve void, a refusal rejects", async () => {
+    const t = setup();
+    const a = t.host.tabs.setTitle("Deploy · output");
+    expect(t.lastCall()).toMatchObject({ method: "tabs.setTitle", params: { title: "Deploy · output" } });
+    t.ok(t.lastCall().id, {});
+    expect(await a).toBeUndefined();
+    const b = t.host.tabs.close();
+    expect(t.lastCall()).toMatchObject({ method: "tabs.close", params: {} });
+    t.fail(t.lastCall().id, "invalid-params");
+    await expect(b).rejects.toMatchObject({ code: "invalid-params" });
+  });
+
   it("onRouteChange receives route.changed until unsubscribed; welcome keeps the first route", () => {
     const t = setup();
     const cb = vi.fn();
