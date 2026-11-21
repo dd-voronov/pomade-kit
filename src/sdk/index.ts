@@ -42,6 +42,7 @@ export type {
   DeleteFileResult,
   DeleteFilesResult,
   OpenFileParams,
+  RevealParams,
   OpenTerminalParams,
   OpenAttachedParams,
   GroupInfo,

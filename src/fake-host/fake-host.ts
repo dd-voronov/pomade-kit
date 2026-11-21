@@ -67,6 +67,7 @@ import {
   dispatchFileWrite,
   dispatchPick,
   dispatchProjects,
+  dispatchReveal,
   dispatchSymlinks,
   dispatchTabs,
   listProjects,
@@ -75,6 +76,7 @@ import {
   type FakeGroup,
   type FakeOpenedTab,
   type FakePickRequest,
+  type FakeReveal,
   type FakeWriteFailure,
 } from "./data.js";
 import { reposInScope, scriptedRepos, type GitWatchState } from "./git.js";
@@ -272,6 +274,7 @@ interface AppTabRecord extends FakeAppTab {
 
 /** Calls whose project is optional and, for a socket client, defaults to the Workspace scope (HOST-API §3 "Socket"). */
 const WORKSPACE_DEFAULT_METHODS: readonly string[] = [
+  "files.reveal",
   "tabs.openFile",
   "tabs.openTerminal",
   "tabs.openAttached",
@@ -292,6 +295,8 @@ export class FakeHost {
   readonly keys: KeyMessage[] = [];
   /** Every tab the app opened (`tabs.openFile` / `tabs.openTerminal` / `tabs.openAttached` / `tabs.openApp`), in order. */
   readonly openedTabs: FakeOpenedTab[] = [];
+  /** Every `files.reveal`, in order: the project whose Files panel shows the path, and the path. */
+  readonly reveals: FakeReveal[] = [];
   /** Every overlay the app opened (`overlay.open`), in order. */
   readonly overlays: FakeOpenedOverlay[] = [];
   /** Every height an overlay frame asked for with `overlay.resize`, in order, as given. */
@@ -390,6 +395,7 @@ export class FakeHost {
       },
       tabKinds: parsed.manifest.tabKinds,
       openedTabs: this.openedTabs,
+      reveals: this.reveals,
       listProjects: () => listProjects(this.groupList, this.projects, this.projectGroup),
       projectAgents: this.projectAgents,
       projectSettings: this.projectSettings,
@@ -1018,6 +1024,8 @@ export class FakeHost {
       case "files.move":
       case "files.delete":
         return dispatchFileWrite(this.data, method, params);
+      case "files.reveal":
+        return dispatchReveal(this.data, params);
       case "tabs.openFile":
       case "tabs.openTerminal":
       case "tabs.openAttached":

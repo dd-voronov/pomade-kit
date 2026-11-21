@@ -278,6 +278,7 @@ describe("METHOD_CAPABILITY", () => {
       "files.setKeyLines": "files.write",
       "files.move": "files.write",
       "files.delete": "files.write",
+      "files.reveal": "files.read",
       "tabs.openFile": "tabs.open",
       "tabs.openTerminal": "tabs.open",
       "tabs.openAttached": "tabs.open",

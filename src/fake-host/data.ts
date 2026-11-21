@@ -39,6 +39,12 @@ export type FakeOpenedTab =
   | { kind: "attached"; projectId: string; session: SessionRef; title?: string }
   | { kind: "app"; projectId: string; route: string; key?: string; title?: string; tabKind?: string };
 
+/** A `files.reveal` as the fake host records it: the project whose Files panel shows `path`. */
+export interface FakeReveal {
+  projectId: string;
+  path: string;
+}
+
 /** A sidebar group of the fake host (`FakeHostOptions.groups`). */
 export interface FakeGroup {
   id: string;
@@ -60,6 +66,7 @@ export interface DataContext {
   /** The manifest's `tabKinds`. */
   readonly tabKinds: Readonly<Record<string, AppTabKind>> | undefined;
   readonly openedTabs: FakeOpenedTab[];
+  readonly reveals: FakeReveal[];
   listProjects(): ProjectListResult;
   /** Per project: its visible agents and this app's settings. */
   readonly projectAgents: Map<string, string[]>;
@@ -273,6 +280,19 @@ function ancestorIsFile(ws: Workspace, path: string): boolean {
     if (ws.kindOf(dir) === "file") return true;
   }
   return false;
+}
+
+/** `files.reveal` (`files.read`): the path must exist; it is shown in the target project's Files panel, or in the
+ *  Workspace scope's when it lies outside that project's folder. The shown project becomes active. */
+export function dispatchReveal(ctx: DataContext, p: Obj): unknown {
+  const path = pathParam(p, "path");
+  requireAllowedTarget(ctx.workspace, path);
+  if (ctx.workspace.kindOf(path) === null) throw new CallError("not-found", `${JSON.stringify(path)} does not exist`);
+  const project = ctx.project(optionalString(p, "projectId"));
+  const shown = isInside(path, project.root) ? project.id : WORKSPACE_PROJECT_ID;
+  ctx.activate(shown);
+  ctx.reveals.push({ projectId: shown, path });
+  return {};
 }
 
 /** The tab methods of pomade:E-030. */

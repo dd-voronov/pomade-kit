@@ -348,6 +348,15 @@ export interface OpenFileParams {
   projectId?: string;
 }
 
+/** `files.reveal` — show a file or folder in Pomade's Files panel. */
+export interface RevealParams {
+  /** A file or folder, workspace-relative; `""` = the workspace root. */
+  path: string;
+  /** The project whose Files panel shows it; default the active project (the Workspace scope for a socket client).
+   *  A path outside that project's folder is shown in the Workspace scope's panel instead. Pomade switches to the project. */
+  projectId?: string;
+}
+
 /** `tabs.openTerminal` — open a terminal tab in a folder, optionally running a command. */
 export interface OpenTerminalParams {
   /** A folder, workspace-relative; `""` = the workspace root. */
@@ -599,6 +608,7 @@ export interface HostMethods {
   "files.setKeyLines": { params: SetKeyLinesParams; result: EditResult };
   "files.move": { params: MoveParams; result: Record<string, never> };
   "files.delete": { params: DeleteFilesParams; result: DeleteFilesResult };
+  "files.reveal": { params: RevealParams; result: Record<string, never> };
   "tabs.openFile": { params: OpenFileParams; result: Record<string, never> };
   "tabs.openTerminal": { params: OpenTerminalParams; result: Record<string, never> };
   "tabs.openAttached": { params: OpenAttachedParams; result: Record<string, never> };
@@ -658,6 +668,7 @@ export const METHOD_CAPABILITY: Readonly<Record<MethodName, MethodCapability>> =
   "files.setKeyLines": "files.write",
   "files.move": "files.write",
   "files.delete": "files.write",
+  "files.reveal": "files.read",
   "tabs.openFile": "tabs.open",
   "tabs.openTerminal": "tabs.open",
   "tabs.openAttached": "tabs.open",

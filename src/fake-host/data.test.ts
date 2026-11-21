@@ -510,6 +510,63 @@ describe("tabs.openFile / tabs.openTerminal", () => {
   });
 });
 
+describe("files.reveal", () => {
+  const PROJECTS = [
+    { id: "pomade", name: "Pomade", root: "Projects/Pomade" },
+    { id: "kit", name: "pomade-kit", root: "Projects/pomade-kit" },
+  ];
+  const WITH_KIT = { ...FILES, "Projects/pomade-kit/README.md": "# kit\n", "Apps/hello/jobs/a.txt": "a\n" };
+
+  it("records the project whose panel shows the path and switches to it; a path outside the project's folder goes to the Workspace scope", async () => {
+    const fh = fake({ projects: PROJECTS, activeProject: "pomade", files: WITH_KIT });
+    const host = await client(fh);
+    const seen: string[] = [];
+    host.project.onChange((p) => seen.push(p.id));
+    await host.files.reveal({ path: "Projects/Pomade/docs/roadmap" });
+    await host.files.reveal({ path: "Projects/pomade-kit/README.md", projectId: "kit" });
+    await host.files.reveal({ path: "Apps/hello/jobs" });
+    await host.files.reveal({ path: "Projects/Pomade/notes/plain.txt", projectId: "__workspace__" });
+    await host.files.reveal({ path: "" });
+    await flush();
+    expect(fh.reveals).toEqual([
+      { projectId: "pomade", path: "Projects/Pomade/docs/roadmap" },
+      { projectId: "kit", path: "Projects/pomade-kit/README.md" },
+      { projectId: "__workspace__", path: "Apps/hello/jobs" },
+      { projectId: "__workspace__", path: "Projects/Pomade/notes/plain.txt" },
+      { projectId: "__workspace__", path: "" },
+    ]);
+    expect(seen).toEqual(["kit", "__workspace__"]);
+    expect(fh.openedTabs).toEqual([]);
+  });
+
+  it("errors: a missing path, an escape, a bad or unknown project, .pomade", () => {
+    const f = raw(fake({ projects: PROJECTS }));
+    expect(f.errorOf("files.reveal", { path: "Projects/Pomade/nope" })).toBe("not-found");
+    expect(f.errorOf("files.reveal", { path: "../x" })).toBe("outside-workspace");
+    expect(f.errorOf("files.reveal", { path: "Projects/Pomade/docs", projectId: "ghost" })).toBe("not-found");
+    expect(f.errorOf("files.reveal", { path: "Projects/Pomade/docs", projectId: 3 })).toBe("invalid-params");
+    expect(f.errorOf("files.reveal", {})).toBe("invalid-params");
+    expect(f.errorOf("files.reveal", { path: ".pomade/workspace.json" })).toBe("capability-denied");
+    expect(f.errorOf("files.reveal", { path: "Projects/Pomade/docs" })).toBeNull();
+  });
+
+  it("needs files.read; a socket client's project defaults to the Workspace scope", () => {
+    const f = raw(fake({ manifest: { id: "x1", name: "X", version: "1.0.0", hostApi: 0, capabilities: ["tabs.open"] } }));
+    expect(f.errorOf("files.reveal", { path: "Projects/Pomade/docs" })).toBe("capability-denied");
+    const fh = fake({
+      projects: PROJECTS,
+      activeProject: "pomade",
+      manifest: { id: "b1", name: "B", version: "1.0.0", hostApi: 0, capabilities: ["files.read"], backend: { entry: "b.mjs", mode: "with-pomade" } },
+    });
+    const got: HostToAppMessage[] = [];
+    const backend = fh.attach((m) => got.push(m), { surface: "backend" });
+    backend.receive({ channel: "pomade", type: "hello", hostApi: 0 });
+    backend.receive({ channel: "pomade", type: "call", id: "1", method: "files.reveal", params: { path: "Projects/Pomade/docs" } });
+    expect(got.at(-1)).toMatchObject({ ok: true });
+    expect(fh.reveals).toEqual([{ projectId: "__workspace__", path: "Projects/Pomade/docs" }]);
+  });
+});
+
 describe("tabs.openAttached", () => {
   const PROJECTS = [{ id: "pomade", name: "Pomade", root: "Projects/Pomade" }];
 

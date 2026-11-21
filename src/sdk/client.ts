@@ -32,6 +32,7 @@ import {
   type SetFieldParams,
   type WriteFileParams,
   type OpenFileParams,
+  type RevealParams,
   type OpenTerminalParams,
   type OpenAttachedParams,
   type ProjectListResult,
@@ -180,6 +181,10 @@ export interface HostClient {
     symlink(params: SymlinkParams): Promise<void>;
     /** Remove a symlink inside a manifest `symlinks` folder (never its target). */
     removeSymlink(params: RemoveSymlinkParams): Promise<void>;
+    /** Show a file or folder in Pomade's Files panel: the panel opens, the tree expands to `path` and selects it
+     *  (`files.read`). `projectId` default: the active project; a path outside that project's folder is shown in the
+     *  Workspace scope's panel. A missing path is `not-found`. */
+    reveal(params: RevealParams): Promise<void>;
     /** Ask the user for a folder inside a project (or the workspace); `path: null` = cancelled. */
     pickFolder(params?: PickFolderParams): Promise<PickFolderResult>;
     /** Ask the user for a file, optionally under a folder and of given extensions; `path: null` = cancelled. */
@@ -491,6 +496,9 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
       },
       async removeSymlink(params) {
         await call("files.removeSymlink", params);
+      },
+      async reveal(params) {
+        await call("files.reveal", params);
       },
       pickFolder: (params = {}) => call("files.pickFolder", params),
       pickFile: (params = {}) => call("files.pickFile", params),

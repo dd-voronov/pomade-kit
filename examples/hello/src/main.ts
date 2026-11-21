@@ -16,7 +16,8 @@
 // "Quick note…" opens the same overlay as Cmd+Shift+J from the panel or tab (`overlay.open`).
 // "Open Scraper output" / "Open Deploy output" open keyed tabs of the app's `output` tab kind (one per
 // key per project; opened again, focused); inside such a tab the app retitles it (`tabs.setTitle`) and
-// closes it (`tabs.close`).
+// closes it (`tabs.close`). "Back to board" in a tab returns it to the default view and tells Pomade
+// (`tabs.setRoute`), so the roadmap notice or shortcut takes it to the roadmap again.
 // "New scratch file" makes a file in the project's scratch/ folder; "Trash scratch files" moves
 // every file there to the Trash in one `files.delete` call and says how each one went.
 // It looks like Pomade: Pomade's design tokens and its theme, whatever the Mac's appearance.
@@ -228,6 +229,13 @@ function startApp(host: HostClient): void {
   const open = el("open-tab");
   open.hidden = false;
   open.addEventListener("click", () => void host.tabs.openApp({ route: "roadmap" }));
+  // Navigating by itself, the tab tells Pomade where it is: a notice or shortcut to the roadmap then takes it back there.
+  const back = el("back-to-board");
+  back.hidden = host.welcome.surface !== "tab";
+  back.addEventListener("click", () => {
+    showRoute("");
+    void host.tabs.setRoute("");
+  });
   useOutputTabs(host);
   let watch: FileWatch | null = null;
   let gitWatch: GitWatch | null = null;

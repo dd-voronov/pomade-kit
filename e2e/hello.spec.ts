@@ -99,6 +99,13 @@ test("shows its route, follows route changes, and opens its own tab at a route",
   await expect.poll(() => page.evaluate(() => window.fakeHost.openedTabs)).toEqual([{ kind: "app", route: "roadmap", projectId: "alpha" }]);
 });
 
+test("Back to board returns the tab to its default view", async ({ page }) => {
+  await page.evaluate(() => window.mounted.navigate("roadmap"));
+  await expect(app(page).getByTestId("route")).toHaveText("Route: roadmap");
+  await app(page).getByTestId("back-to-board").click();
+  await expect(app(page).getByTestId("route")).toHaveText("Route: (default)");
+});
+
 test.describe("the quick-note overlay", () => {
   const OVERLAY = `${HARNESS}&shortcut=note`;
 

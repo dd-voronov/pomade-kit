@@ -326,6 +326,20 @@ describe("overlay.open", () => {
   });
 });
 
+describe("files.reveal", () => {
+  it("reveal sends { path, projectId? } and resolves void; a refusal rejects", async () => {
+    const t = setup();
+    const a = t.host.files.reveal({ path: "Apps/runner/jobs" });
+    expect(t.lastCall()).toMatchObject({ method: "files.reveal", params: { path: "Apps/runner/jobs" } });
+    t.ok(t.lastCall().id, {});
+    expect(await a).toBeUndefined();
+    const b = t.host.files.reveal({ path: "x", projectId: "p1" });
+    expect(t.lastCall()).toMatchObject({ method: "files.reveal", params: { path: "x", projectId: "p1" } });
+    t.fail(t.lastCall().id, "not-found");
+    await expect(b).rejects.toMatchObject({ code: "not-found" });
+  });
+});
+
 describe("files.delete", () => {
   it("sends { paths } and resolves with the results list", async () => {
     const t = setup();

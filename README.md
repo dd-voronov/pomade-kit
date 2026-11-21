@@ -265,6 +265,21 @@ root). `root` is a project id — absent or `"__workspace__"` for the whole work
 outside the root is refused in the dialog, which opens again until the user picks one inside or
 cancels.
 
+## Show a file or folder in Files
+
+```ts
+await host.files.reveal({ path: "Apps/runner/jobs" });                         // files.read
+await host.files.reveal({ path: "Projects/x/docs/roadmap/T-1.md", projectId: project.id });
+```
+
+Pomade opens its Files panel, expands the tree down to `path` and selects it and scrolls it into view —
+the same reveal as the Files tree's "Reveal in tree". `path` is a workspace-relative file or folder
+(`""` = the workspace root, which only opens the panel). `projectId` names the project whose panel shows it
+(default: the active project; a backend's or a command's, the Workspace scope); Pomade switches to that
+project. A path outside that project's folder is shown in the Workspace scope's panel instead. A missing
+path is `not-found`, a path outside the workspace `outside-workspace`. The fake host records each reveal in
+`fake.reveals` (`{ projectId, path }`, `projectId` being the project whose panel shows it) and switches to it.
+
 ## Choose a file
 
 ```ts
@@ -535,6 +550,7 @@ code, and the events. Test controls emit the events Pomade would:
 | `fake.answerPick(path \| null)` | — (queues the user's next picker choice, a folder for `pickFolder` and a file for `pickFile`; an answer outside the root, of the wrong kind or, for `pickFile`, of another extension is refused and the next answer used; none left = cancel). `fake.pickRequests` logs `{ kind, root, initial }` per picker, plus `extensions` for `pickFile` (its `under` is both `root` and `initial`) |
 | `fake.setGitRepos(repos)` | `git.changed` to each git watch whose scope's repos changed |
 | `fake.openedTabs` | — (every `tabs.openFile` / `openTerminal` / `openApp`, in order: `{ kind: "file", projectId, path }` · `{ kind: "terminal", projectId, cwd, command?, title? }` · `{ kind: "app", projectId, route, key?, title?, tabKind? }`; the call switches the active project like Pomade) |
+| `fake.reveals` | — (every `files.reveal`, in order: `{ projectId, path }` — the project whose Files panel shows the path, the Workspace scope's when the path lies outside the target project's folder; the call switches the active project like Pomade) |
 | `fake.openAppTab({ projectId?, icon?, route? })` | `project.changed` when the project changes (the user opens the app's tab from the new-tab menu, or a strip icon whose action opens a tab; an open one is focused — the icon-less one navigated to `route`; returns the tab) |
 | `fake.appTabs` · `fake.appTabChanges` · `fake.onAppTab(listener)` | — (the app's own tabs as Pomade's tab strip keeps them, below: the open tabs `{ tabId, projectId, icon?, route, key?, kind?, title?, renamed? }`, every `{ change: "open" \| "focus" \| "route" \| "title" \| "close", tab }` in order, and a listener for each as it happens; returns its unsubscribe) |
 | `fake.renameAppTab(tabId, title)` · `fake.closeAppTab(tabId)` | — (the user renames one of the app's tabs — `tabs.setTitle` and `openApp`'s `title` then leave it — or closes it: it leaves `fake.appTabs`, and the frames showing it get `onClose`) |
