@@ -10,6 +10,9 @@ import {
   type MethodParams,
   type MethodResult,
   type ProjectRef,
+  type ScopeFolderParams,
+  type ScopeFolderResult,
+  type ScopeFoldersResult,
   type Theme,
   type ReadFolderParams,
   type ReadFolderResult,
@@ -153,6 +156,14 @@ export interface HostClient {
     getAgents(params: ProjectIdParams): Promise<ProjectAgentsResult>;
     /** Replace the project's visible agents. */
     setAgents(params: SetProjectAgentsParams): Promise<void>;
+    /** This app's scope folders for a project, in the order added (`project.read`). */
+    getScopeFolders(params: ProjectIdParams): Promise<ScopeFoldersResult>;
+    /** Put a folder in the project's scope — workspace-relative or absolute, existing or not; adding it
+     *  again changes nothing. Returns the path as stored (`project.write`). */
+    addScopeFolder(params: ScopeFolderParams): Promise<ScopeFolderResult>;
+    /** Take one of this app's scope folders out of the project's scope; an unknown one is a no-op
+     *  (`project.write`). */
+    removeScopeFolder(params: ScopeFolderParams): Promise<void>;
   };
   readonly files: {
     readFolder(params: ReadFolderParams): Promise<ReadFolderResult>;
@@ -265,7 +276,9 @@ export interface HostClient {
     /** Called with the new theme on every `theme.changed`; returns an unsubscribe function. */
     onChange(callback: (theme: Theme) => void): () => void;
   };
-  /** Called with the new route when Pomade navigates this frame's tab (`welcome.route` is the first); returns an unsubscribe function. */
+  /** Called with the new route when Pomade navigates this frame's tab (`welcome.route` is the first); returns an unsubscribe function.
+   *  A `route.changed` that arrived while no listener was subscribed is kept (the latest one) and handed to
+   *  the next listener at once, during `onRouteChange` — unless the app called `tabs.setRoute` since. */
   onRouteChange(callback: (route: string) => void): () => void;
   readonly git: {
     /** Every repo's state, or one project's repos (`projectId`). */
@@ -310,6 +323,9 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
   const projectListeners = new Set<(project: ProjectRef) => void>();
   const stateListeners = new Set<(key: string, value: JsonValue | null) => void>();
   const routeListeners = new Set<(route: string) => void>();
+  // A `route.changed` that arrived while nobody listened (the app still mounting): the first
+  // `onRouteChange` listener gets it, so the tab never stays on a route it was moved away from.
+  let unheardRoute: string | null = null;
   const themeListeners = new Set<(theme: Theme) => void>();
   let theme = welcome.theme;
   const gitWatches = new Map<string, (repos: GitRepoState[]) => void>();
@@ -365,6 +381,7 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
           for (const cb of [...stateListeners]) cb(msg.payload.key, msg.payload.value);
           break;
         case "route.changed":
+          if (routeListeners.size === 0) unheardRoute = msg.payload.route;
           for (const cb of [...routeListeners]) cb(msg.payload.route);
           break;
         case "theme.changed":
@@ -456,6 +473,11 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
       async setAgents(params) {
         await call("project.setAgents", params);
       },
+      getScopeFolders: (params) => call("project.getScopeFolders", params),
+      addScopeFolder: (params) => call("project.addScopeFolder", params),
+      async removeScopeFolder(params) {
+        await call("project.removeScopeFolder", params);
+      },
     },
     files: {
       readFolder: (params) => call("files.readFolder", params),
@@ -522,6 +544,8 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
         await call("tabs.openApp", params);
       },
       async setRoute(route) {
+        // The app navigated by itself after Pomade's unheard move: its own route stands.
+        unheardRoute = null;
         await call("tabs.setRoute", { route });
       },
       async setTitle(title) {
@@ -599,6 +623,9 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
     },
     onRouteChange(callback) {
       routeListeners.add(callback);
+      const unheard = unheardRoute;
+      unheardRoute = null;
+      if (unheard !== null && !closed) callback(unheard);
       return () => routeListeners.delete(callback);
     },
     git: {

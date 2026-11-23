@@ -34,7 +34,8 @@ const OVERLAY_MAX_HEIGHT_SHARE = 0.6;
 
 /**
  * Load an app page in an `<iframe>` and answer its messages from `host`, the way Pomade hosts an
- * app frame. A reload of the frame starts a new handshake.
+ * app frame. A reload of the frame starts a new handshake. The frame may write to the clipboard
+ * (`allow="clipboard-write"`), as Pomade's app frames may.
  *
  * An overlay frame (`surface: "overlay"`, or the one a tab or panel frame opens with `overlay.open`)
  * is mounted as Pomade shows it: 420 wide, as high as the app asks (rounded, between 120 and 60% of
@@ -100,6 +101,8 @@ function mount(
   };
   win.addEventListener("message", onMessage);
 
+  // As Pomade mounts an app frame: it may write text to the clipboard (after a user gesture), never read it.
+  iframe.allow = "clipboard-write";
   iframe.src = options.src;
   iframe.hidden = options.hidden === true;
   if (scrim) {

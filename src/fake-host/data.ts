@@ -12,7 +12,9 @@ import {
   mergeProjectSettings,
   normalizeVisibleAgents,
   parentPath,
+  scopeFolderPath,
   settingsSizeProblem,
+  SCOPE_FOLDERS_MAX,
   symlinkScopeCovers,
   FILES_DELETE_MAX_PATHS,
   WORKSPACE_PROJECT_ID,
@@ -71,6 +73,10 @@ export interface DataContext {
   /** Per project: its visible agents and this app's settings. */
   readonly projectAgents: Map<string, string[]>;
   readonly projectSettings: Map<string, Record<string, JsonValue>>;
+  /** Per project: this app's scope folders, as stored, in the order added. */
+  readonly projectScopeFolders: Map<string, string[]>;
+  /** The absolute folder the fake workspace stands for: an absolute scope folder inside it is stored relative. */
+  readonly workspaceRoot: string;
   /** A project's agents or this app's settings for it changed: `project.updated`. */
   projectUpdated(id: string, changes: ProjectChange[]): void;
   /** The manifest's `symlinks` folder patterns. */
@@ -407,7 +413,14 @@ export function sameList(a: readonly string[], b: readonly string[]): boolean {
 /** The project methods of pomade:E-030. */
 export type ProjectDataMethod = Extract<
   MethodName,
-  "project.list" | "project.getSettings" | "project.setSettings" | "project.getAgents" | "project.setAgents"
+  | "project.list"
+  | "project.getSettings"
+  | "project.setSettings"
+  | "project.getAgents"
+  | "project.setAgents"
+  | "project.getScopeFolders"
+  | "project.addScopeFolder"
+  | "project.removeScopeFolder"
 >;
 
 /** A real project's id from params; the Workspace scope has no settings or agent list to write. */
@@ -415,6 +428,13 @@ function projectParam(ctx: DataContext, p: Obj, what: string): string {
   const id = stringParam(p, "projectId");
   if (id === WORKSPACE_PROJECT_ID) throw new CallError("invalid-params", `The Workspace scope has no ${what}`);
   return ctx.project(id).id;
+}
+
+/** A scope folder param in its stored form (`scopeFolderPath`, Pomade's rule). */
+function scopeFolder(ctx: DataContext, p: Obj): string {
+  const r = scopeFolderPath(p.path, ctx.workspaceRoot);
+  if (!r.ok) throw new CallError(r.error.code, r.error.message);
+  return r.path;
 }
 
 export function dispatchProjects(ctx: DataContext, method: ProjectDataMethod, p: Obj): unknown {
@@ -451,6 +471,29 @@ export function dispatchProjects(ctx: DataContext, method: ProjectDataMethod, p:
       const before = ctx.projectAgents.get(id) ?? ["*"];
       ctx.projectAgents.set(id, agents);
       if (!sameList(before, agents)) ctx.projectUpdated(id, ["agents"]);
+      return {};
+    }
+    case "project.getScopeFolders": {
+      const id = projectParam(ctx, p, "scope folders");
+      return { paths: [...(ctx.projectScopeFolders.get(id) ?? [])] };
+    }
+    case "project.addScopeFolder": {
+      const id = projectParam(ctx, p, "scope folders");
+      const path = scopeFolder(ctx, p);
+      const folders = ctx.projectScopeFolders.get(id) ?? [];
+      if (folders.includes(path)) return { path };
+      if (folders.length >= SCOPE_FOLDERS_MAX) {
+        throw new CallError("invalid-params", `An app keeps at most ${SCOPE_FOLDERS_MAX} scope folders per project`);
+      }
+      ctx.projectScopeFolders.set(id, [...folders, path]);
+      return { path };
+    }
+    case "project.removeScopeFolder": {
+      const id = projectParam(ctx, p, "scope folders");
+      const path = scopeFolder(ctx, p);
+      const folders = (ctx.projectScopeFolders.get(id) ?? []).filter((f) => f !== path);
+      if (folders.length > 0) ctx.projectScopeFolders.set(id, folders);
+      else ctx.projectScopeFolders.delete(id);
       return {};
     }
   }

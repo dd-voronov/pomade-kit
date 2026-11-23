@@ -3,6 +3,7 @@
 // sessions, crash records and the cleanup after a crash, watching sessions, and the socket rules.
 
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -13,6 +14,8 @@ import { connectKeeper } from "../node/keeper.js";
 import { runKeeper } from "./keeper.js";
 import { sessionEnv } from "./env.js";
 import { FIXTURES, TEST_ENV, connect, isAliveForTest, keeperInProcess, onCleanup, screenState, sleep, tmpDir, viewTerm, waitFor } from "./test-helpers.js";
+
+const require = createRequire(import.meta.url);
 
 const readOr = (file: string): string => {
   try {
@@ -158,6 +161,68 @@ describe("several clients, resize, paste", () => {
     await waitFor(() => readOr(log).includes("200~"), "the bracketed paste");
     const lines = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l) as string).join("");
     expect(lines).toContain("\x1b[200~xy\x1b[201~");
+  });
+});
+
+describe("the log and the window title", () => {
+  it("reports a session's exit only once its log holds every byte the program printed", async () => {
+    const { socketPath, dir } = await keeperInProcess();
+    const owner = await connect(socketPath);
+    const log = join(dir, "out", "run.log");
+    // A slow disk: every write of the log lands 40 ms late, so the log trails the program's end.
+    const fs = require("node:fs") as { write: (...a: unknown[]) => void; writev: (...a: unknown[]) => void };
+    const { write, writev } = fs;
+    fs.write = (...a) => void setTimeout(() => write.apply(fs, a), 40);
+    fs.writev = (...a) => void setTimeout(() => writev.apply(fs, a), 40);
+    onCleanup(() => {
+      fs.write = write;
+      fs.writev = writev;
+    });
+    // What the log holds the moment each exit arrives — a client that reads the log on the exit.
+    const atExit: string[] = [];
+    owner.k.onEvent((e) => {
+      if (e.type === "exit") atExit.push(readOr(log));
+    });
+    const s = await owner.k.spawn({
+      title: "burst",
+      argv: [process.execPath, "-e", 'for (let i = 0; i < 20000; i++) process.stdout.write("line " + i + " " + "x".repeat(60) + "\\n"); process.stdout.write("LAST LINE\\n")'],
+      cwd: dir,
+      log,
+    });
+    await owner.k.attach(s.id);
+    await waitFor(() => owner.exitOf(s.id), "the exit", 30000);
+    expect(atExit).toHaveLength(1);
+    expect(atExit[0]?.trimEnd().endsWith("LAST LINE")).toBe(true);
+    expect(atExit[0]).toBe(readOr(log));
+  });
+
+  it("a viewer attaching to a running session learns the window title the program set, with the snapshot", async () => {
+    const { socketPath, dir } = await keeperInProcess();
+    const owner = await connect(socketPath);
+    const s = await owner.k.spawn({
+      title: "agent",
+      argv: [process.execPath, "-e", 'process.stdout.write("\\x1b]0;\u25d0 working\\x07\\x1b]2;\u2733 Fix the bug\\x07idle now\\r\\n"); setTimeout(() => {}, 30000)'],
+      cwd: dir,
+      cols: 60,
+      rows: 8,
+    });
+    await owner.k.attach(s.id);
+    await waitFor(() => `${snapshots(owner.events, s.id)[0]?.data ?? ""}${owner.output(s.id)}`.includes("idle now"), "the output");
+
+    const viewer = await connect(socketPath, "viewer");
+    await viewer.k.attach(s.id);
+    const [snap] = snapshots(viewer.events, s.id);
+    const view = viewTerm(60, 8);
+    const titles: string[] = [];
+    view.term.onTitleChange((t) => titles.push(t));
+    await view.write(snap?.data ?? "");
+    expect(titles).toEqual(["\u2733 Fix the bug"]);
+    expect(view.term.buffer.active.getLine(0)?.translateToString(true)).toBe("idle now");
+    // No title set: the snapshot carries none.
+    const plain = await owner.k.spawn({ title: "plain", argv: ["/bin/sh", "-c", "echo plain; sleep 30"], cwd: dir });
+    await viewer.k.attach(plain.id);
+    await waitFor(async () => (await owner.k.list()).find((x) => x.id === plain.id)?.clients === 1, "the attach");
+    expect(snapshots(viewer.events, plain.id)[0]?.data).not.toContain("\x1b]");
   });
 });
 

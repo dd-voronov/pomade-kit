@@ -17,6 +17,18 @@ function focusedFrame(page: Page) {
   return page.evaluate(() => document.activeElement?.getAttribute("data-surface") ?? null);
 }
 
+/** The app's tab frame itself, to run code in it. */
+function appFrame(page: Page) {
+  const frame = page.frame({ url: APP });
+  if (!frame) throw new Error("no app frame");
+  return frame;
+}
+
+/** A screenshot into `HELLO_SHOTS`, when it names a folder. */
+async function shot(page: Page, name: string) {
+  if (process.env.HELLO_SHOTS) await page.screenshot({ path: `${process.env.HELLO_SHOTS}/${name}` });
+}
+
 function row(page: Page, path: string) {
   return app(page).locator(`tr[data-path="${path}"]`);
 }
@@ -82,6 +94,25 @@ test("a frame reload starts a new handshake and keeps working", async ({ page })
   await expect(app(page).getByTestId("state")).toHaveText("Project: Alpha");
   await page.evaluate(() => window.fakeHost.writeFile("Projects/alpha/docs/roadmap/E-004.md", "---\nid: E-004\ntitle: After reload\n---\n"));
   await expect(row(page, "Projects/alpha/docs/roadmap/E-004.md")).toContainText("After reload");
+});
+
+test("the app frame may write the clipboard after a click, and may not read it", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const frame = appFrame(page);
+  // A click handler in the app frame copies, as an app's Copy button does; the outcome lands on the frame's window.
+  await frame.evaluate(() => {
+    const w = window as unknown as { copied?: string };
+    document.body.addEventListener("click", () => {
+      navigator.clipboard.writeText("copied from the app").then(
+        () => (w.copied = "ok"),
+        (err: unknown) => (w.copied = String(err)),
+      );
+    }, { once: true });
+  });
+  await app(page).getByTestId("title").click();
+  await expect.poll(() => frame.evaluate(() => (window as unknown as { copied?: string }).copied)).toBe("ok");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("copied from the app");
+  await expect(frame.evaluate(() => navigator.clipboard.readText())).rejects.toThrow();
 });
 
 test("counts launches in the shared app state; a reload counts again", async ({ page }) => {
@@ -306,7 +337,7 @@ test("says once where its shipped skill is, and always in About", async ({ page 
   await expect(app(page).getByTestId("skill-notice-text")).toHaveText(
     "This app ships a skill for agents: hello-roadmap, at /fake/apps/hello/skills/hello-roadmap. To give it to an agent, copy or link that folder into the agent's skills folder.",
   );
-  if (process.env.HELLO_SHOTS) await page.screenshot({ path: `${process.env.HELLO_SHOTS}/skill-notice.png` });
+  await shot(page, "skill-notice.png");
   await app(page).getByTestId("skill-notice-dismiss").click();
   await expect(notice).toBeHidden();
   await expect.poll(() => page.evaluate(() => window.fakeHost.state.skillNoticeDismissed)).toBe(true);
@@ -318,7 +349,7 @@ test("says once where its shipped skill is, and always in About", async ({ page 
   await expect(app(page).locator('[data-testid="about-skills"] li[data-skill="hello-roadmap"]')).toHaveText(
     "hello-roadmap — /fake/apps/hello/skills/hello-roadmap",
   );
-  if (process.env.HELLO_SHOTS) await page.screenshot({ path: `${process.env.HELLO_SHOTS}/about.png` });
+  await shot(page, "about.png");
 });
 
 test.describe("Quick note… — the overlay the frame opens (overlay.open), mounted by the fake host", () => {

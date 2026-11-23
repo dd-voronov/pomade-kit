@@ -280,6 +280,49 @@ describe("tabs.openApp and route changes", () => {
     expect(cb.mock.calls).toEqual([["board"]]);
     expect(t.host.welcome.route).toBe("");
   });
+
+  it("a route.changed that arrives before anyone listens reaches the first listener, the latest one only, once", () => {
+    const t = setup();
+    const route = (r: string) => t.mock.deliver({ channel: "pomade", type: "event", name: "route.changed", payload: { route: r } });
+    route("board");
+    route("output/r42");
+    const first = vi.fn();
+    const off = t.host.onRouteChange(first);
+    expect(first.mock.calls).toEqual([["output/r42"]]);
+    const second = vi.fn();
+    t.host.onRouteChange(second);
+    expect(second).not.toHaveBeenCalled();
+    route("x");
+    expect(first.mock.calls).toEqual([["output/r42"], ["x"]]);
+    expect(second.mock.calls).toEqual([["x"]]);
+    off();
+  });
+
+  it("a route.changed heard while nobody listens after the last listener left is kept for the next one", () => {
+    const t = setup();
+    const off = t.host.onRouteChange(() => {});
+    off();
+    t.mock.deliver({ channel: "pomade", type: "event", name: "route.changed", payload: { route: "later" } });
+    const next = vi.fn();
+    t.host.onRouteChange(next);
+    expect(next.mock.calls).toEqual([["later"]]);
+  });
+
+  it("the app's own tabs.setRoute drops an unheard route.changed; a closed client hands nothing", () => {
+    const t = setup();
+    t.mock.deliver({ channel: "pomade", type: "event", name: "route.changed", payload: { route: "board" } });
+    void t.host.tabs.setRoute("card/7");
+    const cb = vi.fn();
+    t.host.onRouteChange(cb);
+    expect(cb).not.toHaveBeenCalled();
+
+    const u = setup();
+    u.mock.deliver({ channel: "pomade", type: "event", name: "route.changed", payload: { route: "board" } });
+    u.host.close();
+    const late = vi.fn();
+    u.host.onRouteChange(late);
+    expect(late).not.toHaveBeenCalled();
+  });
 });
 
 describe("overlay.close", () => {

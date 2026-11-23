@@ -106,7 +106,10 @@ else if (result.status === "rejected") {
   icon's `route` (an icon with action `tab` or `both`) is that icon's tab; any other route is the
   app's one icon-less tab, navigated to the route. A frame already showing that tab gets
   `route.changed` (`host.onRouteChange`); `host.welcome.route` stays the route the frame opened
-  with, `host.info()` answers the current one.
+  with, `host.info()` answers the current one. A `route.changed` that arrives before the app
+  subscribed (a tab restored while the app still mounts) is not lost: the client keeps the latest
+  one and hands it to the next `onRouteChange` listener as it subscribes — unless the app called
+  `tabs.setRoute` since, which makes its own route the one that stands.
 - **Keyed tabs** — `host.tabs.openApp({ key, title?, kind?, route?, projectId? })`: one tab per
   (app, key, project). `key` matches `APP_TAB_KEY_RE` (`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`). Not open
   → a new tab at `route`, right of the active tab, focused, its project made active. Open → focused;
@@ -252,6 +255,26 @@ await host.events.subscribe("project.updated", ({ project, changes }) => {
   if (changes.includes("settings")) void reloadSettings(project.id);    // this app's own settings only
 });
 ```
+
+**Project scope — app scope folders** (`project.read` to list, `project.write` to change). A file
+under a project's root carries no `Outside this project` mark in Pomade; an app puts a folder of its
+own — inside the workspace or outside it — in a project's scope the same way:
+
+```ts
+const { path } = await host.project.addScopeFolder({ projectId, path: `Pomade-Notes/${name}` });  // as stored
+await host.project.addScopeFolder({ projectId, path: "/Users/me/notes" });   // outside the workspace: absolute
+const { paths } = await host.project.getScopeFolders({ projectId });         // this app's own, in order
+await host.project.removeScopeFolder({ projectId, path });                   // unknown = no-op
+```
+
+Adding a folder again changes nothing, and a folder that does not exist yet is accepted, so an app
+can add its folders each time it starts. A path is workspace-relative or absolute; Pomade stores it
+workspace-relative when it lies inside the workspace (`scopeFolderPath` in `pomade-kit/protocol`
+is the rule). The workspace root, `/`, a relative path climbing out of the workspace and `~` paths
+are `invalid-params`, the workspace's `.pomade` folder `capability-denied`; at most
+`SCOPE_FOLDERS_MAX` (64) per app per project. Pomade keeps them per project and machine, never shows
+them in the file tree, applies them only while the app is installed and available, and deletes them
+when the app is removed. The Workspace scope has none (`invalid-params`).
 
 ## Choose a folder
 
@@ -525,7 +548,8 @@ It implements all of HOST-API v0 with the same messages: frontmatter exactly as 
 (js-yaml `JSON_SCHEMA` with non-finite numbers kept as their source text, Pomade's editor block
 detection), the Workspace scope as `WORKSPACE_PROJECT_ID` (`"__workspace__"`), Pomade's default tree ignore list
 (`.git`, `node_modules`, `.DS_Store`; `ignore` option), the manifest's capabilities, every error
-code, and the events. Test controls emit the events Pomade would:
+code, and the events. An app's scope folders live per project in memory; `workspaceRoot` (default
+`/fake/workspace`) is the absolute folder the workspace stands for. Test controls emit the events Pomade would:
 
 | Control | Emits |
 |---|---|
@@ -593,7 +617,8 @@ the default view (no icon, route `""`).
 
 **Browser e2e (Playwright):** a harness page creates the fake host, puts it on `window` for the
 specs, and hosts the app's page in an iframe with `mountApp(fake, { src: appUrl })` — the app
-runs unchanged, as inside Pomade. Working setup: `e2e/harness/` and `e2e/hello.spec.ts`, run by
+runs unchanged, as inside Pomade. The frame carries `allow="clipboard-write"`, as Pomade's app frames
+do: `navigator.clipboard.writeText` after a click works, reading the clipboard is denied. Working setup: `e2e/harness/` and `e2e/hello.spec.ts`, run by
 `playwright.config.ts` (the built app served on one origin, the harness on another).
 
 **An app with a backend** runs it against the fake host's socket, below; its frames then need the
@@ -1022,7 +1047,7 @@ const markers = new MarkerScanner((ev) => {
 const attention = new AttentionScanner(() => markUnread());   // a bell or an OSC 9/99/777 notification
 
 const agent = new AgentStateScanner({ agent: "claude", cols, rows }, (state) => {
-  // { kind: "working" } | { kind: "idle" } | { kind: "waiting", prompt: "permission" | "trust" } | { kind: "unknown" }
+  // { kind: "working" } | { kind: "idle" } | { kind: "waiting", prompt: "permission" | "trust", lines: string[] } | { kind: "unknown" }
 });
 
 pty.onData((data) => { markers.push(data); attention.push(data); agent.push(data); });
@@ -1047,6 +1072,12 @@ pty.onExit(() => agent.dispose());
 - A dialog counts only while its footer is the **last non-blank row** on screen, where both CLIs
   draw a live prompt. A transcript that quotes a prompt has the composer below it and does not
   count.
+- **`waiting.lines` is the prompt as the screen shows it:** the dialog's rows from its top —
+  claude: the row under the rule over the dialog; codex: its question ("Would you like …", "> You
+  are in …") — down to the footer, right-trimmed, their common indent removed (no top found: from
+  the option row). `[]` while only codex's Action Required title says it waits; the wait is
+  reported once more when the dialog's rows first show. A redraw of the same dialog (the
+  selection moved) updates `agent.state` without a new event.
 - **Idle is reported after it holds for `idleAfterMs`** (default 500 ms). claude shows its idle
   title a few milliseconds before it draws a permission dialog, so a consumer that ends a run
   on idle never sees that flash. Working and waiting are reported at once. A finished turn is a
@@ -1146,7 +1177,11 @@ if (up.status === "connected") up.host;      // up.launched: this call started i
 - `launchPomade()` connects when Pomade runs; otherwise it runs the launch Pomade recorded in
   `host.json` (`open -a` for the installed app), without `ELECTRON_RUN_AS_NODE`, and retries the
   socket until it answers (`readyTimeoutMs`, default 60 s): `connected` (`launched`, and `pid` for a
-  directly started dev build), `rejected`, or `failed`.
+  directly started dev build), `rejected`, or `failed`. It fails at once when the launch cannot
+  start or ends before Pomade answers (`open` failing included). A launch that never gets ready
+  leaves nothing running: the process it started directly is stopped with its process group
+  (SIGTERM, then SIGKILL after `stopGraceMs`, default 5 s) before `failed` resolves; an `open -a`
+  launch has handed Pomade to macOS and has nothing of its own to stop.
 - Pomade's own commands (`pomade-git`) connect as the platform client (`appId: "pomade"`, the
   platform key) and may call `host.agents.liveIn(folder)` → `{ live, agents: [{ agentId, cwd }] }`
   — agents running in Pomade's terminals at or below an absolute folder; for an app it is
@@ -1191,7 +1226,7 @@ if (r.status === "connected") {
     id: "svc:coda-web", title: "Coda web",
     command: "npm run dev",                    // run by the user's login shell (`$SHELL -l -c`); or argv: [...]
     cwd: "/Users/me/Projects/coda",
-    log: "/…/app-state/pomade-runner/output/run-17.log",   // optional: every output byte, appended
+    log: "/…/app-state/pomade-runner/output/run-17.log",   // optional: every output byte, appended; complete when `exit` comes
     background: false,                         // true: macOS background priority (taskpolicy -b)
     actions: [{ id: "restart", title: "Restart" }],        // header actions on attached tabs
   });
@@ -1240,9 +1275,9 @@ socket — the Host API socket's framing (`encodeLine`, `createLineDecoder`). Re
 
 | Keeper → client | |
 |---|---|
-| `snapshot { session, info, data, seq, resync }` | the screen serialized: drawn into an empty terminal it reproduces scrollback (up to 1000 lines), the screen (normal or alternate), colours, cursor, modes, scroll region, mouse encoding and cursor visibility — never a replay of recorded bytes, so it asks the terminal nothing |
+| `snapshot { session, info, data, seq, resync }` | the screen serialized: drawn into an empty terminal it reproduces scrollback (up to 1000 lines), the screen (normal or alternate), colours, cursor, modes, scroll region, mouse encoding, cursor visibility and, last, the window title the program set (`OSC 2`, absent when it set none) — so a client reading the title, an agent scanner, learns it with the screen; never a replay of recorded bytes, so it asks the terminal nothing |
 | `delta { session, info, data, seq }` · `output { session, data, seq }` | `seq` counts output characters since the session started; a client keeps the last one to resume |
-| `resized { session, cols, rows }` · `exit { session, exit }` · `info { session, info }` | another client resized it (last active client wins) · it ended · the owner changed its title or actions (to a watcher also: it started). A client attached to a session it also watches gets each once |
+| `resized { session, cols, rows }` · `exit { session, exit }` · `info { session, info }` | another client resized it (last active client wins) · it ended — sent once the session's `log` file holds every byte it printed · the owner changed its title or actions (to a watcher also: it started). A client attached to a session it also watches gets each once |
 | `keeper-restarting { reconnectAfterMs }` | an update: reconnect and attach again with `since` |
 
 **Exit reasons** (`SessionExit.reason`): `exited` (status 0) · `crashed` (any other status, or a

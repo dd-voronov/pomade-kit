@@ -131,7 +131,7 @@ export interface SpawnSpec {
   rows?: number;
   /** Run with macOS background priority (`taskpolicy -b`). */
   background?: boolean;
-  /** Also append the raw output to this file (absolute). */
+  /** Also append the raw output to this file (absolute). It is complete when the `exit` arrives. */
   log?: string;
   actions?: SessionAction[];
 }
@@ -217,8 +217,9 @@ export type KeeperMessage =
   | { type: "error"; rid?: string; code: KeeperErrorCode; message: string }
   | {
       /** The session's screen, serialized: drawing it into an empty terminal reproduces the
-       *  keeper's screen, scrollback, cursor and modes. Never a recording — it asks the terminal
-       *  nothing. Sent on `attach`, and again (`resync`) after a client fell behind. */
+       *  keeper's screen, scrollback, cursor and modes, and last the window title the program set
+       *  (OSC 2; none when it set none). Never a recording — it asks the terminal nothing. Sent on
+       *  `attach`, and again (`resync`) after a client fell behind. */
       type: "snapshot";
       session: string;
       info: SessionInfo;
@@ -236,6 +237,7 @@ export type KeeperMessage =
     }
   | { type: "output"; session: string; data: string; seq: number }
   | { type: "resized"; session: string; cols: number; rows: number }
+  /** It ended; sent once its `log` file (`SpawnSpec.log`) holds every byte the program printed. */
   | { type: "exit"; session: string; exit: SessionExit }
   /** To attached clients: the owner changed its title or actions. To watchers also: it started. */
   | { type: "info"; session: string; info: SessionInfo }

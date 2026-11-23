@@ -59,6 +59,8 @@ function coalesce(chunks: [number, string][], windowMs: number): [number, string
 }
 
 const kinds = (events: string[]): string[] => events.map((e) => e.split(" ")[1] ?? "");
+/** Without a repeat of the state before it (a wait reported again as its rows show). */
+const changes = (labels: string[]): string[] => labels.filter((l, i) => l !== labels[i - 1]);
 
 beforeEach(() => {
   vi.useFakeTimers({ now: 0 });
@@ -93,13 +95,15 @@ const REAL: { name: string; agent: AgentKind; timeline: string[] }[] = [
     name: "codex-exec-approve",
     agent: "codex",
     // input: Enter 1660 (trust), focus-out 3161, Enter 20340 (yes)
-    timeline: ["157 waiting:trust", "1680 unknown", "1912 working", "8338 waiting:permission", "20352 working", "34778 idle"],
+    // codex's Action Required title (8338) comes a read before its dialog (8339): the wait, then its rows.
+    timeline: ["157 waiting:trust", "1680 unknown", "1912 working", "8338 waiting:permission", "8339 waiting:permission", "20352 working", "34778 idle"],
   },
   {
     name: "codex-exec-reject",
     agent: "codex",
     // input: Enter 3197 (trust), focus-out 4699, Esc 19906 (no)
-    timeline: ["1694 waiting:trust", "3259 unknown", "3758 working", "14903 waiting:permission", "19909 working", "20428 idle"],
+    // The Action Required title and the dialog arrive in two reads at 14903: the wait, then its rows.
+    timeline: ["1694 waiting:trust", "3259 unknown", "3758 working", "14903 waiting:permission", "14903 waiting:permission", "19909 working", "20428 idle"],
   },
 ];
 
@@ -125,11 +129,76 @@ describe("AgentStateScanner — real captures", () => {
     });
   }
 
-  it("reports the same states in order when reads within 50 ms are merged into one", async () => {
+  it("reports the same state changes in order when reads within 50 ms are merged into one", async () => {
     for (const { name, agent, timeline } of REAL) {
       const fx = fixture(name);
-      expect(kinds(await replay(agent, { ...fx, chunks: coalesce(fx.chunks, 50) }))).toEqual(kinds(timeline));
+      expect(changes(kinds(await replay(agent, { ...fx, chunks: coalesce(fx.chunks, 50) })))).toEqual(changes(kinds(timeline)));
     }
+  });
+});
+
+/** Every waiting state a replay reports, in order. */
+async function waits(agent: AgentKind, fx: Pick<Fixture, "cols" | "rows" | "chunks">): Promise<Extract<AgentState, { kind: "waiting" }>[]> {
+  const out: Extract<AgentState, { kind: "waiting" }>[] = [];
+  const scanner = new AgentStateScanner({ agent, cols: fx.cols, rows: fx.rows }, (s) => {
+    if (s.kind === "waiting") out.push(s);
+  });
+  let now = 0;
+  for (const [t, data] of fx.chunks) {
+    if (t > now) await vi.advanceTimersByTimeAsync(t - now);
+    now = t;
+    scanner.push(data);
+  }
+  await vi.advanceTimersByTimeAsync(1000);
+  scanner.dispose();
+  return out;
+}
+
+describe("AgentStateScanner — the prompt as the screen shows it (real captures)", () => {
+  it("claude: the permission dialog's rows, from under its rule to its footer", async () => {
+    const [trust, permission] = await waits("claude", fixture("claude-bash-reject"));
+    expect(trust?.prompt).toBe("trust");
+    expect(trust?.lines.slice(0, 2)).toEqual(["Accessing workspace:", ""]);
+    expect(trust?.lines.slice(-4)).toEqual(["❯ No, exit", "  Yes, I trust this folder", "", "Enter to confirm · Esc to cancel"]);
+    expect(permission?.prompt).toBe("permission");
+    expect(permission?.lines[0]).toBe(" Bash command");
+    expect(permission?.lines).toContain(" touch hello.txt");
+    expect(permission?.lines.slice(-8)).toEqual([
+      " Do you want to proceed?",
+      " ❯ 1. Yes",
+      "   2. Yes, and always allow access to /private/var/folders/qb/s1tx2twn79qd9xy_gfs1lzbh0000gn/T/pomade-probe-WfWEsS from",
+      "      this project",
+      "   3. Yes, and switch to auto mode · auto mode handles these prompts for you",
+      "   4. No",
+      "",
+      " Esc to cancel · Tab to amend",
+    ]);
+  });
+
+  it("codex: the title's wait comes first without rows, then the approval dialog's rows from its question", async () => {
+    const [trust, titled, shown] = await waits("codex", fixture("codex-exec-approve"));
+    expect(trust?.lines[0]).toBe("> You are in /private/var/folders/qb/s1tx2twn79qd9xy_gfs1lzbh0000gn/T/pomade-probe-rjIcfX");
+    expect(trust?.lines.at(-1)).toBe("  Press enter to continue");
+    expect(titled).toEqual({ kind: "waiting", prompt: "permission", lines: [] });
+    expect(shown).toEqual({
+      kind: "waiting",
+      prompt: "permission",
+      lines: [
+        "  Would you like to run the following command?",
+        "",
+        "  Environment: local",
+        "",
+        "  Reason: Do you want to allow creating the requested empty hello.txt file?",
+        "",
+        "  $ touch hello.txt",
+        "",
+        "› 1. Yes, proceed (y)",
+        "  2. Yes, and don't ask again for commands that start with `touch` (p)",
+        "  3. No, and tell Codex what to do differently (esc)",
+        "",
+        "  Press enter to confirm or esc to cancel",
+      ],
+    });
   });
 });
 
@@ -194,6 +263,29 @@ describe("AgentStateScanner — claude", () => {
       "working",
       "waiting:permission",
     ]);
+  });
+
+  it("gives the dialog's rows from under the rule above it, common indent removed; a moved selection updates state only", async () => {
+    const states: AgentState[] = [];
+    const scanner = new AgentStateScanner({ agent: "claude", cols: 60, rows: 12 }, (s) => states.push(s));
+    scanner.push("\x1b[2J" + at(1, "transcript") + at(2, "─".repeat(60)) + at(3, " Bash command") + CLAUDE_DIALOG);
+    await vi.advanceTimersByTimeAsync(10);
+    const lines = ["Bash command", "Do you want to proceed?", "❯ 1. Yes", "  2. No", "", "Esc to cancel · Tab to amend"];
+    expect(states).toEqual([{ kind: "waiting", prompt: "permission", lines }]);
+    scanner.push(at(5, "   1. Yes") + at(6, " ❯ 2. No"));
+    await vi.advanceTimersByTimeAsync(10);
+    expect(states).toHaveLength(1);
+    expect(scanner.state).toEqual({ kind: "waiting", prompt: "permission", lines: ["Bash command", "Do you want to proceed?", "  1. Yes", "❯ 2. No", "", "Esc to cancel · Tab to amend"] });
+    scanner.dispose();
+  });
+
+  it("without a rule above the dialog, its rows start at the option row", async () => {
+    const states: AgentState[] = [];
+    const scanner = new AgentStateScanner({ agent: "claude", cols: 60, rows: 12 }, (s) => states.push(s));
+    scanner.push(at(3, " Yes, I trust this folder") + at(5, " Enter to confirm · Esc to cancel"));
+    await vi.advanceTimersByTimeAsync(10);
+    expect(states).toEqual([{ kind: "waiting", prompt: "trust", lines: ["Yes, I trust this folder", "", "Enter to confirm · Esc to cancel"] }]);
+    scanner.dispose();
   });
 
   it("reports the folder-trust dialog", async () => {
@@ -290,6 +382,42 @@ describe("AgentStateScanner — codex", () => {
     expect(
       await run("codex", [spin("⠋"), title("[ ! ] Action Required | repo"), title("[ . ] Action Required | repo"), spin("⠙")]),
     ).toEqual(["working", "waiting:permission", "working"]);
+  });
+
+  it("reports the title's wait without rows, again with the rows once the dialog shows; the blinking title keeps them", async () => {
+    const states: AgentState[] = [];
+    const scanner = new AgentStateScanner({ agent: "codex", cols: 60, rows: 12 }, (s) => states.push(s));
+    scanner.push(spin("⠋"));
+    scanner.push(title("[ ! ] Action Required | repo"));
+    await vi.advanceTimersByTimeAsync(10);
+    scanner.push("\x1b[2J" + CODEX_APPROVAL);
+    await vi.advanceTimersByTimeAsync(10);
+    scanner.push(title("[ . ] Action Required | repo"));
+    await vi.advanceTimersByTimeAsync(10);
+    const lines = [
+      "  Would you like to run the following command?",
+      "",
+      "› 1. Yes, proceed (y)",
+      "  3. No, and tell Codex what to do differently (esc)",
+      "",
+      "  Press enter to confirm or esc to cancel",
+    ];
+    expect(states).toEqual([
+      { kind: "working" },
+      { kind: "waiting", prompt: "permission", lines: [] },
+      { kind: "waiting", prompt: "permission", lines },
+    ]);
+    expect(scanner.state).toEqual({ kind: "waiting", prompt: "permission", lines });
+    scanner.dispose();
+  });
+
+  it("a title's wait and its dialog in one read are reported once, with the rows", async () => {
+    const states: AgentState[] = [];
+    const scanner = new AgentStateScanner({ agent: "codex", cols: 60, rows: 12 }, (s) => states.push(s));
+    scanner.push(spin("⠋") + title("[ ! ] Action Required | repo") + "\x1b[2J" + CODEX_APPROVAL + title("[ . ] Action Required | repo"));
+    await vi.advanceTimersByTimeAsync(10);
+    expect(states.map((s) => (s.kind === "waiting" ? s.lines.length : s.kind))).toEqual(["working", 6]);
+    scanner.dispose();
   });
 
   it("reports the approval dialog on screen when the title does not say so", async () => {

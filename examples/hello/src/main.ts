@@ -18,6 +18,8 @@
 // key per project; opened again, focused); inside such a tab the app retitles it (`tabs.setTitle`) and
 // closes it (`tabs.close`). "Back to board" in a tab returns it to the default view and tells Pomade
 // (`tabs.setRoute`), so the roadmap notice or shortcut takes it to the roadmap again.
+// "Add to project scope" / "Remove from project scope" put the typed folder in the active project's
+// scope or take it out (app scope folders) and list the app's folders for the project.
 // "New scratch file" makes a file in the project's scratch/ folder; "Trash scratch files" moves
 // every file there to the Trash in one `files.delete` call and says how each one went.
 // It looks like Pomade: Pomade's design tokens and its theme, whatever the Mac's appearance.
@@ -221,6 +223,7 @@ function startApp(host: HostClient): void {
   // has moved it; focus comes back to the button.
   el("open-overlay").addEventListener("click", () => void host.overlay.open({ route: "note", anchor: "panel" }));
   useScratch(host);
+  useScopeFolders(host);
   const showRoute = (route: string): void => {
     el("route").textContent = `Route: ${route === "" ? "(default)" : route}`;
   };
@@ -369,6 +372,23 @@ function startApp(host: HostClient): void {
 }
 
 /** Scratch files in the active project's scratch/ folder: make one, or trash them all in one call. */
+/** The typed folder in or out of the active project's scope; the status lists the app's folders there. */
+function useScopeFolders(host: HostClient): void {
+  const status = (text: string): void => {
+    el("scope-status").textContent = text;
+  };
+  const run = (change: (projectId: string, path: string) => Promise<unknown>): void => {
+    void (async () => {
+      const project = await host.project.getActive();
+      await change(project.id, (el("scope-path") as HTMLInputElement).value);
+      const { paths } = await host.project.getScopeFolders({ projectId: project.id });
+      status(`${project.name}: ${paths.length === 0 ? "no scope folders" : paths.join(", ")}`);
+    })().catch((err: unknown) => status(err instanceof Error ? err.message : String(err)));
+  };
+  el("scope-add").addEventListener("click", () => run((projectId, path) => host.project.addScopeFolder({ projectId, path })));
+  el("scope-remove").addEventListener("click", () => run((projectId, path) => host.project.removeScopeFolder({ projectId, path })));
+}
+
 function useScratch(host: HostClient): void {
   const status = (text: string): void => {
     el("scratch-status").textContent = text;

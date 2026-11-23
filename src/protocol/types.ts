@@ -443,6 +443,29 @@ export interface SetProjectAgentsParams {
   visibleAgents: string[];
 }
 
+// ── Project scope: app scope folders (pomade:E-047) ─────────────────────────
+
+/** The most scope folders one app may keep for one project. */
+export const SCOPE_FOLDERS_MAX = 64;
+
+/** `project.addScopeFolder` / `project.removeScopeFolder` — one of the calling app's scope folders
+ *  for a project. `path`: workspace-relative, or absolute (inside or outside the workspace). */
+export interface ScopeFolderParams {
+  projectId: string;
+  path: string;
+}
+
+/** `project.addScopeFolder` — the folder as stored: workspace-relative when it lies inside the
+ *  workspace, absolute when outside it. */
+export interface ScopeFolderResult {
+  path: string;
+}
+
+/** `project.getScopeFolders` — the calling app's scope folders for the project, in the order added. */
+export interface ScopeFoldersResult {
+  paths: string[];
+}
+
 // ── Workspace data: scoped symlinks (pomade:E-030) ─────────────────────────
 
 /** `files.symlink` — create a symlink at `path` pointing to `target`, inside a manifest `symlinks` folder. */
@@ -617,6 +640,9 @@ export interface HostMethods {
   "project.setSettings": { params: SetProjectSettingsParams; result: ProjectSettingsResult };
   "project.getAgents": { params: ProjectIdParams; result: ProjectAgentsResult };
   "project.setAgents": { params: SetProjectAgentsParams; result: Record<string, never> };
+  "project.getScopeFolders": { params: ProjectIdParams; result: ScopeFoldersResult };
+  "project.addScopeFolder": { params: ScopeFolderParams; result: ScopeFolderResult };
+  "project.removeScopeFolder": { params: ScopeFolderParams; result: Record<string, never> };
   "files.symlink": { params: SymlinkParams; result: Record<string, never> };
   "files.removeSymlink": { params: RemoveSymlinkParams; result: Record<string, never> };
   "files.pickFolder": { params: PickFolderParams; result: PickFolderResult };
@@ -677,6 +703,9 @@ export const METHOD_CAPABILITY: Readonly<Record<MethodName, MethodCapability>> =
   "project.setSettings": "project.write",
   "project.getAgents": "project.read",
   "project.setAgents": "project.write",
+  "project.getScopeFolders": "project.read",
+  "project.addScopeFolder": "project.write",
+  "project.removeScopeFolder": "project.write",
   "files.symlink": "files.symlink",
   "files.removeSymlink": "files.symlink",
   "files.pickFolder": "files.read",

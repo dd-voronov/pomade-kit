@@ -20,7 +20,11 @@
 //
 // A dialog counts only while its footer is the last non-blank row on screen: that is where both
 // CLIs draw a live prompt, and it keeps transcript text that merely quotes a prompt (with the
-// composer and status rows below it) from reading as one.
+// composer and status rows below it) from reading as one. A waiting state carries the dialog's
+// rows as the screen shows them, from its top — claude: the row under the rule that opens the
+// dialog; codex: its first question row — down to the footer. A wait is reported when it starts,
+// and once more when its rows first show (codex's title may say it waits before the dialog is
+// drawn); a redraw of the same dialog (the selection moved) only updates `state`.
 //
 // Idle is reported only once it has held for `idleAfterMs`: claude sets its idle title a few
 // milliseconds before it draws a permission dialog, and a consumer that acts on idle (ending an
@@ -37,11 +41,13 @@ export type AgentKind = "claude" | "codex";
 export type AgentPrompt = "permission" | "trust";
 
 /** `unknown` until the output says otherwise (before the first title, or under a title format the
- *  scanner does not read). */
+ *  scanner does not read). `waiting.lines`: the prompt as the screen shows it — the dialog's rows
+ *  from its top to its footer, right-trimmed, their common indent removed; `[]` while only the
+ *  title says the agent waits (codex's "Action Required"). */
 export type AgentState =
   | { kind: "working" }
   | { kind: "idle" }
-  | { kind: "waiting"; prompt: AgentPrompt }
+  | { kind: "waiting"; prompt: AgentPrompt; lines: string[] }
   | { kind: "unknown" };
 
 export interface AgentStateScannerOptions {
@@ -61,6 +67,9 @@ interface Dialog {
   option: RegExp;
   /** A row above the option row, when the dialog has a fixed question. */
   question?: RegExp;
+  /** Where the dialog's text begins: the nearest row above the option row that matches — the row
+   *  itself, or (`below`) the row under it. None found: the option row. */
+  top: { row: RegExp; below: boolean };
 }
 
 interface AgentRules {
@@ -72,12 +81,14 @@ interface AgentRules {
 const CLAUDE_SPINNER = new Set(["◐", "◓", "◑", "◒"]);
 const CLAUDE_IDLE = "✳";
 const CODEX_ACTION_REQUIRED = /^\[ [!.] \] Action Required\b/;
+/** The full-width rule claude draws over its dialogs. */
+const CLAUDE_RULE = { row: /^─{8,}$/, below: true };
 
 const RULES: Record<AgentKind, AgentRules> = {
   claude: {
     dialogs: [
-      { prompt: "permission", footer: /^Esc to cancel\b/, option: /^(?:❯\s*)?1\.\s+Yes\b/, question: /^(?:Do you want|Would you like)\b/ },
-      { prompt: "trust", footer: /^Enter to confirm · Esc to cancel$/, option: /^(?:❯\s*)?Yes, I trust this folder$/ },
+      { prompt: "permission", footer: /^Esc to cancel\b/, option: /^(?:❯\s*)?1\.\s+Yes\b/, question: /^(?:Do you want|Would you like)\b/, top: CLAUDE_RULE },
+      { prompt: "trust", footer: /^Enter to confirm · Esc to cancel$/, option: /^(?:❯\s*)?Yes, I trust this folder$/, top: CLAUDE_RULE },
     ],
     fromTitle(title) {
       const first = [...title][0];
@@ -89,12 +100,17 @@ const RULES: Record<AgentKind, AgentRules> = {
   },
   codex: {
     dialogs: [
-      { prompt: "permission", footer: /^Press enter to confirm or esc to cancel$/, option: /^(?:›\s*)?1\.\s+Yes, proceed\b/ },
-      { prompt: "trust", footer: /^Press enter to continue$/, option: /^(?:›\s*)?1\.\s+Yes, continue$/ },
+      {
+        prompt: "permission",
+        footer: /^Press enter to confirm or esc to cancel$/,
+        option: /^(?:›\s*)?1\.\s+Yes, proceed\b/,
+        top: { row: /^(?:Would you like|Do you want|Allow)\b/, below: false },
+      },
+      { prompt: "trust", footer: /^Press enter to continue$/, option: /^(?:›\s*)?1\.\s+Yes, continue$/, top: { row: /^> You are in\b/, below: false } },
     ],
     fromTitle(title, sawWorking) {
       if (title === "") return null;
-      if (CODEX_ACTION_REQUIRED.test(title)) return { kind: "waiting", prompt: "permission" };
+      if (CODEX_ACTION_REQUIRED.test(title)) return { kind: "waiting", prompt: "permission", lines: [] };
       const first = title.codePointAt(0) ?? 0;
       if (first >= 0x2800 && first <= 0x28ff) return { kind: "working" };
       return sawWorking ? { kind: "idle" } : null;
@@ -104,6 +120,13 @@ const RULES: Record<AgentKind, AgentRules> = {
 
 function sameState(a: AgentState, b: AgentState): boolean {
   return a.kind === b.kind && (a.kind !== "waiting" || (b.kind === "waiting" && a.prompt === b.prompt));
+}
+
+/** Rows right-trimmed, without the indent they all share (blank rows aside). */
+function dedent(rows: string[]): string[] {
+  const indents = rows.filter((row) => row !== "").map((row) => row.length - row.trimStart().length);
+  const common = indents.length === 0 ? 0 : Math.min(...indents);
+  return rows.map((row) => row.slice(common));
 }
 
 /**
@@ -167,12 +190,13 @@ export class AgentStateScanner {
   private evaluate(): void {
     const passing = this.titlesInChunk.slice(0, -1);
     this.titlesInChunk = [];
+    const dialog = this.dialogOnScreen();
     for (const title of passing) {
       const state = this.fromTitle(title);
-      if (state) this.report(state);
+      // A title's wait that the chunk's own dialog shows is reported once, with its rows.
+      if (state && !(state.kind === "waiting" && state.prompt === dialog?.prompt)) this.report(state);
     }
-    const prompt = this.promptOnScreen();
-    this.report(prompt ? { kind: "waiting", prompt } : (this.fromTitle(this.title) ?? { kind: "unknown" }));
+    this.report(dialog ? { kind: "waiting", ...dialog } : (this.fromTitle(this.title) ?? { kind: "unknown" }));
   }
 
   private fromTitle(title: string): AgentState | null {
@@ -193,7 +217,13 @@ export class AgentStateScanner {
     }
     clearTimeout(this.idleTimer);
     this.idleTimer = undefined;
-    if (!sameState(state, this.current)) this.change(state);
+    if (!sameState(state, this.current)) return this.change(state);
+    // The same wait: its rows are reported when they first show (codex's title can say it waits
+    // before the dialog is drawn); later redraws (a moved selection) update `state` silently, and
+    // a title alone never drops rows the screen showed.
+    if (state.kind !== "waiting" || this.current.kind !== "waiting" || state.lines.length === 0) return;
+    if (this.current.lines.length === 0) this.change(state);
+    else this.current = state;
   }
 
   private change(state: AgentState): void {
@@ -201,12 +231,14 @@ export class AgentStateScanner {
     this.onState(state);
   }
 
-  private promptOnScreen(): AgentPrompt | null {
+  private dialogOnScreen(): { prompt: AgentPrompt; lines: string[] } | null {
     const buffer = this.term.buffer.active;
-    const rows: string[] = [];
+    /** Right-trimmed, as drawn. */
+    const shown: string[] = [];
     for (let y = 0; y < this.term.rows; y++) {
-      rows.push(buffer.getLine(buffer.baseY + y)?.translateToString(true).trim() ?? "");
+      shown.push(buffer.getLine(buffer.baseY + y)?.translateToString(true).trimEnd() ?? "");
     }
+    const rows = shown.map((row) => row.trim());
     let footerRow = rows.length - 1;
     while (footerRow >= 0 && rows[footerRow] === "") footerRow--;
     const footer = rows[footerRow];
@@ -218,7 +250,14 @@ export class AgentStateScanner {
       if (optionRow < 0) continue;
       const { question } = dialog;
       if (question && !rows.slice(0, optionRow).some((row) => question.test(row))) continue;
-      return dialog.prompt;
+      let top = optionRow;
+      for (let y = optionRow - 1; y >= 0; y--) {
+        if (dialog.top.row.test(rows[y] ?? "")) {
+          top = dialog.top.below ? y + 1 : y;
+          break;
+        }
+      }
+      return { prompt: dialog.prompt, lines: dedent(shown.slice(top, footerRow + 1)) };
     }
     return null;
   }

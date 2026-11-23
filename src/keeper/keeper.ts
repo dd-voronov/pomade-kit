@@ -133,6 +133,8 @@ interface Session {
   startedAt: number;
   actions: SessionAction[];
   exit: SessionExit | null;
+  /** Its program ended and its log is flushing: the exit, reported once the log is complete. */
+  ending: SessionExit | null;
   screen: Screen;
   hold: PtyHold | null;
   /** Output characters since the session started (the `seq` of its last output). */
@@ -477,6 +479,7 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
       killTimer: null,
       restoring: false,
       logStream: null,
+      ending: null,
     };
     // The terminal of record answers the program's queries; clients never send their own answers.
     s.screen.onAnswer((answer) => {
@@ -514,22 +517,34 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
     return { code, signal: sig, reason: classify(s, code, sig, at), at };
   };
 
+  /** The program ended: once its log file holds every byte it printed, the session is exited and
+   *  its clients and watchers are told — a client that reads the log on `exit` sees the last lines. */
   const finishExit = (s: Session, code: number | null, signal: string | null): void => {
-    if (s.exit) return;
+    if (s.exit || s.ending) return;
     if (handingOff) {
       endedDuringHandoff.set(s, { code, signal });
       return;
     }
-    s.exit = exitOf(s, code, signal);
+    const exit = exitOf(s, code, signal);
+    s.ending = exit;
     if (s.killTimer) clearTimeout(s.killTimer);
     s.killTimer = null;
     s.hold = null;
-    s.logStream?.end();
+    const stream = s.logStream;
     s.logStream = null;
-    log(`session ${s.id} ended: ${s.exit.reason} (code ${s.exit.code}, signal ${s.exit.signal})`);
-    writeRecord(s);
-    for (const c of audience(s)) send(c, { type: "exit", session: s.id, exit: s.exit });
-    pruneExited();
+    const announce = (): void => {
+      if (s.exit) return;
+      s.ending = null;
+      s.exit = exit;
+      log(`session ${s.id} ended: ${exit.reason} (code ${exit.code}, signal ${exit.signal})`);
+      // A session replaced meanwhile (its id spawned again) keeps the new session's record.
+      if (sessions.get(s.id) === s) writeRecord(s);
+      for (const c of audience(s)) send(c, { type: "exit", session: s.id, exit });
+      pruneExited();
+    };
+    // `end`'s callback runs once the file is written — or with the error that stopped the stream.
+    if (stream && !stream.destroyed) stream.end(() => announce());
+    else announce();
   };
 
   /** Wire a spawned PTY's output and exit into its session. */
@@ -672,6 +687,7 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
 
   const spawnRequest = (c: Client, m: Extract<KeeperRequest, { type: "spawn" }>): void => {
     const previous = m.spec.id !== undefined ? sessions.get(m.spec.id) : undefined;
+    // An ending session (its log still flushing) is still running until its exit is reported.
     if (previous && !previous.exit) return fail(c, m.rid, "session-running", `session ${previous.id} is running`);
     let s: Session;
     try {
@@ -870,7 +886,7 @@ export async function runKeeper(options: KeeperOptions = {}): Promise<Keeper> {
         cols: s.screen.cols,
         rows: s.screen.rows,
         actions: s.actions,
-        exit: s.exit ?? (ended ? exitOf(s, ended.code, ended.signal) : null),
+        exit: s.exit ?? s.ending ?? (ended ? exitOf(s, ended.code, ended.signal) : null),
         seq: s.seq,
         ring: ringText(s),
         screen: s.screen.serialize(),

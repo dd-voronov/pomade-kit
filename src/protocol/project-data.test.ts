@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { jsonProblem, mergeProjectSettings, normalizeVisibleAgents, settingsSizeProblem } from "./project-data.js";
+import { jsonProblem, mergeProjectSettings, normalizeVisibleAgents, scopeFolderPath, settingsSizeProblem } from "./project-data.js";
 import { PROJECT_SETTINGS_MAX_BYTES } from "./types.js";
 
 describe("jsonProblem", () => {
@@ -65,5 +65,50 @@ describe("normalizeVisibleAgents", () => {
     ["* with ids", ["*", "claude"]],
   ])("refuses %s", (_label, v) => {
     expect(typeof normalizeVisibleAgents(v)).toBe("string");
+  });
+});
+
+describe("scopeFolderPath", () => {
+  const ws = "/Users/me/git-base";
+
+  it.each<[string, string]>([
+    ["Pomade-Notes/alpha", "Pomade-Notes/alpha"],
+    ["./Pomade-Notes//alpha/", "Pomade-Notes/alpha"],
+    ["Projects/x/../../Pomade-Notes/alpha", "Pomade-Notes/alpha"],
+    ["/Users/me/git-base/Pomade-Notes/alpha", "Pomade-Notes/alpha"],
+    ["/Users/me/git-base/./Pomade-Notes/alpha/", "Pomade-Notes/alpha"],
+    ["/Users/me/notes", "/Users/me/notes"],
+    ["/Users/me/notes/", "/Users/me/notes"],
+    ["/Users/me/git-base-other/x", "/Users/me/git-base-other/x"],
+    ["/Users/me/git-base/../notes", "/Users/me/notes"],
+    ["/../tmp/x", "/tmp/x"],
+    [".pomadeish/x", ".pomadeish/x"],
+  ])("%j is stored as %j", (raw, path) => {
+    expect(scopeFolderPath(raw, ws)).toEqual({ ok: true, path });
+  });
+
+  it("takes the workspace root with a trailing slash", () => {
+    expect(scopeFolderPath("/Users/me/git-base/a", `${ws}/`)).toEqual({ ok: true, path: "a" });
+  });
+
+  it.each<[string, unknown]>([
+    ["not a string", 3],
+    ["empty", ""],
+    ["blank", "  "],
+    ["NUL", "a\0b"],
+    ["a ~ path", "~/notes"],
+    ["a relative escape", "../notes"],
+    ["the workspace root (relative)", "."],
+    ["the workspace root (absolute)", "/Users/me/git-base/"],
+    ["/", "/"],
+    ["/ in disguise", "/tmp/.."],
+  ])("refuses %s", (_label, raw) => {
+    const r = scopeFolderPath(raw, ws);
+    expect(r.ok ? null : r.error.code).toBe("invalid-params");
+  });
+
+  it.each([".pomade", ".Pomade/state", "/Users/me/git-base/.pomade"])("refuses the .pomade folder %j", (raw) => {
+    const r = scopeFolderPath(raw, ws);
+    expect(r.ok ? null : r.error.code).toBe("capability-denied");
   });
 });

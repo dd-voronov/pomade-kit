@@ -36,9 +36,14 @@ const MOUSE_ENCODING_MODE: Readonly<Record<string, number>> = { SGR: 1006, URXVT
 export class Screen {
   readonly term: HeadlessTerminal;
   private readonly serializer: SerializeAddon;
+  /** The window title the program set last (OSC 0 / 2); `""` when it set none. */
+  private windowTitle = "";
 
   constructor(cols: number, rows: number, scrollback: number) {
     this.term = new Terminal({ cols, rows, scrollback, allowProposedApi: true });
+    this.term.onTitleChange((title) => {
+      this.windowTitle = title;
+    });
     this.serializer = new SerializeAddon();
     this.term.loadAddon(this.serializer as never);
     this.term.loadAddon(new Unicode11Addon() as never);
@@ -79,8 +84,9 @@ export class Screen {
   /**
    * The screen as escape sequences: drawn into an empty terminal of the same size it reproduces
    * the scrollback, the screen (normal or alternate), colours, cursor, modes, scroll region, mouse
-   * encoding and cursor visibility. It contains no question, so drawing it makes the terminal
-   * answer nothing. Call after `settled()`.
+   * encoding, cursor visibility and, last, the window title the program set (OSC 2), so a reader
+   * of the title — an agent scanner — learns it with the screen. It contains no question, so
+   * drawing it makes the terminal answer nothing. Call after `settled()`.
    */
   serialize(scrollback?: number): string {
     let out = this.serializer.serialize(scrollback === undefined ? {} : { scrollback });
@@ -94,6 +100,9 @@ export class Screen {
     const mode = MOUSE_ENCODING_MODE[core.coreMouseService.activeEncoding];
     if (mode !== undefined) out += `\x1b[?${mode}h`;
     if (core.coreService.isCursorHidden) out += "\x1b[?25l";
+    // The parsed title holds no BEL or ESC (they end the OSC); C0/C1 controls are dropped all the same.
+    const title = this.windowTitle.replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+    if (title !== "") out += `\x1b]2;${title}\x07`;
     return out;
   }
 

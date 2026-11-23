@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { getBody } from "../frontmatter/index.js";
-import { FILES_DELETE_MAX_PATHS, type FileChange, type HostToAppMessage } from "../protocol/index.js";
+import { FILES_DELETE_MAX_PATHS, SCOPE_FOLDERS_MAX, type FileChange, type HostToAppMessage } from "../protocol/index.js";
 import { connect, HostError, type HostClient } from "../sdk/index.js";
 import { createFakeHost, type FakeHost, type FakeHostOptions } from "./fake-host.js";
 
@@ -704,6 +704,70 @@ describe("project settings and visible agents", () => {
     expect(ro.errorOf("project.getAgents", { projectId: "pomade" })).toBeNull();
     expect(ro.errorOf("project.setSettings", { projectId: "pomade", settings: {} })).toBe("capability-denied");
     expect(ro.errorOf("project.setAgents", { projectId: "pomade", visibleAgents: [] })).toBe("capability-denied");
+  });
+});
+
+describe("app scope folders (pomade:E-047)", () => {
+  const PROJECTS = [
+    { id: "alpha", name: "Alpha", root: "Projects/alpha" },
+    { id: "beta", name: "Beta", root: "Projects/beta" },
+  ];
+  const ws = () => fake({ projects: PROJECTS, workspaceRoot: "/ws" });
+
+  it("add is idempotent and keeps order; paths are stored relative inside the workspace, absolute outside", async () => {
+    const host = await client(ws());
+    expect(await host.project.getScopeFolders({ projectId: "alpha" })).toEqual({ paths: [] });
+    expect(await host.project.addScopeFolder({ projectId: "alpha", path: "/ws/Pomade-Notes/alpha/" })).toEqual({ path: "Pomade-Notes/alpha" });
+    expect(await host.project.addScopeFolder({ projectId: "alpha", path: "/Users/me/notes" })).toEqual({ path: "/Users/me/notes" });
+    expect(await host.project.addScopeFolder({ projectId: "alpha", path: "Pomade-Notes/alpha" })).toEqual({ path: "Pomade-Notes/alpha" });
+    expect(await host.project.getScopeFolders({ projectId: "alpha" })).toEqual({ paths: ["Pomade-Notes/alpha", "/Users/me/notes"] });
+    expect(await host.project.getScopeFolders({ projectId: "beta" })).toEqual({ paths: [] });
+  });
+
+  it("a folder that does not exist yet is accepted", async () => {
+    const host = await client(ws());
+    expect(await host.project.addScopeFolder({ projectId: "alpha", path: "Not/there/yet" })).toEqual({ path: "Not/there/yet" });
+  });
+
+  it("remove is idempotent", async () => {
+    const host = await client(ws());
+    await host.project.addScopeFolder({ projectId: "alpha", path: "A" });
+    await host.project.addScopeFolder({ projectId: "alpha", path: "B" });
+    await host.project.removeScopeFolder({ projectId: "alpha", path: "/ws/A" });
+    await host.project.removeScopeFolder({ projectId: "alpha", path: "A" });
+    await host.project.removeScopeFolder({ projectId: "beta", path: "A" });
+    expect(await host.project.getScopeFolders({ projectId: "alpha" })).toEqual({ paths: ["B"] });
+  });
+
+  it("a removed project's scope folders go with it", async () => {
+    const fh = ws();
+    const host = await client(fh);
+    await host.project.addScopeFolder({ projectId: "alpha", path: "A" });
+    fh.removeProject("alpha");
+    expect(raw(fh).errorOf("project.getScopeFolders", { projectId: "alpha" })).toBe("not-found");
+  });
+
+  it("errors", async () => {
+    const fh = ws();
+    const f = raw(fh);
+    expect(f.errorOf("project.addScopeFolder", { projectId: "ghost", path: "A" })).toBe("not-found");
+    expect(f.errorOf("project.addScopeFolder", { projectId: "__workspace__", path: "A" })).toBe("invalid-params");
+    expect(f.errorOf("project.getScopeFolders", { projectId: "__workspace__" })).toBe("invalid-params");
+    expect(f.errorOf("project.addScopeFolder", { projectId: "alpha", path: "../out" })).toBe("invalid-params");
+    expect(f.errorOf("project.addScopeFolder", { projectId: "alpha", path: "/ws" })).toBe("invalid-params");
+    expect(f.errorOf("project.addScopeFolder", { projectId: "alpha", path: "/ws/.pomade/state" })).toBe("capability-denied");
+    expect(f.errorOf("project.removeScopeFolder", { projectId: "alpha" })).toBe("invalid-params");
+    const host = await client(fh);
+    for (let i = 0; i < SCOPE_FOLDERS_MAX; i++) await host.project.addScopeFolder({ projectId: "alpha", path: `F${i}` });
+    expect(f.errorOf("project.addScopeFolder", { projectId: "alpha", path: "one-more" })).toBe("invalid-params");
+    expect(f.errorOf("project.addScopeFolder", { projectId: "alpha", path: "F0" })).toBeNull();
+  });
+
+  it("the read needs project.read, the writes project.write", () => {
+    const ro = raw(fake({ projects: PROJECTS, manifest: { id: "x1", name: "X", version: "1.0.0", hostApi: 0, capabilities: ["project.read"] } }));
+    expect(ro.errorOf("project.getScopeFolders", { projectId: "alpha" })).toBeNull();
+    expect(ro.errorOf("project.addScopeFolder", { projectId: "alpha", path: "A" })).toBe("capability-denied");
+    expect(ro.errorOf("project.removeScopeFolder", { projectId: "alpha", path: "A" })).toBe("capability-denied");
   });
 });
 

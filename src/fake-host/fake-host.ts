@@ -143,7 +143,7 @@ export interface FakeHostOptions {
   roster?: RosterAgent[];
   /** The sessions `agentTabs.resume` finds. Default none. */
   sessions?: FakeSession[];
-  /** The absolute folder the fake workspace stands for, in `AgentTabInfo.cwd`. Default `/fake/workspace`. */
+  /** The absolute folder the fake workspace stands for, in `AgentTabInfo.cwd` and for absolute scope folders (stored relative inside it). Default `/fake/workspace`. */
   workspaceRoot?: string;
 }
 
@@ -312,6 +312,7 @@ export class FakeHost {
   private readonly projectGroup = new Map<string, string>();
   private readonly projectAgents = new Map<string, string[]>();
   private readonly projectSettings = new Map<string, Record<string, JsonValue>>();
+  private readonly projectScopeFolders = new Map<string, string[]>();
   private active: ProjectRef;
   private themeNow: Theme;
   private readonly frames = new Set<Frame>();
@@ -378,6 +379,7 @@ export class FakeHost {
     this.gitRepos = scriptedRepos(options.git ?? []);
     this.apps = { ...(options.apps ?? {}) };
     this.appFolder = (options.appFolder ?? `/fake/apps/${parsed.manifest.id}`).replace(/\/+$/, "");
+    this.workspaceRoot = (options.workspaceRoot ?? "/fake/workspace").replace(/\/+$/, "");
     this.data = {
       workspace: this.workspace,
       emit: (changes) => this.emit(changes),
@@ -399,13 +401,14 @@ export class FakeHost {
       listProjects: () => listProjects(this.groupList, this.projects, this.projectGroup),
       projectAgents: this.projectAgents,
       projectSettings: this.projectSettings,
+      projectScopeFolders: this.projectScopeFolders,
+      workspaceRoot: this.workspaceRoot,
       projectUpdated: (id, changes) => this.publishProjectUpdated(id, changes),
       symlinkScopes: parsed.manifest.symlinks ?? [],
       pickAnswers: this.pickAnswers,
       pickRequests: this.pickRequests,
       writeFailures: this.writeFailures,
     };
-    this.workspaceRoot = (options.workspaceRoot ?? "/fake/workspace").replace(/\/+$/, "");
     this.agentTabModel = new FakeAgentTabs(
       {
         workspace: this.workspace,
@@ -629,7 +632,7 @@ export class FakeHost {
     this.bus.publish("project.changed", { ...project });
   }
 
-  /** Remove a project from the workspace, as the user does in Pomade: its group, agents and settings
+  /** Remove a project from the workspace, as the user does in Pomade: its group, agents, settings and scope folders
    *  go with it. Emits `project.removed` (the project as it was), then `project.changed` to the
    *  Workspace scope when it was the active project — as Pomade does. */
   removeProject(id: string): void {
@@ -639,6 +642,7 @@ export class FakeHost {
     this.projectGroup.delete(id);
     this.projectAgents.delete(id);
     this.projectSettings.delete(id);
+    this.projectScopeFolders.delete(id);
     this.refreshGitWatches();
     this.bus.publish("project.removed", { ...project! });
     if (this.active.id !== id) return;
@@ -1036,6 +1040,9 @@ export class FakeHost {
       case "project.setSettings":
       case "project.getAgents":
       case "project.setAgents":
+      case "project.getScopeFolders":
+      case "project.addScopeFolder":
+      case "project.removeScopeFolder":
         return dispatchProjects(this.data, method, params);
       case "files.symlink":
       case "files.removeSymlink":
