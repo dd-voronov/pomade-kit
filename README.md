@@ -24,7 +24,7 @@ The package installs from a git tag: npm clones it, installs its dev dependencie
 | `pomade-kit/frontmatter` | field-only frontmatter writes: `setField`, `removeField`, body writes `setBody` / `getBody`, and the block core Pomade's editor uses | browser and Node |
 | `pomade-kit/schedule` | the schedule format: `parseSchedule` with readable errors, the occurrence engine, `describeSchedule`, `formatSchedule` | browser and Node |
 | `pomade-kit/dates` | date phrases: `parseDatePhrase` (`fri`, `tomorrow`, `+3d`, `nov 20`, `tonight 23:00`, `in 2 hours`) and `currentDay` with a day boundary | browser and Node |
-| `pomade-kit/scanners` | terminal output readers: `MarkerScanner` (Pomade's shell markers), `AttentionScanner` (bell, notifications), `AgentStateScanner` (claude/codex working, idle, waiting at a permission or trust prompt) | browser and Node |
+| `pomade-kit/scanners` | terminal output readers: `MarkerScanner` (Pomade's shell markers), `AttentionScanner` (bell, notifications), `AgentStateScanner` (claude/codex working, idle — with or without background work going — or waiting at a permission, trust or background-work prompt) | browser and Node |
 | `pomade-kit/node` | the Host API over Pomade's socket for backends and commands (`connectSocket`, `stayConnected`, `launchPomade`), `resolveWorkspace()`, `appStateDir()`; `postNotice()` — a notice from a backend or command, with Pomade open or closed; the attach protocol's client (`connectKeeper`, `followSession`, `startKeeper`) | Node |
 | `pomade-kit/keeper` | the keeper: holds an app's terminal sessions so they outlive Pomade, and serves the attach protocol (`runKeeper`). Needs `node-pty` (a peer dependency) | Node |
 
@@ -1047,7 +1047,8 @@ const markers = new MarkerScanner((ev) => {
 const attention = new AttentionScanner(() => markUnread());   // a bell or an OSC 9/99/777 notification
 
 const agent = new AgentStateScanner({ agent: "claude", cols, rows }, (state) => {
-  // { kind: "working" } | { kind: "idle" } | { kind: "waiting", prompt: "permission" | "trust", lines: string[] } | { kind: "unknown" }
+  // { kind: "working" } | { kind: "idle", background: boolean }
+  // | { kind: "waiting", prompt: "permission" | "trust" | "background", lines: string[] } | { kind: "unknown" }
 });
 
 pty.onData((data) => { markers.push(data); attention.push(data); agent.push(data); });
@@ -1066,8 +1067,10 @@ pty.onExit(() => agent.dispose());
 |---|---|---|
 | working | title starts with ◐ ◓ ◑ ◒ | title starts with a braille spinner |
 | idle | title starts with ✳ | any other title, once a spinner has been seen |
+| idle with `background: true` | idle, and the footer (the last non-blank row) counts background shells: "⏵⏵ bypass permissions on · 1 shell · ← for agents · ↓ to manage" | never |
 | waiting: permission | dialog "Do you want to …" · "❯ 1. Yes" · "Esc to cancel" | title "[ ! ] Action Required" or dialog "› 1. Yes, proceed" · "Press enter to confirm or esc to cancel" |
 | waiting: trust | "Yes, I trust this folder" · "Enter to confirm · Esc to cancel" | "› 1. Yes, continue" · "Press enter to continue" |
+| waiting: background | "Background work is running" · "❯ 1. Exit and stop tasks" · "Enter to confirm · Esc to cancel" | never |
 
 - A dialog counts only while its footer is the **last non-blank row** on screen, where both CLIs
   draw a live prompt. A transcript that quotes a prompt has the composer below it and does not
@@ -1078,19 +1081,43 @@ pty.onExit(() => agent.dispose());
   the option row). `[]` while only codex's Action Required title says it waits; the wait is
   reported once more when the dialog's rows first show. A redraw of the same dialog (the
   selection moved) updates `agent.state` without a new event.
+- **`idle.background` — the turn is over, the job may not be.** `true` while claude's footer
+  counts background shells (an item "N shell(s)" among its "·"-separated hints). The agent goes on
+  by itself when that work ends: the count leaves the footer in the same read as the working
+  title of the turn claude starts on its own. The footer is claude's live status of the work; the turn's
+  closing line ("✻ Cooked for 4s · done 10:14 PM · 1 shell still running") is not read — it is
+  transcript text written when the turn ends, later turns leave it above their own, and the
+  command menu covers it while a command is typed. Background sub-agents or other tasks counted
+  under another word are not read. codex: always `false`.
+- **Exiting with background work going:** claude answers an exit command with its "Background
+  work is running" dialog — `waiting` with prompt `background`; its rows list the work that
+  would stop and the choices, which vary ("1. Exit and stop tasks · 2. Stay", or with "2. Move
+  to background and exit" before "3. Stay"). Esc (its footer's "Esc to cancel") closes it and
+  claude stays: `idle` with its background work again, once that holds.
+- **A command submitted at the composer is a moment of work:** Enter on `/exit` sets claude's
+  working title for ~15 ms, so `working` is reported, then the dialog's `waiting` — or, with no
+  background work, `unknown` as claude exits and clears its title. A consumer that typed the
+  command reads that `working` as the command's, not as a new turn.
 - **Idle is reported after it holds for `idleAfterMs`** (default 500 ms). claude shows its idle
   title a few milliseconds before it draws a permission dialog, so a consumer that ends a run
-  on idle never sees that flash. Working and waiting are reported at once. A finished turn is a
+  on idle never sees that flash. A change of `background` while idle — the work ended without a
+  new turn, or started — is reported the same way, once it has held: a read can end in the
+  middle of the footer's redraw. Working and waiting are reported at once. A finished turn is a
   `working → idle` change.
+- Push text decoded with a streaming decoder (node-pty's own string output is): a multi-byte
+  character cut across two chunks, each decoded alone, becomes replacement characters that
+  shift the rest of its row.
 - Events are asynchronous (after the chunk is parsed); `await agent.settled()` waits for
   everything pushed so far. `agent.state` is the last reported state.
 - `unknown` until the output says otherwise: before the first title, or under a codex
   `[tui].terminal_title` without the spinner (the scanner never guesses idle).
 - Create the scanner when the agent starts and dispose it when it exits; after an exit the
   screen still holds whatever the CLI left there.
-- Evidence: real captures of claude 2.1.321 and codex-cli 0.153.2 answering permission prompts
-  (`src/scanners/fixtures/`, provenance in each file) replay in the unit suite with their
-  recorded timing.
+- Evidence: real captures of claude 2.1.321 and codex-cli 0.153.2 answering permission prompts,
+  and of claude 2.1.331 ending turns with a background shell — asked to exit, staying with Esc,
+  going on by itself when the shell ends (`src/scanners/fixtures/`, provenance in each file),
+  replay in the unit suite with their recorded timing (`claude-background-exit`'s is
+  reconstructed, as its provenance says).
 
 ## Calling other apps — the broker
 

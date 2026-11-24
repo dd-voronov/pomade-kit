@@ -20,7 +20,8 @@ function fixture(name: string): Fixture {
   return JSON.parse(readFileSync(new URL(`./fixtures/${name}.json`, import.meta.url), "utf8")) as Fixture;
 }
 
-const label = (s: AgentState): string => (s.kind === "waiting" ? `waiting:${s.prompt}` : s.kind);
+const label = (s: AgentState): string =>
+  s.kind === "waiting" ? `waiting:${s.prompt}` : s.kind === "idle" && s.background ? "idle:background" : s.kind;
 
 /** Replays chunks at their recorded times (ms) and returns every reported state as "t label". */
 async function replay(agent: AgentKind, fx: Pick<Fixture, "cols" | "rows" | "chunks">): Promise<string[]> {
@@ -72,6 +73,7 @@ afterEach(() => {
 // Expected timelines, read against each fixture's `input`: trust is reported from the first draw
 // of the trust screen until the Enter that accepts it; the permission prompt from its draw until
 // the answer; idle 500 ms after the CLI's idle title, unless a prompt or more work follows first.
+// None of the permission captures leaves background work: their idle is without it.
 const REAL: { name: string; agent: AgentKind; timeline: string[] }[] = [
   {
     name: "claude-bash-reject",
@@ -105,6 +107,33 @@ const REAL: { name: string; agent: AgentKind; timeline: string[] }[] = [
     // The Action Required title and the dialog arrive in two reads at 14903: the wait, then its rows.
     timeline: ["1694 waiting:trust", "3259 unknown", "3758 working", "14903 waiting:permission", "14903 waiting:permission", "19909 working", "20428 idle"],
   },
+  {
+    name: "claude-background-exit",
+    agent: "claude",
+    // input: "/exit" + Enter 7049. The idle title comes at 6150 with the footer's "· 1 shell";
+    // the command menu typing "/exit" opens over the turn's closing line changes nothing.
+    timeline: ["300 working", "6650 idle:background", "7120 waiting:background"],
+  },
+  {
+    name: "claude-background-stay",
+    agent: "claude",
+    // input: "/exit" 25002, Enter 26036, Esc 30052, "/exit" 80024, Enter 81014.
+    // Enter on /exit: claude's working title for 15 ms (26055), then the dialog (26072). Esc: the
+    // dialog goes at 30134, the footer's "· 1 shell" back at 30145 — idle with it 500 ms on. The
+    // shell ends at 42840 and claude takes a new turn by itself; it ends without background work.
+    // The second /exit ends claude: a working title, then its empty title.
+    timeline: [
+      "1150 working",
+      "3981 idle:background",
+      "26055 working",
+      "26072 waiting:background",
+      "30634 idle:background",
+      "42840 working",
+      "44078 idle",
+      "81020 working",
+      "81283 unknown",
+    ],
+  },
 ];
 
 describe("AgentStateScanner — real captures", () => {
@@ -137,12 +166,10 @@ describe("AgentStateScanner — real captures", () => {
   });
 });
 
-/** Every waiting state a replay reports, in order. */
-async function waits(agent: AgentKind, fx: Pick<Fixture, "cols" | "rows" | "chunks">): Promise<Extract<AgentState, { kind: "waiting" }>[]> {
-  const out: Extract<AgentState, { kind: "waiting" }>[] = [];
-  const scanner = new AgentStateScanner({ agent, cols: fx.cols, rows: fx.rows }, (s) => {
-    if (s.kind === "waiting") out.push(s);
-  });
+/** Every state a replay reports, in order. */
+async function states(agent: AgentKind, fx: Pick<Fixture, "cols" | "rows" | "chunks">): Promise<AgentState[]> {
+  const out: AgentState[] = [];
+  const scanner = new AgentStateScanner({ agent, cols: fx.cols, rows: fx.rows }, (s) => out.push(s));
   let now = 0;
   for (const [t, data] of fx.chunks) {
     if (t > now) await vi.advanceTimersByTimeAsync(t - now);
@@ -153,6 +180,72 @@ async function waits(agent: AgentKind, fx: Pick<Fixture, "cols" | "rows" | "chun
   scanner.dispose();
   return out;
 }
+
+/** Every waiting state a replay reports, in order. */
+async function waits(agent: AgentKind, fx: Pick<Fixture, "cols" | "rows" | "chunks">): Promise<Extract<AgentState, { kind: "waiting" }>[]> {
+  return (await states(agent, fx)).filter((s): s is Extract<AgentState, { kind: "waiting" }> => s.kind === "waiting");
+}
+
+describe("AgentStateScanner — background work (real captures)", () => {
+  it("claude: the turn that leaves a background shell ends idle with background work; /exit then waits at the background dialog", async () => {
+    expect(await states("claude", fixture("claude-background-exit"))).toEqual([
+      { kind: "working" },
+      { kind: "idle", background: true },
+      {
+        kind: "waiting",
+        prompt: "background",
+        lines: [
+          "Background work is running",
+          "The following will stop when you exit:",
+          "",
+          "shell · Wait 3 minutes",
+          "",
+          "❯ 1. Exit and stop tasks",
+          "  2. Move to background and exit",
+          "  3. Stay",
+          "",
+          "Enter to confirm · Esc to cancel",
+        ],
+      },
+    ]);
+  });
+
+  it("claude: Esc on the background dialog stays; the shell's end starts a new turn by itself, which ends without background work", async () => {
+    expect(await states("claude", fixture("claude-background-stay"))).toEqual([
+      { kind: "working" },
+      { kind: "idle", background: true },
+      { kind: "working" },
+      {
+        kind: "waiting",
+        prompt: "background",
+        lines: [
+          "Background work is running",
+          "The following will stop when you exit:",
+          "",
+          "shell · Wait 40 seconds",
+          "",
+          "❯ 1. Exit and stop tasks",
+          "  2. Stay",
+          "",
+          "Enter to confirm · Esc to cancel",
+        ],
+      },
+      { kind: "idle", background: true },
+      { kind: "working" },
+      { kind: "idle", background: false },
+      { kind: "working" },
+      { kind: "unknown" },
+    ]);
+  });
+
+  it("every idle in the captures without background work is without it", async () => {
+    for (const { name, agent } of REAL.filter((r) => !r.name.startsWith("claude-background-"))) {
+      const idles = (await states(agent, fixture(name))).filter((s) => s.kind === "idle");
+      expect(idles.length).toBeGreaterThan(0);
+      expect(idles).toEqual(idles.map(() => ({ kind: "idle", background: false })));
+    }
+  });
+});
 
 describe("AgentStateScanner — the prompt as the screen shows it (real captures)", () => {
   it("claude: the permission dialog's rows, from under its rule to its footer", async () => {
@@ -316,7 +409,7 @@ describe("AgentStateScanner — claude", () => {
     expect(events).toEqual(["working"]);
     await vi.advanceTimersByTimeAsync(1);
     expect(events).toEqual(["working", "idle"]);
-    expect(scanner.state).toEqual({ kind: "idle" });
+    expect(scanner.state).toEqual({ kind: "idle", background: false });
     scanner.dispose();
   });
 
@@ -346,6 +439,207 @@ describe("AgentStateScanner — claude", () => {
     await vi.advanceTimersByTimeAsync(10);
     expect(small).toEqual([]);
     unresized.dispose();
+  });
+});
+
+// Synthetic claude screens at 80×12: transcript from the top, the composer on rows 9–11, the
+// footer on row 12.
+describe("AgentStateScanner — claude background work", () => {
+  const WIDE = { cols: 80, rows: 12 };
+  const row = (n: number, text: string): string => `\x1b[${n};1H\x1b[2K${text}`;
+  const footer = (text: string): string => row(12, text);
+  const COMPOSER = row(9, "─".repeat(80)) + row(10, "❯ ") + row(11, "─".repeat(80));
+  const SHELL = "  ⏵⏵ bypass permissions on · 1 shell · ← for agents · ↓ to manage";
+  const PLAIN = "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents";
+  const STILL_RUNNING = "✻ Cooked for 4s · done 10:14 PM · 1 shell still running";
+  const turnEnd = (closing: string, foot: string): string =>
+    "\x1b[2J" + row(1, "⏺ Timer's running.") + row(3, closing) + COMPOSER + footer(foot);
+  /** Like `run`, where a number is that many ms passing (idle reported once it holds 500 ms). */
+  async function play(steps: (string | number)[]): Promise<string[]> {
+    const events: string[] = [];
+    const scanner = new AgentStateScanner({ agent: "claude", ...WIDE }, (s) => events.push(label(s)));
+    for (const step of steps) {
+      if (typeof step === "number") await vi.advanceTimersByTimeAsync(step);
+      else scanner.push(step);
+    }
+    await vi.advanceTimersByTimeAsync(1000);
+    scanner.dispose();
+    return events;
+  }
+
+  it("reads the footer's count of background shells, as an item of its hints, on the last non-blank row", async () => {
+    const cases: [string, boolean][] = [
+      [SHELL, true],
+      ["  ⏵⏵ bypass permissions on · 1 shell", true],
+      ["  1 shell · ↓ to manage", true],
+      ["  ⏵⏵ accept edits on · 12 shells · ↓ to manage", true],
+      ["  ⏵⏵ bypass permissions on · 1 shell       1 MCP server failed · /mcp", true],
+      [PLAIN, false],
+      ["  ? for shortcuts", false],
+      ["  ⏵⏵ bypass permissions on · 1 shellfish", false],
+      ["  1 MCP server failed · /mcp", false],
+      ["  Ran 1 shell command", false],
+      [STILL_RUNNING, false],
+    ];
+    for (const [foot, background] of cases) {
+      const events = await run("claude", [title("◐ x"), "\x1b[2J" + COMPOSER + footer(foot), title("✳ x")], WIDE);
+      expect(events, foot).toEqual(["working", background ? "idle:background" : "idle"]);
+    }
+  });
+
+  it("does not read a count of shells above the last non-blank row", async () => {
+    expect(await run("claude", [title("◐ x"), "\x1b[2J" + row(1, "  note · 1 shell · old") + COMPOSER + footer(PLAIN), title("✳ x")], WIDE)).toEqual([
+      "working",
+      "idle",
+    ]);
+  });
+
+  it("does not take the turn's closing line for background work: the footer decides", async () => {
+    // The closing line says a shell still runs; the footer, claude's live status, counts none.
+    expect(await run("claude", [title("◐ x"), turnEnd(STILL_RUNNING, PLAIN), title("✳ x")], WIDE)).toEqual(["working", "idle"]);
+  });
+
+  it("holds idle with background work back for idleAfterMs, and reports the screen's latest when it is reported", async () => {
+    const events: string[] = [];
+    const scanner = new AgentStateScanner({ agent: "claude", ...WIDE, idleAfterMs: 200 }, (s) => events.push(label(s)));
+    scanner.push(title("◐ x"));
+    scanner.push(turnEnd("✻ Cooked for 4s", PLAIN) + title("✳ x"));
+    await vi.advanceTimersByTimeAsync(100);
+    scanner.push(footer(SHELL));
+    await vi.advanceTimersByTimeAsync(99);
+    expect(events).toEqual(["working"]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(events).toEqual(["working", "idle:background"]);
+    expect(scanner.state).toEqual({ kind: "idle", background: true });
+    scanner.dispose();
+  });
+
+  it("background work that ends while idle, without a new turn: idle without it, once that holds", async () => {
+    const events: string[] = [];
+    const scanner = new AgentStateScanner({ agent: "claude", ...WIDE, idleAfterMs: 200 }, (s) => events.push(label(s)));
+    scanner.push(title("◐ x"));
+    scanner.push(turnEnd(STILL_RUNNING, SHELL) + title("✳ x"));
+    await vi.advanceTimersByTimeAsync(200);
+    expect(events).toEqual(["working", "idle:background"]);
+    scanner.push(footer(PLAIN));
+    await vi.advanceTimersByTimeAsync(199);
+    expect(events).toEqual(["working", "idle:background"]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(events).toEqual(["working", "idle:background", "idle"]);
+    expect(scanner.state).toEqual({ kind: "idle", background: false });
+    scanner.dispose();
+  });
+
+  it("a change of the footer that does not hold for idleAfterMs is not reported", async () => {
+    const events: string[] = [];
+    const scanner = new AgentStateScanner({ agent: "claude", ...WIDE, idleAfterMs: 200 }, (s) => events.push(label(s)));
+    scanner.push(title("◐ x"));
+    scanner.push(turnEnd(STILL_RUNNING, SHELL) + title("✳ x"));
+    await vi.advanceTimersByTimeAsync(200);
+    scanner.push(footer(PLAIN));
+    await vi.advanceTimersByTimeAsync(150);
+    scanner.push(footer(SHELL));
+    await vi.advanceTimersByTimeAsync(150);
+    scanner.push(footer(PLAIN));
+    await vi.advanceTimersByTimeAsync(150);
+    expect(events).toEqual(["working", "idle:background"]);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(events).toEqual(["working", "idle:background", "idle"]);
+    scanner.dispose();
+  });
+
+  it("a new turn after the background work ended ends idle without it, the old closing line still on screen", async () => {
+    const newTurn = row(4, "⏺ こんにちは！") + row(6, "✻ Worked for 2s");
+    expect(
+      await play([title("◐ x"), turnEnd(STILL_RUNNING, SHELL), title("✳ x"), 600, title("◐ x") + footer(PLAIN), newTurn, title("✳ x")]),
+    ).toEqual(["working", "idle:background", "working", "idle"]);
+  });
+
+  it("a turn that ends with no background work is idle without it, an earlier turn's closing line above", async () => {
+    expect(await run("claude", [title("◐ x"), turnEnd(STILL_RUNNING, PLAIN) + row(5, "⏺ Done."), title("✳ x")], WIDE)).toEqual([
+      "working",
+      "idle",
+    ]);
+  });
+
+  it("a turn that ends while an earlier turn's shell still runs is idle with background work", async () => {
+    expect(await run("claude", [title("◐ x"), turnEnd("✻ Worked for 2s", SHELL), title("✳ x")], WIDE)).toEqual([
+      "working",
+      "idle:background",
+    ]);
+  });
+
+  it("reads a turn that starts and ends inside one read with the screen's background work", async () => {
+    expect(await run("claude", [title("◐ x") + turnEnd(STILL_RUNNING, SHELL) + title("✳ x")], WIDE)).toEqual([
+      "working",
+      "idle:background",
+    ]);
+  });
+
+  const BACKGROUND_DIALOG =
+    row(1, STILL_RUNNING) +
+    row(2, "▔".repeat(80)) +
+    row(3, "  Background work is running") +
+    row(4, "  The following will stop when you exit:") +
+    row(5, "  shell · Wait 3 minutes") +
+    row(7, "  ❯ 1. Exit and stop tasks") +
+    row(8, "    2. Move to background and exit") +
+    row(9, "    3. Stay") +
+    row(10, "") +
+    row(11, "  Enter to confirm · Esc to cancel") +
+    row(12, "");
+
+  it("reads the background dialog after an exit asked while idle with background work; Esc back to the composer is idle with it again", async () => {
+    expect(
+      await play([title("◐ x"), turnEnd(STILL_RUNNING, SHELL), title("✳ x"), 600, BACKGROUND_DIALOG, 10, turnEnd(STILL_RUNNING, SHELL)]),
+    ).toEqual(["working", "idle:background", "waiting:background", "idle:background"]);
+  });
+
+  it("gives the background dialog's rows from under its ▔ rule; a moved selection updates state only", async () => {
+    const states: AgentState[] = [];
+    const scanner = new AgentStateScanner({ agent: "claude", ...WIDE }, (s) => states.push(s));
+    scanner.push(BACKGROUND_DIALOG);
+    await vi.advanceTimersByTimeAsync(10);
+    const options = ["❯ 1. Exit and stop tasks", "  2. Move to background and exit", "  3. Stay"];
+    const lines = (opts: string[]): string[] => [
+      "Background work is running",
+      "The following will stop when you exit:",
+      "shell · Wait 3 minutes",
+      "",
+      ...opts,
+      "",
+      "Enter to confirm · Esc to cancel",
+    ];
+    expect(states).toEqual([{ kind: "waiting", prompt: "background", lines: lines(options) }]);
+    scanner.push(row(7, "    1. Exit and stop tasks") + row(9, "  ❯ 3. Stay"));
+    await vi.advanceTimersByTimeAsync(10);
+    expect(states).toHaveLength(1);
+    expect(scanner.state).toEqual({
+      kind: "waiting",
+      prompt: "background",
+      lines: lines(["  1. Exit and stop tasks", "  2. Move to background and exit", "❯ 3. Stay"]),
+    });
+    scanner.dispose();
+  });
+
+  it("without the ▔ rule, the background dialog's rows start at its first option", async () => {
+    const states: AgentState[] = [];
+    const scanner = new AgentStateScanner({ agent: "claude", ...WIDE }, (s) => states.push(s));
+    scanner.push(row(3, " Background work is running") + row(5, " ❯ 1. Exit and stop tasks") + row(6, "   3. Stay") + row(8, " Enter to confirm · Esc to cancel"));
+    await vi.advanceTimersByTimeAsync(10);
+    expect(states).toEqual([
+      { kind: "waiting", prompt: "background", lines: ["❯ 1. Exit and stop tasks", "  3. Stay", "", "Enter to confirm · Esc to cancel"] },
+    ]);
+    scanner.dispose();
+  });
+
+  it("requires the background dialog's question: its options over the shared footer alone are no dialog", async () => {
+    expect(await run("claude", [row(5, " ❯ 1. Exit and stop tasks") + row(6, "   3. Stay") + row(8, " Enter to confirm · Esc to cancel")], WIDE)).toEqual([]);
+  });
+
+  it("does not read a quoted background dialog as one when the composer is drawn below it", async () => {
+    const quoted = row(1, "  Background work is running") + row(2, "  ❯ 1. Exit and stop tasks") + row(3, "    3. Stay") + row(5, "  Enter to confirm · Esc to cancel");
+    expect(await run("claude", [title("◐ x"), "\x1b[2J" + quoted + COMPOSER + footer(PLAIN), title("✳ x")], WIDE)).toEqual(["working", "idle"]);
   });
 });
 
@@ -422,6 +716,21 @@ describe("AgentStateScanner — codex", () => {
 
   it("reports the approval dialog on screen when the title does not say so", async () => {
     expect(await run("codex", [spin("⠋"), "\x1b[2J" + CODEX_APPROVAL])).toEqual(["working", "waiting:permission"]);
+  });
+
+  it("never reads background work: idle is without it, whatever the last row says", async () => {
+    const states: AgentState[] = [];
+    const scanner = new AgentStateScanner({ agent: "codex", cols: 60, rows: 12 }, (s) => states.push(s));
+    scanner.push(spin("⠋"));
+    scanner.push(at(12, "  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage") + title("repo"));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(states).toEqual([{ kind: "working" }, { kind: "idle", background: false }]);
+    scanner.dispose();
+  });
+
+  it("does not read claude's background dialog", async () => {
+    const dialog = at(2, " Background work is running") + at(4, " ❯ 1. Exit and stop tasks") + at(5, "   3. Stay") + at(7, " Enter to confirm · Esc to cancel");
+    expect(await run("codex", [spin("⠋"), "\x1b[2J" + dialog])).toEqual(["working"]);
   });
 
   it("reports the trust screen", async () => {
