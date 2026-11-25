@@ -26,6 +26,7 @@ import type { FakeHost, FrameConnection } from "../fake-host.js";
 /** Where Pomade keeps its socket and the app keys, relative to its user data. */
 const SOCKET_FILE = "run/pomade.sock";
 const APP_KEYS_DIR = "app-keys";
+const APP_STATE_DIR = "app-state";
 /** A connection that has not been welcomed by then is closed, as by Pomade. */
 const HELLO_TIMEOUT_MS = 5000;
 
@@ -35,6 +36,9 @@ export interface FakeSocketOptions {
   userData: string;
   /** How long a connection may stay without a welcome. Default 5000 ms, as Pomade. */
   helloTimeoutMs?: number;
+  /** The app's state folder (`POMADE_APP_STATE`). Default `<userData>/app-state/<appId>`, as
+   *  Pomade lays it out. Created as needed; never removed. */
+  appState?: string;
 }
 
 /** A welcomed socket client of the fake host. */
@@ -50,9 +54,12 @@ export interface FakeSocket {
   readonly keyFile: string;
   /** The app's key (the key file's content). */
   readonly key: string;
+  /** The app's state folder (`FakeSocketOptions.appState`); it exists once the server is up. */
+  readonly appState: string;
   /** The environment Pomade gives the app's backend (`"backend"`, the default) or one of its
    *  commands: `POMADE_APP_ID`, `POMADE_APP_KEY_FILE`, `POMADE_CLIENT`, `POMADE_SOCKET`,
-   *  `POMADE_WORKSPACE` (the fake's `workspaceRoot`) and, for a backend, `POMADE_KEEPER_SOCKET`.
+   *  `POMADE_APP_STATE`, `POMADE_WORKSPACE` (the fake's `workspaceRoot`) and, for a backend,
+   *  `POMADE_KEEPER_SOCKET`.
    *  Add it to a spawned process's environment. */
   env(role?: ClientRole): Record<string, string>;
   /** The welcomed connections now, in connection order. */
@@ -127,6 +134,9 @@ export async function serveFakeHost(fake: FakeHost, options: FakeSocketOptions):
   if (tooLong) throw new Error(`fake host: ${tooLong}`);
   const appId = fake.manifest.id;
   const { keyFile, key } = await issueKey(userData, appId);
+  // As Pomade: the state folder exists before a backend or command is started with it.
+  const appState = options.appState ?? join(userData, APP_STATE_DIR, appId);
+  await mkdir(appState, { recursive: true });
   const helloTimeoutMs = options.helloTimeoutMs ?? HELLO_TIMEOUT_MS;
   const connections = new Set<Connection>();
 
@@ -206,12 +216,14 @@ export async function serveFakeHost(fake: FakeHost, options: FakeSocketOptions):
     socketPath,
     keyFile,
     key,
+    appState,
     env(role: ClientRole = "backend") {
       return {
         [POMADE_ENV.appId]: appId,
         [POMADE_ENV.keyFile]: keyFile,
         [POMADE_ENV.role]: role,
         [POMADE_ENV.socket]: socketPath,
+        [POMADE_ENV.appState]: appState,
         [POMADE_ENV.workspace]: fake.workspaceRoot,
         ...(role === "backend" ? { [POMADE_ENV.keeperSocket]: keeperSocketPath(userData, appId) } : {}),
       };

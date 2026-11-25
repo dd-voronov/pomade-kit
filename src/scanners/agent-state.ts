@@ -1,6 +1,7 @@
 // What an agent CLI in a terminal is doing — working on a turn, idle at its empty prompt (with or
 // without background work still going), or waiting for the user at a permission, folder-trust,
-// background-work or question prompt, or at a screen no rule names — read from its output stream.
+// background-work, question or consent prompt, or at a screen no rule names — read from its
+// output stream.
 //
 // claude and codex are full-screen TUIs with diff renderers: they send only the cells that
 // changed and position words with cursor moves, so a prompt's text is not reliably present as a
@@ -18,7 +19,11 @@
 //            (trust), "Background work is running" / "❯ 1. …" / "Enter to confirm · Esc to
 //            cancel" (background: an exit asked while background work goes), or the question
 //            form of its AskUserQuestion tool: "☐ <header>" / "❯ 1. …" / "Enter to select · ↑/↓
-//            to navigate · Esc to cancel" (question). The title stays ✳ while a dialog is up.
+//            to navigate · Esc to cancel" (question), or the consent screen of Bypass Permissions
+//            mode, shown at start to a profile that never accepted it and before claude sets any
+//            title: "WARNING: Claude Code running in Bypass Permissions mode" / "❯ No, exit" /
+//            "Yes, I accept" / "Enter to confirm · Esc to cancel" (consent). The title stays ✳
+//            while a dialog is up. A dialog is read whatever the title says, none included.
 //   codex    working — title starts with a braille spinner (U+2800–U+28FF); the title's idle —
 //            any other non-empty title, once a spinner has been seen (the title format is
 //            configurable in codex; without the spinner item the state stays unknown). The empty
@@ -58,8 +63,9 @@
 // footer's count 11 ms later).
 // Working and waiting are reported at once.
 //
-// Probe evidence (claude 2.1.321, 2.1.331 and 2.1.332, codex-cli 0.153.2) is in ./fixtures; the
-// provenance of each capture is recorded in the fixture itself.
+// Probe evidence (claude 2.1.321, 2.1.331 and 2.1.332, codex-cli 0.153.2, and a pomade-runner pty
+// log of the consent screen) is in ./fixtures; the provenance of each capture is recorded in the
+// fixture itself.
 
 import { Terminal } from "./xterm-headless.js";
 
@@ -68,17 +74,20 @@ export type AgentKind = "claude" | "codex";
 /** What the agent waits for: approval of a tool call, trust for the folder it started in,
  *  (`background`) the choice what to do with its background work when an exit is asked while
  *  that work goes, (`question`) the person's pick among options the agent asks with its question
- *  form, or (`unknown`) a screen no rule names that is not its empty prompt. */
-export type AgentPrompt = "permission" | "trust" | "background" | "question" | "unknown";
+ *  form, (`consent`) the person's acceptance of claude's Bypass Permissions mode, asked at start of
+ *  a profile that never accepted it, or (`unknown`) a screen no rule names that is not its empty
+ *  prompt. */
+export type AgentPrompt = "permission" | "trust" | "background" | "question" | "consent" | "unknown";
 
-/** `unknown` until the output says otherwise (before the first title, or under a title format the
- *  scanner does not read). `idle`: the agent is at its empty prompt; `idle.background`: the screen
- *  says its background work is still going — its turn is over, its job may not be.
+/** `unknown` until the output says otherwise (before the first title or dialog, or under a title
+ *  format the scanner does not read). `idle`: the agent is at its empty prompt;
+ *  `idle.background`: the screen says its background work is still going — its turn is over, its
+ *  job may not be.
  *  `waiting.lines`: the prompt as the screen shows it — the dialog's rows from its top to its
  *  footer (prompt `unknown`: the screen's last `UNKNOWN_ROWS` rows, from its first non-blank one),
  *  right-trimmed, their common indent removed; `[]` while only the title says the agent waits
- *  (codex's "Action Required"). `waiting.highlighted` (prompt `question` only): the option the
- *  form highlights — the one Enter picks — without its marker and number. */
+ *  (codex's "Action Required"). `waiting.highlighted` (prompts `question` and `consent`): the
+ *  option the screen highlights — the one Enter picks — without its marker and number. */
 export type AgentState =
   | { kind: "working" }
   | { kind: "idle"; background: boolean }
@@ -108,6 +117,8 @@ interface Dialog {
   /** Where the dialog's text begins: the nearest row above the option row that matches — the row
    *  itself, or (`below`) the row under it. None found: the option row. */
   top: { row: RegExp; below: boolean };
+  /** The highlighted option row, its text in group 1: the dialog's state carries `highlighted`. */
+  highlight?: RegExp;
 }
 
 /** The agent's prompt as the screen shows it: empty, with text typed in it, or not on screen. */
@@ -139,6 +150,8 @@ const CLAUDE_QUESTION_HEADER = /^(?:←\s+)?[☐☒✔]\s/;
 const NUMBERED_OPTION = /^(?:[❯›]\s*)?\d+\.\s/;
 /** A highlighted option row: the option's text in group 1. */
 const HIGHLIGHTED_OPTION = /^[❯›]\s*\d+\.\s+(.*)$/;
+/** The consent screen's highlighted option, numbered or not: its text in group 1. */
+const HIGHLIGHTED_CONSENT = /^❯\s*(?:\d+\.\s+)?(.+)$/;
 
 /** claude's composer: the last "❯" row right under a rule, with the rows down to the next rule
  *  (a prompt of several lines). Empty: that row alone, nothing but faint text after the "❯". */
@@ -182,6 +195,15 @@ const RULES: Record<AgentKind, AgentRules> = {
         option: NUMBERED_OPTION,
         question: CLAUDE_QUESTION_HEADER,
         top: { row: CLAUDE_QUESTION_HEADER, below: false },
+        highlight: HIGHLIGHTED_OPTION,
+      },
+      {
+        prompt: "consent",
+        footer: /^Enter to confirm · Esc to cancel$/,
+        option: /^(?:❯\s*)?(?:\d+\.\s+)?Yes, I accept$/,
+        question: /^WARNING: Claude Code running in Bypass Permissions mode$/,
+        top: CLAUDE_RULE,
+        highlight: HIGHLIGHTED_CONSENT,
       },
     ],
     prompt: claudePrompt,
@@ -429,8 +451,9 @@ export class AgentStateScanner {
         }
       }
       const lines = dedent(shown.slice(top, footerRow + 1));
-      if (dialog.prompt !== "question") return { prompt: dialog.prompt, lines };
-      const highlighted = lines.map((line) => HIGHLIGHTED_OPTION.exec(line.trim())?.[1]).find((text) => text !== undefined);
+      const { highlight } = dialog;
+      if (!highlight) return { prompt: dialog.prompt, lines };
+      const highlighted = lines.map((line) => highlight.exec(line.trim())?.[1]).find((text) => text !== undefined);
       return highlighted === undefined ? { prompt: dialog.prompt, lines } : { prompt: dialog.prompt, lines, highlighted };
     }
     return null;

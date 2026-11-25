@@ -20,11 +20,11 @@ The package installs from a git tag: npm clones it, installs its dev dependencie
 | `pomade-kit/protocol` | Host API v0 in code: messages, `ProjectRef`, `FileEntry`, `FileChange`, error codes, `Manifest` + `parseManifest`, strip icons (`StripIcon`, `resolveFrameTarget`), app tabs (`AppTabKind`, `APP_TAB_KEY_RE`, `checkOpenAppParams`, `checkTabTitle`), shortcuts (`AppShortcut`, `parseChord`, `formatChord`, `chordMatches`), app state rules, the event bus (`PLATFORM_EVENTS`, event name and payload rules, `parseManifestEvents`, the `EventBus` both hosts run), `HOST_API_VERSION`, message guards, workspace path rules, `readFrontmatter` | browser and Node |
 | `pomade-kit/sdk` | `connect()` and the typed client | browser (any `Transport` elsewhere) |
 | `pomade-kit/fake-host` | the Host API in memory, for standalone runs and tests | browser and Node |
-| `pomade-kit/fake-host/node` | the fake host's socket side: an app's backend and commands connect to it as to Pomade (`serveFakeHost`) | Node |
+| `pomade-kit/fake-host/node` | the fake host's socket side: an app's backend and commands connect to it as to Pomade (`serveFakeHost`); the frame relay: a page hosting the app's frames against it (`serveFrameRelay`) | Node |
 | `pomade-kit/frontmatter` | field-only frontmatter writes: `setField`, `removeField`, body writes `setBody` / `getBody`, and the block core Pomade's editor uses | browser and Node |
 | `pomade-kit/schedule` | the schedule format: `parseSchedule` with readable errors, the occurrence engine, `describeSchedule`, `formatSchedule` | browser and Node |
 | `pomade-kit/dates` | date phrases: `parseDatePhrase` (`fri`, `tomorrow`, `+3d`, `nov 20`, `tonight 23:00`, `in 2 hours`) and `currentDay` with a day boundary | browser and Node |
-| `pomade-kit/scanners` | terminal output readers: `MarkerScanner` (Pomade's shell markers), `AttentionScanner` (bell, notifications), `AgentStateScanner` (claude/codex working, idle — with or without background work going — or waiting at a permission, trust, background-work or question prompt, or at a screen no rule names) | browser and Node |
+| `pomade-kit/scanners` | terminal output readers: `MarkerScanner` (Pomade's shell markers), `AttentionScanner` (bell, notifications), `AgentStateScanner` (claude/codex working, idle — with or without background work going — or waiting at a permission, trust, background-work, question or consent prompt, or at a screen no rule names) | browser and Node |
 | `pomade-kit/node` | the Host API over Pomade's socket for backends and commands (`connectSocket`, `stayConnected`, `launchPomade`), `resolveWorkspace()`, `appStateDir()`; `postNotice()` — a notice from a backend or command, with Pomade open or closed; the attach protocol's client (`connectKeeper`, `followSession`, `startKeeper`) | Node |
 | `pomade-kit/keeper` | the keeper: holds an app's terminal sessions so they outlive Pomade, and serves the attach protocol (`runKeeper`). Needs `node-pty` (a peer dependency) | Node |
 
@@ -276,6 +276,19 @@ are `invalid-params`, the workspace's `.pomade` folder `capability-denied`; at m
 them in the file tree, applies them only while the app is installed and available, and deletes them
 when the app is removed. The Workspace scope has none (`invalid-params`).
 
+**Bring a project to the front** (`tabs.open`):
+
+```ts
+await host.project.activate(projectId);        // "__workspace__" = the Workspace scope
+```
+
+`project.activate(projectId)` makes a project the active one, as a click on its row in Pomade's
+Projects panel does: its own active tab shows, and no tab is opened, focused or reordered (to focus a
+tab, use `agentTabs.focus` or `tabs.openApp`). The active project again changes nothing. An unknown id
+is `not-found`, a missing or non-string one `invalid-params`. `project.changed` reaches the app's
+frames as for any switch. It answers a backend and a command too. The fake host changes its active
+project and fires `project.changed`.
+
 ## Choose a folder
 
 ```ts
@@ -374,8 +387,15 @@ await host.agentTabs.setTitle(tabs[0].tabId, null);             // the session i
 await host.agentTabs.focus(tabs[0].tabId);                      // tabs.open
 const { tabId } = await host.agentTabs.launch({ agentId: "claude-pm", projectId: "p1", mode: "full-autonomy", prompt: "Triage the inbox" });
 await host.agentTabs.resume({ agentId: "claude", sessionId: "5f0c…", projectId: "p1" });  // focuses a live tab already on it
-await host.events.subscribe("agentTab.changed", ({ tab, changes }) => { /* opened · closed · session · title · state · project */ });
+await host.events.subscribe("agentTab.changed", ({ tab, changes, session }) => { /* opened · closed · session · title · state · project */ });
 ```
+
+A change that includes `session` also says why (`session`, absent otherwise): `{ cause, previousSessionId }`
+— `cause` is `"first"` (the first session of an agent launched in the tab), `"clear"` (a new, empty
+session: claude `/clear`, codex `/clear` or `/new`), `"fork"` (a copy of the session: claude
+`/branch`, codex `/fork`), `"resume"` (a resume launch, or an in-session `/resume`) or `"unknown"`
+(always when the binding goes to `null`); `previousSessionId` is the session the tab was bound to just
+before, or `null`. A fork names its parent there, so an app can call it "G4 grill (fork)".
 
 Inside a Pomade terminal `POMADE_TAB_ID` names the tab, so a command finds its own tab in the list.
 An agents app serves Pomade's roster as `roster.list` (`RosterListResult`, `checkRosterList`,
@@ -581,7 +601,7 @@ code, and the events. An app's scope folders live per project in memory; `worksp
 | `fake.removeProject(id)` | `project.removed` (the project as it was) to its subscribers, then `project.changed` to the Workspace scope when it was the active project; its group, agents and settings go with it |
 | `fake.clickNotice(index?)` | — (the user clicks a notice the app posted, default the last: its action runs as in Pomade, landing in `openedTabs`). `fake.notices` lists every `notices.post`, normalized |
 | `fake.ready()` | `pomade.ready` (sticky: later subscriptions get it at once) |
-| `fake.renameAgentTab(tabId, title)` / `fake.updateAgentTab(tabId, { sessionId?, state?, projectId?, … })` / `fake.closeAgentTab(tabId)` | `agentTab.changed` naming what changed (the user renamed it; a session bound, a state change, a move; it left the list). Seed tabs with `agentTabs`, the launchable roster with `roster` (default claude, codex), resumable sessions with `sessions`; `fake.agentTabs`, `fake.openedAgentTabs`, `fake.focusedAgentTabs` record what happened |
+| `fake.renameAgentTab(tabId, title)` / `fake.updateAgentTab(tabId, { sessionId?, state?, projectId?, … }, cause?)` / `fake.closeAgentTab(tabId)` | `agentTab.changed` naming what changed (the user renamed it; a session bound, a state change, a move; it left the list). A session change carries `session: { cause, previousSessionId }` — `cause` as given, else `first` for a tab that had none and `unknown` otherwise; `unknown` whenever the session becomes `null`. Seed tabs with `agentTabs`, the launchable roster with `roster` (default claude, codex), resumable sessions with `sessions`; `fake.agentTabs`, `fake.openedAgentTabs`, `fake.focusedAgentTabs` record what happened |
 | `fake.emitEvent(name, payload)` | a platform event or another app's `<appId>:<event>` to the frames subscribed to it |
 | `fake.subscribeAs(appId, name, heard?)` | — (another app subscribes to this app's event `name`: `hasSubscribers` turns true and `events.subscribersChanged` fires; what it hears is pushed to `heard`; returns its unsubscribe). `fake.published` lists every `events.publish` (`{ name, payload }`), `fake.subscriptions` the names the frames subscribe to |
 | `fake.readFile(path)` | — (returns the file's text: what the app's writes left) |
@@ -597,6 +617,7 @@ code, and the events. An app's scope folders live per project in memory; `worksp
 | `fake.renameAppTab(tabId, title)` · `fake.closeAppTab(tabId)` | — (the user renames one of the app's tabs — `tabs.setTitle` and `openApp`'s `title` then leave it — or closes it: it leaves `fake.appTabs`, and the frames showing it get `onClose`) |
 | `fake.overlays` | — (every `overlay.open`, in order: `{ route, height?, anchor }` — `height` as given, absent when none; `anchor` `"center"` when none) |
 | `fake.overlayResizes` | — (every height an overlay frame asked for with `overlay.resize`, in order, as given) |
+| `fake.panelShows` | — (every `panel.show`, in order: `{ icon, route? }` — the icon shown, the call's or the app's first panel icon; `route` as given, absent when none) |
 
 **The app's own tabs.** `tabs.openApp` (and a notice's `openApp` action, and `fake.openAppTab`)
 opens or focuses the app's tab as Pomade does: a route that a strip icon's tab renders (an icon with
@@ -639,12 +660,12 @@ do: `navigator.clipboard.writeText` after a click works, reading the clipboard i
 `playwright.config.ts` (the built app served on one origin, the harness on another).
 
 **An app with a backend** runs it against the fake host's socket, below; its frames then need the
-same fake host, in Node: a harness page relays their postMessage traffic to it (`fake.attach` per
-frame). Working setup: `e2e/backend.spec.ts` with `e2e/harness/remote.ts` (Playwright's
-`exposeBinding` carries frame → host, `page.evaluate` host → frame).
+same fake host, in Node: the frame relay hosts them (below, "The frame relay").
 
 **`dev:fake`:** serve such a harness page with a fixture workspace from the app's own Vite dev
-server, with `?app=` pointing at the app's page — a standalone app with live, scriptable data.
+server, with `?app=` pointing at the app's page — a standalone app with live, scriptable data. With
+a backend: `serveFakeHost` + `serveFrameRelay` on one fake host, the backend spawned with `env()`,
+and the relay's `url` opened in a browser (`port` fixes it).
 
 ## The fake host's socket side — a backend against the fake host
 
@@ -672,9 +693,12 @@ await pomade.close();                                 // Pomade quits: connectio
   key is kept) — Pomade's layout. `pomade.key`, `pomade.keyFile`, `pomade.socketPath`.
 - **`pomade.env(role = "backend")`** is the environment Pomade gives the app's backend or a
   command: `POMADE_APP_ID`, `POMADE_APP_KEY_FILE`, `POMADE_CLIENT`, `POMADE_SOCKET`,
-  `POMADE_WORKSPACE` (the fake host's `workspaceRoot`) and, for a backend,
-  `POMADE_KEEPER_SOCKET` (`<userData>/run/keepers/<appId>.sock`). A test that starts a backend
-  with a keeper kills the keeper too.
+  `POMADE_APP_STATE` (the app's state folder, below), `POMADE_WORKSPACE` (the fake host's
+  `workspaceRoot`) and, for a backend, `POMADE_KEEPER_SOCKET` (`<userData>/run/keepers/<appId>.sock`).
+  A test that starts a backend with a keeper kills the keeper too.
+- **The app's state folder** is `<userData>/app-state/<appId>`, Pomade's layout, or the folder the
+  `appState` option names (`pomade.appState`); it exists once `serveFakeHost` resolves, and stays
+  when the server closes — like the key, it is the caller's (a test removes its `userData`).
 - **Identity:** `hello` must carry the manifest's app id, the key in the key file now (deleting the
   file revokes it) and a role the app has — `backend` needs a manifest `backend`, `command` needs
   `commands`; anything else is `reject` `unauthorized` (Pomade's platform client `pomade` too: the
@@ -690,6 +714,56 @@ await pomade.close();                                 // Pomade quits: connectio
   (`helloTimeoutMs`) or sending a line over 16 MiB is closed. `pomade.clients()` lists the welcomed
   connections (`{ role }`). `close()` ends every connection and removes the socket file; serving
   the same `userData` again is Pomade back — `stayConnected` reconnects.
+
+### The frame relay — the app's real frames against the same fake host
+
+`serveFrameRelay(fake, { app })` serves a page laid out as Pomade's window — the app's strip
+icons, the side panel, the tab strip with the app's own tabs — whose frames load the app's page
+(`app`, on its own origin as in Pomade) and talk to `fake` in Node. With `serveFakeHost` on the same
+fake host, the frames and the backend share one host: a frame's `apps.call` reaches the backend's
+`api.serve`, an event the backend publishes reaches the frames, `tabs.openApp` from either opens a
+tab the page shows. An e2e opens one URL:
+
+```ts
+import { createFakeHost } from "pomade-kit/fake-host";
+import { serveFakeHost, serveFrameRelay } from "pomade-kit/fake-host/node";
+
+const fake = createFakeHost({ manifest, projects, activeProject: "alpha" });
+const pomade = await serveFakeHost(fake, { userData });
+const relay = await serveFrameRelay(fake, { app: "http://localhost:4317/" });   // the built app, served by the e2e
+const backend = spawn(process.execPath, ["dist/backend/main.mjs"], { env: { ...process.env, ...pomade.env() } });
+// pomade.env().POMADE_APP_STATE is <userData>/app-state/<appId>, there already
+
+await page.goto(relay.url);
+const panel = page.frameLocator('[data-testid="panel-frame-board"]');           // the strip icon "board"'s panel
+await panel.getByRole("button", { name: "Refresh" }).click();                    // → apps.call → the backend
+await expect.poll(() => fake.appTabs.length).toBe(1);                           // its tabs.openApp
+const tab = page.frameLocator('[data-testid="tab-frame-app-tab-1"]');
+
+backend.kill();
+await relay.close();                                                             // the page's frames detach
+await pomade.close();
+```
+
+- **The page:** a button per strip icon (`strip-<iconId>`; an icon with action `panel` or `both`
+  shows its panel, `tab` or `both` opens its tab — `fake.openAppTab({ icon })`); the first panel
+  icon's panel shown at load. Panel frames are `panel-frame-<iconId>`, mounted on first show, one
+  shown at a time (the others hidden: `setHidden`). The tab strip shows `fake.appTabs` — those open
+  when the page connects too, the last in front — as the fake host's tab model changes: opened and
+  focused (shown), retitled, closed (removed); a tab is `tab-<tabId>` with its close button
+  `close-tab-<tabId>` (`fake.closeAppTab`), and its frame `tab-frame-<tabId>` with `data-tab-id`,
+  `data-project-id`; "+" (`new-tab`) is the new-tab menu (`fake.openAppTab()`). A tab frame follows
+  its tab's route. Every frame is mounted by `mountApp` — `allow="clipboard-write"`, and an overlay a
+  frame opens (`iframe[data-surface="overlay"]`) sits over a scrim with the focus and gives it back
+  when it closes. Styled with the kit's tokens.
+- **Sessions:** each page load is a session; when the page goes away its frames detach (their
+  subscriptions end). `relay.sessions()` counts the pages connected; `close()` detaches every
+  frame and stops serving, and the page says the relay closed.
+- **Transport:** the page streams from the relay (server-sent events) and posts to it in order — no
+  WebSocket, no dependency; everything on `127.0.0.1`, a free port unless `port` names one.
+- **Needs the built kit:** the page runs the kit's own browser code from `dist/` (as installed; in
+  this repo, `npm run build` first). Working setup: `e2e/relay.spec.ts` (a scripted backend) and
+  `e2e/backend.spec.ts` (hello and its backend).
 
 ## Validate a manifest
 
@@ -748,11 +822,12 @@ open's `{ route, height?, anchor }`.
 The frame is 420 px wide and 220 px high (`OVERLAY_WIDTH`, `OVERLAY_DEFAULT_HEIGHT`). The app sizes the
 height — `height` in `overlay.open`, or `host.overlay.resize({ height })` from the overlay frame as its
 form grows (`invalid-params` from a tab or a panel frame). A height is a positive number; Pomade rounds it
-and clamps it to its limits (at most 60% of the pane area), so read `window.innerHeight` for what the frame
+and clamps it to its limits (at most 60% of the window below the title bar), so read `window.innerHeight` for what the frame
 got; the width never changes (`checkOverlayHeight` / `checkOverlayAnchor` hold the param rules). `anchor`
 is `"center"` (default) or `"panel"` — beside the side panel, for an overlay asked for from a panel. The user
-can drag the overlay by its head; Pomade remembers where it was left, per app, and the app's next overlay
-opens there — a remembered position wins over `anchor`. The fake host records `height` and `anchor` in
+can drag the overlay by its head anywhere in the window; Pomade remembers where it was left, per app, and
+the app's next overlay that names no place — the shortcut, `"center"` or no anchor — opens there, while
+`"panel"` opens beside the side panel every time. The fake host records `height` and `anchor` in
 `fake.overlays` and each `overlay.resize` height in `fake.overlayResizes`.
 
 `mountApp` mounts the overlay a mounted tab or panel frame opens, so an app's overlay flow runs
@@ -765,6 +840,25 @@ forwarded Escape or a click on the scrim, and focus returns to the frame that ca
 mounted directly (`surface: "overlay"`) is placed the same way and gives focus back to what had it
 before. Without `mountApp`, `attach(post, { onOverlayOpen, onOverlayResize })` hands the open
 (`{ route, height?, anchor }`, after its result) and each resize to the test.
+
+**The app's own side panel.**
+
+```ts
+await host.panel.show({ route: `note/${id}` });   // the first panel icon's panel, at that route
+await host.panel.show({ icon: "board" });          // another panel icon; its route left as it is
+```
+
+`host.panel.show({ icon?, route? })` brings the app's own side panel forward, as a click on its strip
+icon does — the side panel expands when collapsed — but never opens a tab, even for an icon with
+action `both`. `icon` names one of the app's strip icons with action `panel` or `both` (default the first
+such icon, `panelShowIcon`); none → `not-found`; a non-string `icon` or `route` → `invalid-params`
+(`checkShowPanelParams`). With `route` the panel frame is there afterwards: a mounted frame gets
+`route.changed` (`host.onRouteChange`), a frame the call creates is welcomed at it; without, its route is
+left as it is. Any of the app's frames may call it — tab, overlay or panel, shown or hidden; over the
+socket it is `capability-denied`. Keyboard focus stays where it is: an open overlay keeps it and stays
+open. The fake host records each call in `fake.panelShows`; a mounted panel frame of that icon is shown
+(`setHidden(false)`) and gets the route change, the app's other panel frames are hidden, and a panel
+frame attached later for that icon opens at the route.
 
 `skills` lists the agent skills the app ships — folders inside the build, each holding a
 `SKILL.md`; a folder's last segment is the skill's name (`SKILL_NAME_RE`, unique):
@@ -1065,7 +1159,9 @@ const attention = new AttentionScanner(() => markUnread());   // a bell or an OS
 
 const agent = new AgentStateScanner({ agent: "claude", cols, rows }, (state) => {
   // { kind: "working" } | { kind: "idle", background: boolean }
-  // | { kind: "waiting", prompt: "permission" | "trust" | "background", lines: string[] } | { kind: "unknown" }
+  // | { kind: "waiting", prompt: "permission" | "trust" | "background" | "question" | "consent" | "unknown",
+  //     lines: string[], highlighted?: string }
+  // | { kind: "unknown" }
 });
 
 pty.onData((data) => { markers.push(data); attention.push(data); agent.push(data); });
@@ -1089,6 +1185,7 @@ pty.onExit(() => agent.dispose());
 | waiting: trust | "Yes, I trust this folder" · "Enter to confirm · Esc to cancel" | "› 1. Yes, continue" · "Press enter to continue" |
 | waiting: background | "Background work is running" · "❯ 1. Exit and stop tasks" · "Enter to confirm · Esc to cancel" | never |
 | waiting: question | the AskUserQuestion form: "☐ <header>" (several questions: a tab row "←  ☐ … ✔ Submit  →") · "❯ 1. …" · "Enter to select · ↑/↓ to navigate · Esc to cancel" | never |
+| waiting: consent | the Bypass Permissions consent screen, at start of a profile that never accepted it, before any title: "WARNING: Claude Code running in Bypass Permissions mode" · "❯ No, exit" / "Yes, I accept" · "Enter to confirm · Esc to cancel" | never |
 | waiting: unknown | the idle title over any other screen | the idle title over any other screen |
 
 - **Idle only on positive evidence: the agent's empty prompt on screen.** The idle title over a
@@ -1100,10 +1197,15 @@ pty.onExit(() => agent.dispose());
   person's, or the consumer's own command on its way — keeps an `idle` already reported; before
   one, the prompt with text in it is `unknown` too. Faint text in the prompt is a placeholder:
   the prompt is empty.
-- **`waiting.highlighted`** (prompt `question` only): the option the form highlights — the one
-  Enter picks — as its row shows it, without the "❯" and the number ("Yes, append
-  (Recommended)"). A moved highlight updates `agent.state` without a new event; the form's next
-  question (its rows above the options changed) is a new `waiting` event.
+- **`waiting.highlighted`** (prompts `question` and `consent`): the option the screen highlights —
+  the one Enter picks — as its row shows it, without the "❯" and the number ("Yes, append
+  (Recommended)", "No, exit"). A moved highlight updates `agent.state` without a new event; the
+  form's next question (its rows above the options changed) is a new `waiting` event.
+- **Dialogs are read whatever the title says, none included.** claude draws the consent screen
+  before it sets any title, so `consent` is the first state a run of such a profile reports; its
+  `lines` run from the warning to the footer. "Yes, I accept" replaces it with claude's start
+  screen: `idle` once the empty prompt and the idle title hold. A transcript quoting the warning
+  has the composer below it and does not count.
 - A dialog counts only while its footer is the **last non-blank row** on screen, where both CLIs
   draw a live prompt. A transcript that quotes a prompt has the composer below it and does not
   count.
@@ -1143,16 +1245,17 @@ pty.onExit(() => agent.dispose());
   shift the rest of its row.
 - Events are asynchronous (after the chunk is parsed); `await agent.settled()` waits for
   everything pushed so far. `agent.state` is the last reported state.
-- `unknown` until the output says otherwise: before the first title, or under a codex
+- `unknown` until the output says otherwise: before the first title or dialog, or under a codex
   `[tui].terminal_title` without the spinner (the scanner never guesses idle).
 - Create the scanner when the agent starts and dispose it when it exits; after an exit the
   screen still holds whatever the CLI left there.
 - Evidence: real captures of claude 2.1.321 and codex-cli 0.153.2 answering permission prompts,
   of claude 2.1.331 ending turns with a background shell — asked to exit, staying with Esc,
-  going on by itself when the shell ends — and of claude 2.1.332 asking with its question form
-  (`src/scanners/fixtures/`, provenance in each file), replay in the unit suite with their
-  recorded timing (`claude-background-exit`'s and `claude-question-form`'s are reconstructed, as
-  their provenance says).
+  going on by itself when the shell ends — of claude 2.1.332 asking with its question form, and
+  Runner's pty log of claude's consent screen (`src/scanners/fixtures/`, provenance in each
+  file), replay in the unit suite with their recorded timing (`claude-background-exit`'s,
+  `claude-question-form`'s and `claude-bypass-consent`'s are reconstructed, as their provenance
+  says).
 
 ## Calling other apps — the broker
 
@@ -1234,7 +1337,7 @@ if (up.status === "connected") up.host;      // up.launched: this call started i
   `rejected`. It throws only when the identity is not configured — no app id, no key.
 - Options override the environment: `socketPath`, `appId`, `key` / `keyFile`, `role`
   (`"backend"` | `"command"`, default `POMADE_CLIENT`, else `"command"`), `env`, `timeoutMs`.
-- Over the socket `files.pickFolder`, `files.pickFile`, `git.watch`, `overlay.open`, `overlay.resize` and `overlay.close` are `capability-denied`
+- Over the socket `files.pickFolder`, `files.pickFile`, `git.watch`, `overlay.open`, `overlay.resize`, `overlay.close` and `panel.show` are `capability-denied`
   (they need a frame); everything else is as for the app's frames, under its manifest.
 - `launchPomade()` connects when Pomade runs; otherwise it runs the launch Pomade recorded in
   `host.json` (`open -a` for the installed app), without `ELECTRON_RUN_AS_NODE`, and retries the

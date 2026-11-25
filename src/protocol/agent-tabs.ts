@@ -48,10 +48,28 @@ export type AgentTabChange = "opened" | "closed" | "session" | "title" | "state"
 
 export const AGENT_TAB_CHANGES: readonly AgentTabChange[] = ["opened", "closed", "session", "title", "state", "project"];
 
-/** `agentTab.changed` — the tab as it is now, and what changed. */
+/** Why a tab's session changed. `first`: the first session of an agent launched in the tab;
+ *  `clear`: the person started a new, empty session in the tab (claude `/clear`, codex `/clear` or
+ *  `/new`); `fork`: the tab moved to a copy of its session (claude `/branch`, codex `/fork`, or a
+ *  transcript that records its parent); `resume`: the tab took up an existing session (a resume
+ *  launch, or an in-session `/resume`); `unknown`: Pomade cannot tell — always when the binding
+ *  goes to `null`. */
+export type AgentTabSessionCause = "first" | "clear" | "fork" | "resume" | "unknown";
+
+export const AGENT_TAB_SESSION_CAUSES: readonly AgentTabSessionCause[] = ["first", "clear", "fork", "resume", "unknown"];
+
+/** How a tab's session changed: why, and the session the tab was bound to just before (`null`: none). */
+export interface AgentTabSessionChange {
+  cause: AgentTabSessionCause;
+  previousSessionId: string | null;
+}
+
+/** `agentTab.changed` — the tab as it is now, and what changed. `session` is there exactly when
+ *  `changes` holds `"session"`. */
 export interface AgentTabChangedPayload {
   tab: AgentTabInfo;
   changes: AgentTabChange[];
+  session?: AgentTabSessionChange;
 }
 
 // ── Methods ─────────────────────────────────────────────────────────────────
@@ -266,15 +284,35 @@ export function pickAgentTabInfo(v: AgentTabInfo): AgentTabInfo {
   };
 }
 
-/** True for a well-formed `agentTab.changed` payload (at least one change, each known). */
+/** True for a well-formed `AgentTabSessionChange`. */
+export function isAgentTabSessionChange(v: unknown): v is AgentTabSessionChange {
+  return (
+    isObj(v) &&
+    (AGENT_TAB_SESSION_CAUSES as readonly unknown[]).includes(v.cause) &&
+    (v.previousSessionId === null || typeof v.previousSessionId === "string")
+  );
+}
+
+/** True for a well-formed `agentTab.changed` payload: at least one change, each known; `session`,
+ *  when present, well-formed and only with a `"session"` change. */
 export function isAgentTabChanged(v: unknown): v is AgentTabChangedPayload {
   return (
     isObj(v) &&
     isAgentTabInfo(v.tab) &&
     Array.isArray(v.changes) &&
     v.changes.length > 0 &&
-    v.changes.every((c) => (AGENT_TAB_CHANGES as readonly unknown[]).includes(c))
+    v.changes.every((c) => (AGENT_TAB_CHANGES as readonly unknown[]).includes(c)) &&
+    (v.session === undefined || (v.changes.includes("session") && isAgentTabSessionChange(v.session)))
   );
+}
+
+/** A copy of an `agentTab.changed` payload with only its own fields. */
+export function pickAgentTabChanged(v: AgentTabChangedPayload): AgentTabChangedPayload {
+  return {
+    tab: pickAgentTabInfo(v.tab),
+    changes: [...v.changes],
+    ...(v.session !== undefined ? { session: { cause: v.session.cause, previousSessionId: v.session.previousSessionId } } : {}),
+  };
 }
 
 // ── The roster an agents app serves (PLATFORM rule 7) ───────────────────────

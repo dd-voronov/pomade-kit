@@ -9,6 +9,7 @@ export {
   type FakeAppTabChange,
   type FakeBadge,
   type FakeOpenedOverlay,
+  type FakeShownPanel,
   type FakePublishedEvent,
   type FakeHostOptions,
   type FrameOptions,

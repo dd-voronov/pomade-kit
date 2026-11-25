@@ -28,6 +28,9 @@ import {
   METHOD_CAPABILITY,
   WORKSPACE_PROJECT_ID,
   checkOverlayAnchor,
+  checkShowPanelParams,
+  panelShowIcon,
+  panelShowNotFound,
   checkTabRoute,
   checkTabTitle,
   type CheckedOpenAppParams,
@@ -58,6 +61,7 @@ import {
   type StripIcon,
   type Surface,
   type AgentTabInfo,
+  type AgentTabSessionCause,
   type AgentTabState,
 } from "../protocol/index.js";
 import { isPlainEscape } from "../sdk/keys.js";
@@ -191,6 +195,14 @@ export interface FakeOpenedOverlay {
   anchor: OverlayAnchor;
 }
 
+/** A side panel the app brought forward (`panel.show`), as the fake host records it. */
+export interface FakeShownPanel {
+  /** The strip icon whose panel is shown — the one the call named, else the app's first panel icon. */
+  icon: string;
+  /** The route the call gave; absent when it gave none (the panel's route is left as it is). */
+  route?: string;
+}
+
 /** A strip icon's badge (`strip.setBadge`). */
 export interface FakeBadge {
   /** ≥ 1; a count of 0 removes the badge. */
@@ -304,6 +316,10 @@ export class FakeHost {
   readonly overlays: FakeOpenedOverlay[] = [];
   /** Every height an overlay frame asked for with `overlay.resize`, in order, as given. */
   readonly overlayResizes: number[] = [];
+  /** Every side panel the app brought forward (`panel.show`), in order. */
+  readonly panelShows: FakeShownPanel[] = [];
+  /** The route `panel.show` gave each strip icon's panel: a panel frame attached later for it opens there. */
+  private readonly panelRoutes = new Map<string, string>();
   /** Every picker the app opened (`files.pickFolder`, `files.pickFile`), in order. */
   readonly pickRequests: FakePickRequest[] = [];
   private readonly pickAnswers: (string | null)[] = [];
@@ -448,6 +464,7 @@ export class FakeHost {
       if (tab.key !== undefined) target.key = tab.key;
       if (tab.kind !== undefined) target.kind = tab.kind;
     } else if (open.route !== undefined) target.route = open.route;
+    else if (surface === "panel" && target.icon !== undefined) target.route = this.panelRoutes.get(target.icon) ?? target.route;
     const frame: Frame = {
       post,
       target,
@@ -775,9 +792,14 @@ export class FakeHost {
     this.agentTabModel.rename(tabId, title);
   }
 
-  /** Something happened in an agent tab — a session bound, a state change, a move: `agentTab.changed` names what changed. */
-  updateAgentTab(tabId: string, patch: Partial<Pick<AgentTabInfo, "sessionId" | "state" | "projectId" | "cwd" | "launchedAt">>): void {
-    this.agentTabModel.update(tabId, patch);
+  /** Something happened in an agent tab — a session bound, a state change, a move: `agentTab.changed` names what changed.
+   *  A session change carries `cause` (default `first` for a tab that had none, else `unknown`; always `unknown` for `null`). */
+  updateAgentTab(
+    tabId: string,
+    patch: Partial<Pick<AgentTabInfo, "sessionId" | "state" | "projectId" | "cwd" | "launchedAt">>,
+    cause?: AgentTabSessionCause,
+  ): void {
+    this.agentTabModel.update(tabId, patch, cause);
   }
 
   /** An agent tab closes, or its agent hands the shell back: it leaves the list (`agentTab.changed` with `closed`). */
@@ -1046,6 +1068,7 @@ export class FakeHost {
       case "project.getScopeFolders":
       case "project.addScopeFolder":
       case "project.removeScopeFolder":
+      case "project.activate":
         return dispatchProjects(this.data, method, params);
       case "files.symlink":
       case "files.removeSymlink":
@@ -1089,6 +1112,23 @@ export class FakeHost {
         // After the result is posted, like Pomade: the caller hears its answer, then the overlay opens.
         const onOpen = frame.onOverlayOpen;
         if (onOpen) setTimeout(() => onOpen({ ...opened }), 0);
+        return {};
+      }
+      case "panel.show": {
+        const checked = checkShowPanelParams(params);
+        if (!checked.ok) throw new CallError("invalid-params", checked.message);
+        const { icon, route } = checked.value;
+        const shown = panelShowIcon(this.strip, icon);
+        if (!shown) throw new CallError("not-found", panelShowNotFound(icon));
+        if (route !== undefined) this.panelRoutes.set(shown.id, route);
+        this.panelShows.push({ icon: shown.id, ...(route !== undefined ? { route } : {}) });
+        // The side panel shows one panel: this icon's frames are shown (at `route`), the app's other panel frames hidden.
+        for (const other of this.frames) {
+          if (other.target.surface !== "panel" || other.tab) continue;
+          const mine = other.target.icon === shown.id;
+          other.hidden = !mine;
+          if (mine && route !== undefined) this.navigateFrame(other, route);
+        }
         return {};
       }
       case "overlay.resize": {

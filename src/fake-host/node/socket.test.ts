@@ -117,11 +117,37 @@ describe("serveFakeHost: the socket and the key", () => {
       POMADE_APP_KEY_FILE: server.keyFile,
       POMADE_CLIENT: "backend",
       POMADE_SOCKET: server.socketPath,
+      POMADE_APP_STATE: `${userData}/app-state/agents`,
       POMADE_WORKSPACE: "/ws/root",
       POMADE_KEEPER_SOCKET: `${userData}/run/keepers/agents.sock`,
     });
     expect(server.env("command")).not.toHaveProperty("POMADE_KEEPER_SOCKET");
     expect(server.env("command").POMADE_CLIENT).toBe("command");
+  });
+
+  it("gives backend and commands the app's state folder, <userData>/app-state/<id>, existing and kept when the server closes", async () => {
+    const { server, userData } = await serve();
+    const appState = `${userData}/app-state/agents`;
+    expect(server.appState).toBe(appState);
+    expect(server.env("backend").POMADE_APP_STATE).toBe(appState);
+    expect(server.env("command").POMADE_APP_STATE).toBe(appState);
+    expect(statSync(appState).isDirectory()).toBe(true);
+    await server.close();
+    expect(statSync(appState).isDirectory()).toBe(true);
+  });
+
+  it("uses the state folder the caller names, created as needed and kept when the server closes", async () => {
+    const fake = createFakeHost({ manifest: MANIFEST });
+    const userData = mkdtempSync("/tmp/pk-fs-");
+    cleanups.push(() => rmSync(userData, { recursive: true, force: true }));
+    const appState = `${userData}/elsewhere/state`;
+    const server = await serveFakeHost(fake, { userData, appState });
+    expect(server.appState).toBe(appState);
+    expect(server.env().POMADE_APP_STATE).toBe(appState);
+    expect(statSync(appState).isDirectory()).toBe(true);
+    expect(existsSync(`${userData}/app-state`)).toBe(false);
+    await server.close();
+    expect(statSync(appState).isDirectory()).toBe(true);
   });
 
   it("keeps a key already issued under the user data", async () => {
@@ -259,7 +285,7 @@ describe("a socket session", () => {
   it("is refused the frame-only methods", async () => {
     const { server } = await serve({ manifest: { ...MANIFEST, capabilities: [...MANIFEST.capabilities, "git.read"] } });
     const backend = await client(server);
-    for (const call of [() => backend.files.pickFolder(), () => backend.git.watch({}, () => undefined), () => backend.overlay.open()]) {
+    for (const call of [() => backend.files.pickFolder(), () => backend.git.watch({}, () => undefined), () => backend.overlay.open(), () => backend.panel.show()]) {
       await expect(call()).rejects.toMatchObject({ code: "capability-denied" });
     }
   });

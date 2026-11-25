@@ -422,6 +422,12 @@ export interface ProjectIdParams {
   projectId: string;
 }
 
+/** `project.activate` — bring a project to the front. */
+export interface ProjectActivateParams {
+  /** The project to make active; `"__workspace__"` is the Workspace scope. */
+  projectId: string;
+}
+
 /** The calling app's own settings for one project. */
 export interface ProjectSettingsResult {
   settings: Record<string, JsonValue>;
@@ -577,6 +583,14 @@ export interface ResizeOverlayParams {
   height: number;
 }
 
+/** `panel.show` — bring the calling app's own side panel forward, as a click on its strip icon does. */
+export interface ShowPanelParams {
+  /** The strip icon (action `panel` or `both`) whose panel to show; default the app's first such icon. */
+  icon?: string;
+  /** The route the panel frame is at afterwards; absent = the panel's route is left as it is. */
+  route?: string;
+}
+
 // ── Broker (pomade:E-028) ──────────────────────────────────────────────────
 
 /** `apps.call` — call a method another app (or this app's own backend) offers through Pomade. */
@@ -657,6 +671,7 @@ export interface HostMethods {
   "project.getScopeFolders": { params: ProjectIdParams; result: ScopeFoldersResult };
   "project.addScopeFolder": { params: ScopeFolderParams; result: ScopeFolderResult };
   "project.removeScopeFolder": { params: ScopeFolderParams; result: Record<string, never> };
+  "project.activate": { params: ProjectActivateParams; result: Record<string, never> };
   "files.symlink": { params: SymlinkParams; result: Record<string, never> };
   "files.removeSymlink": { params: RemoveSymlinkParams; result: Record<string, never> };
   "files.pickFolder": { params: PickFolderParams; result: PickFolderResult };
@@ -670,6 +685,7 @@ export interface HostMethods {
   "overlay.open": { params: OpenOverlayParams; result: Record<string, never> };
   "overlay.resize": { params: ResizeOverlayParams; result: Record<string, never> };
   "overlay.close": { params: Record<string, never>; result: Record<string, never> };
+  "panel.show": { params: ShowPanelParams; result: Record<string, never> };
   "git.getState": { params: GitStateParams; result: GitStateResult };
   "git.watch": { params: GitStateParams; result: WatchResult };
   "git.unwatch": { params: UnwatchParams; result: Record<string, never> };
@@ -721,6 +737,7 @@ export const METHOD_CAPABILITY: Readonly<Record<MethodName, MethodCapability>> =
   "project.getScopeFolders": "project.read",
   "project.addScopeFolder": "project.write",
   "project.removeScopeFolder": "project.write",
+  "project.activate": "tabs.open",
   "files.symlink": "files.symlink",
   "files.removeSymlink": "files.symlink",
   "files.pickFolder": "files.read",
@@ -734,6 +751,7 @@ export const METHOD_CAPABILITY: Readonly<Record<MethodName, MethodCapability>> =
   "overlay.open": null,
   "overlay.resize": null,
   "overlay.close": null,
+  "panel.show": null,
   "git.getState": "git.read",
   "git.watch": "git.read",
   "git.unwatch": "git.read",

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  AGENT_TAB_SESSION_CAUSES,
   checkAgentTabTitle,
   checkRosterList,
   isAgentTabChanged,
@@ -94,6 +95,30 @@ describe("agentTab.changed", () => {
   it("reaches the app with only the documented fields", () => {
     const msg = parseHostMessage({ channel: "pomade", type: "event", name: "agentTab.changed", payload: { tab: { ...TAB, extra: 1 }, changes: ["title", "session"] } });
     expect(msg).toEqual({ channel: "pomade", type: "event", name: "agentTab.changed", payload: { tab: TAB, changes: ["title", "session"] } });
+  });
+
+  it("a session change may say why: a known cause and the previous session, only with a session change", () => {
+    const bound = { ...TAB, sessionId: "s2" };
+    expect(isAgentTabChanged({ tab: bound, changes: ["session"], session: { cause: "fork", previousSessionId: "s1" } })).toBe(true);
+    expect(isAgentTabChanged({ tab: bound, changes: ["session"], session: { cause: "first", previousSessionId: null } })).toBe(true);
+    for (const cause of AGENT_TAB_SESSION_CAUSES) {
+      expect(isAgentTabChanged({ tab: bound, changes: ["session"], session: { cause, previousSessionId: null } })).toBe(true);
+    }
+    expect(isAgentTabChanged({ tab: bound, changes: ["session"], session: { cause: "branch", previousSessionId: "s1" } })).toBe(false);
+    expect(isAgentTabChanged({ tab: bound, changes: ["session"], session: { cause: "fork" } })).toBe(false);
+    expect(isAgentTabChanged({ tab: bound, changes: ["session"], session: { cause: "fork", previousSessionId: 7 } })).toBe(false);
+    expect(isAgentTabChanged({ tab: bound, changes: ["title"], session: { cause: "fork", previousSessionId: "s1" } })).toBe(false);
+  });
+
+  it("the session change reaches the app with only its documented fields", () => {
+    const payload = { tab: { ...TAB, sessionId: "s2" }, changes: ["session"], session: { cause: "clear", previousSessionId: "s1", extra: 1 } };
+    const msg = parseHostMessage({ channel: "pomade", type: "event", name: "agentTab.changed", payload });
+    expect(msg).toEqual({
+      channel: "pomade",
+      type: "event",
+      name: "agentTab.changed",
+      payload: { tab: { ...TAB, sessionId: "s2" }, changes: ["session"], session: { cause: "clear", previousSessionId: "s1" } },
+    });
   });
 });
 

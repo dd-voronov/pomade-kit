@@ -1,5 +1,5 @@
 // Hello with its real backend, both against one fake host: the backend (a Node process) connects
-// to the fake host's socket as to Pomade, the UI runs in the browser with its frames relayed to
+// to the fake host's socket as to Pomade, the UI runs in the frame relay's page with its frames on
 // the same fake host in this test process — so the UI's `apps.call` goes through the fake host's
 // broker to the backend and back, and the app's own tabs open, focus and change route as in Pomade.
 
@@ -11,22 +11,21 @@ import { fileURLToPath } from "node:url";
 import { expect, test, type Page } from "@playwright/test";
 
 import { connectSocket } from "../src/node/index.js";
-import { createFakeHost, type FakeHost, type FrameOptions } from "../src/fake-host/index.js";
-import { serveFakeHost, type FakeSocket } from "../src/fake-host/node/index.js";
+import { createFakeHost, type FakeHost } from "../src/fake-host/index.js";
+import { serveFakeHost, serveFrameRelay, type FakeSocket, type FrameRelay } from "../src/fake-host/node/index.js";
 import manifest from "../examples/hello/public/manifest.json" with { type: "json" };
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const APP = "http://localhost:4317/";
-const REMOTE = "http://localhost:4318/remote.html";
 const BACKEND = join(ROOT, "examples/hello/public/backend/main.mjs");
 
-/** The backend imports `pomade-kit/node` from dist/: it must be built from the current sources. */
+/** The backend imports `pomade-kit/node` from dist/, the relay's page runs dist/: both must be built from the current sources. */
 function requireFreshDist(): void {
   const built = join(ROOT, "dist/node/socket.js");
   if (!existsSync(built)) throw new Error("run `npm run build` first: hello's backend runs dist/");
   const newest = (dir: string): number =>
     Math.max(...readdirSync(dir).map((f) => (f.endsWith(".ts") && !f.endsWith(".test.ts") ? statSync(join(dir, f)).mtimeMs : 0)));
-  for (const dir of ["src/node", "src/sdk", "src/protocol"]) {
+  for (const dir of ["src/node", "src/sdk", "src/protocol", "src/fake-host"]) {
     if (newest(join(ROOT, dir)) > statSync(built).mtimeMs) throw new Error(`dist/ is older than ${dir}: run \`npm run build\``);
   }
 }
@@ -34,25 +33,12 @@ function requireFreshDist(): void {
 interface World {
   fake: FakeHost;
   server: FakeSocket;
+  relay: FrameRelay;
   userData: string;
   backend: ChildProcess | null;
 }
 
 let world: World;
-
-/** Attach a frame of the page to the fake host and mount it: what the host posts is delivered in order. */
-async function mountFrame(page: Page, frameId: string, open: FrameOptions): Promise<void> {
-  let queue: Promise<unknown> = Promise.resolve();
-  const connection = world.fake.attach((message) => {
-    // As JSON text: what postMessage carries is plain JSON, and the page parses it back.
-    const text = JSON.stringify(message);
-    queue = queue.then(() => page.evaluate(([id, json]) => window.deliver(id, JSON.parse(json)), [frameId, text] as const)).catch(() => undefined);
-  }, open);
-  frameConnections.set(frameId, connection);
-  await page.evaluate(([id, src, surface]) => window.mountFrame(id, src, surface), [frameId, APP, open.tabId !== undefined ? "tab" : (open.surface ?? "tab")] as const);
-}
-
-const frameConnections = new Map<string, ReturnType<FakeHost["attach"]>>();
 
 /** A socket client of the app, as a second backend connection would be. */
 async function socketClient() {
@@ -61,8 +47,9 @@ async function socketClient() {
   return r.host;
 }
 
+/** A frame of the relay's page: `panel` (hello's panel) or an app tab's frame (`tab-<tabId>`). */
 function frame(page: Page, frameId: string) {
-  return page.frameLocator(`iframe[data-frame="${frameId}"]`);
+  return page.frameLocator(`[data-testid="${frameId === "panel" ? "panel-frame-hello" : `tab-frame-${frameId.slice("tab-".length)}`}"]`);
 }
 
 /** Start hello's backend with the environment Pomade gives it — without a keeper socket: the
@@ -98,23 +85,15 @@ test.beforeEach(async ({ page }) => {
     files: { "Projects/alpha/docs/roadmap/E-001-first.md": "---\nid: E-001\nstatus: planned\ntitle: First\n---\n" },
   });
   const server = await serveFakeHost(fake, { userData });
-  world = { fake, server, userData, backend: null };
-  frameConnections.clear();
-  await page.exposeBinding("toHost", (_source, frameId: string, data: unknown) => frameConnections.get(frameId)?.receive(data));
-  // A tab the app opens gets a frame; a tab brought to the front is shown.
-  fake.onAppTab(({ change, tab }) => {
-    const frameId = `tab-${tab.tabId}`;
-    if (change === "open") void mountFrame(page, frameId, { tabId: tab.tabId });
-    else if (change === "focus") void page.evaluate((id) => window.showTab(id), frameId).catch(() => undefined);
-  });
-  await page.goto(REMOTE);
-  await mountFrame(page, "panel", { surface: "panel", icon: "hello" });
+  const relay = await serveFrameRelay(fake, { app: APP });
+  world = { fake, server, relay, userData, backend: null };
+  await page.goto(relay.url);
   await expect(frame(page, "panel").getByTestId("state")).toHaveText("Project: Alpha");
 });
 
 test.afterEach(async () => {
   await stopBackend();
-  for (const connection of frameConnections.values()) connection.detach();
+  await world.relay.close();
   await world.server.close();
   rmSync(world.userData, { recursive: true, force: true });
 });

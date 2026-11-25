@@ -27,6 +27,7 @@ import {
   type DeleteFileResult,
   type OpenOverlayParams,
   type ResizeOverlayParams,
+  type ShowPanelParams,
   type ReadFileParams,
   type ReadFileResult,
   type RemoveFieldParams,
@@ -164,6 +165,10 @@ export interface HostClient {
     /** Take one of this app's scope folders out of the project's scope; an unknown one is a no-op
      *  (`project.write`). */
     removeScopeFolder(params: ScopeFolderParams): Promise<void>;
+    /** Bring a project to the front, as a click on its row in the Projects panel: its own active tab
+     *  shows, no tab is opened, focused or reordered; `"__workspace__"` is the Workspace scope; the
+     *  active project changes nothing (`tabs.open`). */
+    activate(projectId: string): Promise<void>;
   };
   readonly files: {
     readFolder(params: ReadFolderParams): Promise<ReadFolderResult>;
@@ -242,6 +247,12 @@ export interface HostClient {
     resize(params: ResizeOverlayParams): Promise<void>;
     /** Close this overlay frame; focus returns where it was. Only for `welcome.surface === "overlay"`. */
     close(): Promise<void>;
+  };
+  readonly panel: {
+    /** Bring this app's own side panel forward, as a click on its strip icon does: the side panel expands and shows the
+     *  panel of `icon` (default the app's first icon with action `panel` or `both`), at `route` when given. Keyboard focus
+     *  stays where it is. From any of the app's frames, shown or hidden. An icon with no panel is `not-found`. */
+    show(params?: ShowPanelParams): Promise<void>;
   };
   readonly apps: {
     /** Call a method another app (or this app's own backend) offers. Rejects with `HostError`:
@@ -481,6 +492,9 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
       async removeScopeFolder(params) {
         await call("project.removeScopeFolder", params);
       },
+      async activate(projectId) {
+        await call("project.activate", { projectId });
+      },
     },
     files: {
       readFolder: (params) => call("files.readFolder", params),
@@ -582,6 +596,11 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
       },
       async close() {
         await call("overlay.close", {});
+      },
+    },
+    panel: {
+      async show(params = {}) {
+        await call("panel.show", params);
       },
     },
     apps: {

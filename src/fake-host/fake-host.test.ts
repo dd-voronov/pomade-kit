@@ -1049,6 +1049,85 @@ describe("overlay frames", () => {
   });
 });
 
+describe("panel.show", () => {
+  const PANEL_MANIFEST = {
+    id: "planner",
+    name: "Planner",
+    version: "0.1.0",
+    hostApi: 0,
+    capabilities: [],
+    strip: [
+      { id: "today", title: "Today", action: "tab", route: "today" },
+      { id: "notes", title: "Notes", action: "panel" },
+      { id: "board", title: "Board", action: "both", route: "board", panelRoute: "needs-you" },
+    ],
+    shortcuts: [{ id: "quick-add", title: "Quick add", key: "Cmd+Shift+J", action: "overlay", route: "quick-add" }],
+  };
+
+  it("records the icon shown (default the first panel icon) and the route, from a tab, an overlay or a hidden frame", async () => {
+    const host = fake({ manifest: PANEL_MANIFEST });
+    const tab = await connect({ transport: host.createTransport(), keySource: null });
+    const overlay = await connect({ transport: host.createTransport({ surface: "overlay", shortcut: "quick-add" }), keySource: null });
+    const hidden = await connect({ transport: host.createTransport({ surface: "panel", icon: "board", hidden: true }), keySource: null });
+    if (tab.status !== "connected" || overlay.status !== "connected" || hidden.status !== "connected") throw new Error("not connected");
+    await overlay.host.panel.show({ route: "note/7" });
+    await tab.host.panel.show({ icon: "board" });
+    await hidden.host.panel.show({ icon: "notes", route: "" });
+    expect(host.panelShows).toEqual([{ icon: "notes", route: "note/7" }, { icon: "board" }, { icon: "notes", route: "" }]);
+  });
+
+  it("a mounted panel frame of that icon gets route.changed and is shown; the app's other panel frames are hidden", async () => {
+    const host = fake({ manifest: PANEL_MANIFEST });
+    const notes = await connect({ transport: host.createTransport({ surface: "panel", icon: "notes", hidden: true }), keySource: null });
+    const board = await connect({ transport: host.createTransport({ surface: "panel", icon: "board" }), keySource: null });
+    if (notes.status !== "connected" || board.status !== "connected") throw new Error("not connected");
+    const notesRoutes: string[] = [];
+    const boardRoutes: string[] = [];
+    notes.host.onRouteChange((r) => notesRoutes.push(r));
+    board.host.onRouteChange((r) => boardRoutes.push(r));
+    await board.host.panel.show({ icon: "notes", route: "note/7" });
+    await flush();
+    expect(notesRoutes).toEqual(["note/7"]);
+    expect(boardRoutes).toEqual([]);
+    expect(await notes.host.info()).toMatchObject({ route: "note/7" });
+    // Shown now: it may open the overlay; the board panel, hidden by the switch, may not.
+    await notes.host.overlay.open();
+    await expect(board.host.overlay.open()).rejects.toMatchObject({ code: "invalid-params" });
+    // The same route again: no route.changed; no route: the panel stays where it is.
+    await board.host.panel.show({ icon: "notes", route: "note/7" });
+    await board.host.panel.show({ icon: "notes" });
+    await flush();
+    expect(notesRoutes).toEqual(["note/7"]);
+  });
+
+  it("a panel frame opened after the call is welcomed at the route it gave", async () => {
+    const host = fake({ manifest: PANEL_MANIFEST });
+    const tab = await connect({ transport: host.createTransport(), keySource: null });
+    if (tab.status !== "connected") throw new Error("not connected");
+    await tab.host.panel.show({ icon: "board", route: "card/3" });
+    const board = await connect({ transport: host.createTransport({ surface: "panel", icon: "board" }), keySource: null });
+    const notes = await connect({ transport: host.createTransport({ surface: "panel", icon: "notes" }), keySource: null });
+    if (board.status !== "connected" || notes.status !== "connected") throw new Error("not connected");
+    expect(board.host.welcome).toMatchObject({ surface: "panel", icon: "board", route: "card/3" });
+    expect(notes.host.welcome).toMatchObject({ surface: "panel", icon: "notes", route: "" });
+  });
+
+  it("an icon with no panel, an unknown icon and an app without a panel icon are not-found; a bad type is invalid-params", async () => {
+    const host = fake({ manifest: PANEL_MANIFEST });
+    const tab = await connect({ transport: host.createTransport(), keySource: null });
+    if (tab.status !== "connected") throw new Error("not connected");
+    await expect(tab.host.panel.show({ icon: "today" })).rejects.toMatchObject({ code: "not-found" });
+    await expect(tab.host.panel.show({ icon: "nope" })).rejects.toMatchObject({ code: "not-found" });
+    await expect(tab.host.panel.show({ icon: 1 as unknown as string })).rejects.toMatchObject({ code: "invalid-params" });
+    await expect(tab.host.panel.show({ route: 7 as unknown as string })).rejects.toMatchObject({ code: "invalid-params" });
+    const bare = fake({ manifest: { ...PANEL_MANIFEST, strip: [PANEL_MANIFEST.strip[0]] } });
+    const bareTab = await connect({ transport: bare.createTransport(), keySource: null });
+    if (bareTab.status !== "connected") throw new Error("not connected");
+    await expect(bareTab.host.panel.show()).rejects.toMatchObject({ code: "not-found" });
+    expect([...host.panelShows, ...bare.panelShows]).toEqual([]);
+  });
+});
+
 describe("files.readFolder", () => {
   it("lists direct children, sorted by path, with kind, size (UTF-8 bytes) and mtime", async () => {
     const host = await client(fake());

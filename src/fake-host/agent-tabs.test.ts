@@ -137,6 +137,26 @@ describe("agent tabs in the fake host", () => {
     expect(fake.agentTabs).toEqual([]);
   });
 
+  it("a session change says why and what the tab was bound to before", async () => {
+    const { host, fake } = await client({ agentTabs: [{ tabId: "t1", projectId: "p-beta", agentId: "claude" }] });
+    const heard = await changes(host);
+    fake.updateAgentTab("t1", { sessionId: "s1" });
+    fake.updateAgentTab("t1", { sessionId: "s2" }, "fork");
+    fake.updateAgentTab("t1", { sessionId: null }, "clear");
+    fake.updateAgentTab("t1", { sessionId: "s3" }, "clear");
+    fake.updateAgentTab("t1", { sessionId: "s4" });
+    fake.updateAgentTab("t1", { state: "working" }, "resume");
+    await tick();
+    expect(heard.map((h) => [h.changes, h.session])).toEqual([
+      [["session"], { cause: "first", previousSessionId: null }],
+      [["session"], { cause: "fork", previousSessionId: "s1" }],
+      [["session"], { cause: "unknown", previousSessionId: "s2" }],
+      [["session"], { cause: "clear", previousSessionId: null }],
+      [["session"], { cause: "unknown", previousSessionId: "s3" }],
+      [["state"], undefined],
+    ]);
+  });
+
   it("needs its capabilities", async () => {
     const { host } = await client({}, { ...MANIFEST, capabilities: [] });
     expect(await codeOf(host.agentTabs.list())).toBe("capability-denied");

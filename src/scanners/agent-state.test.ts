@@ -142,6 +142,12 @@ const REAL: { name: string; agent: AgentKind; timeline: string[] }[] = [
     // turn ends at the empty prompt (15785): idle 500 ms on.
     timeline: ["450 working", "5105 waiting:question", "6035 working", "16285 idle"],
   },
+  {
+    name: "claude-bypass-consent",
+    agent: "claude",
+    // No input: the run stopped at the screen. claude draws it before any title.
+    timeline: ["0 waiting:consent"],
+  },
 ];
 
 describe("AgentStateScanner — real captures", () => {
@@ -247,7 +253,8 @@ describe("AgentStateScanner — background work (real captures)", () => {
   });
 
   it("every idle in the captures without background work is without it", async () => {
-    for (const { name, agent } of REAL.filter((r) => !r.name.startsWith("claude-background-"))) {
+    // The consent capture never leaves its screen: it has no idle.
+    for (const { name, agent } of REAL.filter((r) => !r.name.startsWith("claude-background-") && r.name !== "claude-bypass-consent")) {
       const idles = (await states(agent, fixture(name))).filter((s) => s.kind === "idle");
       expect(idles.length).toBeGreaterThan(0);
       expect(idles).toEqual(idles.map(() => ({ kind: "idle", background: false })));
@@ -339,6 +346,41 @@ describe("AgentStateScanner — the question form (real capture)", () => {
     const until = fx.chunks.findIndex(([, d]) => d.includes("Enter to select"));
     const events = await replay("claude", { ...fx, chunks: [...fx.chunks.slice(0, until + 1), [fx.chunks[until]![0] + 180_000, ""]] });
     expect(kinds(events)).toEqual(["working", "waiting:question"]);
+  });
+});
+
+describe("AgentStateScanner — the Bypass Permissions consent screen (real capture)", () => {
+  it("claude: the screen is a wait at prompt consent with its rows and highlighted option, before any title", async () => {
+    expect(await states("claude", fixture("claude-bypass-consent"))).toEqual([
+      {
+        kind: "waiting",
+        prompt: "consent",
+        highlighted: "No, exit",
+        lines: [
+          "WARNING: Claude Code running in Bypass Permissions mode",
+          "",
+          "In Bypass Permissions mode, Claude Code will not ask for your approval",
+          "before running potentially dangerous commands.",
+          "This mode should only be used in a sandboxed container/VM that has",
+          "restricted internet access and can easily be restored if damaged.",
+          "",
+          "By proceeding, you accept all responsibility for actions taken while running",
+          "in Bypass Permissions mode.",
+          "",
+          "https://code.claude.com/docs/en/security",
+          "",
+          "❯ No, exit",
+          "  Yes, I accept",
+          "",
+          "Enter to confirm · Esc to cancel",
+        ],
+      },
+    ]);
+  });
+
+  it("claude: held on the screen for minutes, it stays the one wait", async () => {
+    const fx = fixture("claude-bypass-consent");
+    expect(await replay("claude", { ...fx, chunks: [...fx.chunks, [180_000, ""]] })).toEqual(["0 waiting:consent"]);
   });
 });
 
@@ -622,6 +664,109 @@ describe("AgentStateScanner — claude: idle at the empty prompt, else a wait", 
   it("a quoted question form with the empty prompt below it is idle", async () => {
     const quoted = "\x1b[2J" + row(2, " ☐ Format") + row(3, "❯ 1. Markdown") + row(4, "Enter to select · ↑/↓ to navigate · Esc to cancel") + CLAUDE_COMPOSER;
     expect(labels(await play([title("◐ x"), quoted + title("✳ x")]))).toEqual(["working", "idle"]);
+  });
+});
+
+// Synthetic claude screens on 80×16: the consent screen as the real capture draws it, shortened.
+describe("AgentStateScanner — claude: the Bypass Permissions consent screen", () => {
+  const SIZE = { cols: 80, rows: 16 };
+  const row = (n: number, text: string): string => `\x1b[${n};1H\x1b[2K${text}`;
+  const RULE = "─".repeat(80);
+  const WARNING = "WARNING: Claude Code running in Bypass Permissions mode";
+  const CONSENT = (selected: 1 | 2, numbered = false): string =>
+    "\x1b[2J" +
+    row(2, RULE) +
+    row(3, `  ${WARNING}`) +
+    row(5, "  In Bypass Permissions mode, Claude Code will not ask for your approval") +
+    row(7, `  ${selected === 1 ? "❯" : " "} ${numbered ? "1. " : ""}No, exit`) +
+    row(8, `  ${selected === 2 ? "❯" : " "} ${numbered ? "2. " : ""}Yes, I accept`) +
+    row(10, "  Enter to confirm · Esc to cancel");
+  const lines = (no: string, yes: string): string[] => [
+    WARNING,
+    "",
+    "In Bypass Permissions mode, Claude Code will not ask for your approval",
+    "",
+    no,
+    yes,
+    "",
+    "Enter to confirm · Esc to cancel",
+  ];
+  const COMPOSER = row(13, RULE) + row(14, "❯ ") + row(15, RULE) + row(16, "  ⏵⏵ bypass permissions on (shift+tab to cycle)");
+  async function play(steps: (string | number)[]): Promise<AgentState[]> {
+    const out: AgentState[] = [];
+    const scanner = new AgentStateScanner({ agent: "claude", ...SIZE }, (s) => out.push(s));
+    for (const step of steps) {
+      if (typeof step === "number") await vi.advanceTimersByTimeAsync(step);
+      else scanner.push(step);
+    }
+    await vi.advanceTimersByTimeAsync(1000);
+    scanner.dispose();
+    return out;
+  }
+
+  it("is a wait at consent at once, before any title, with its rows from under the rule and the highlighted option", async () => {
+    const out: AgentState[] = [];
+    const scanner = new AgentStateScanner({ agent: "claude", ...SIZE }, (s) => out.push(s));
+    scanner.push(CONSENT(1));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(out).toEqual([{ kind: "waiting", prompt: "consent", lines: lines("❯ No, exit", "  Yes, I accept"), highlighted: "No, exit" }]);
+    scanner.dispose();
+  });
+
+  it("the highlight moving between the options updates the state's rows and highlighted option, without a new event", async () => {
+    const out: AgentState[] = [];
+    const scanner = new AgentStateScanner({ agent: "claude", ...SIZE }, (s) => out.push(s));
+    scanner.push(CONSENT(1));
+    await vi.advanceTimersByTimeAsync(10);
+    scanner.push(row(7, "    No, exit") + row(8, "  ❯ Yes, I accept"));
+    await vi.advanceTimersByTimeAsync(600);
+    expect(out).toHaveLength(1);
+    expect(scanner.state).toEqual({ kind: "waiting", prompt: "consent", lines: lines("  No, exit", "❯ Yes, I accept"), highlighted: "Yes, I accept" });
+    scanner.push(row(7, "  ❯ No, exit") + row(8, "    Yes, I accept"));
+    await vi.advanceTimersByTimeAsync(600);
+    expect(out).toHaveLength(1);
+    expect(scanner.state).toMatchObject({ prompt: "consent", highlighted: "No, exit" });
+    scanner.dispose();
+  });
+
+  it("the screen replaced by the empty prompt after Yes, I accept is idle", async () => {
+    const started = "\x1b[2J" + row(1, " ▐▛███▜▌   Claude Code") + COMPOSER + title("✳ Claude Code");
+    expect((await play([CONSENT(2), 10, started])).map(label)).toEqual(["waiting:consent", "idle"]);
+  });
+
+  it("numbered options read the same, the highlighted one without its number", async () => {
+    const out = await play([CONSENT(2, true)]);
+    expect(out).toEqual([{ kind: "waiting", prompt: "consent", lines: lines("  1. No, exit", "❯ 2. Yes, I accept"), highlighted: "Yes, I accept" }]);
+  });
+
+  it("the warning inside a turn's output is not a wait: the transcript quoting the whole screen, with the empty prompt below", async () => {
+    const quoted =
+      "\x1b[2J" + row(2, `⏺ ${WARNING}`) + row(4, "  ❯ No, exit") + row(5, "    Yes, I accept") + row(7, "  Enter to confirm · Esc to cancel") + COMPOSER;
+    expect((await play([title("◐ x"), quoted, title("✳ x")])).map(label)).toEqual(["working", "idle"]);
+  });
+
+  it("the warning inside a turn's output while it works is not a wait", async () => {
+    const output = "\x1b[2J" + row(2, `⏺ The CLI prints "${WARNING}"`) + row(4, "  Yes, I accept") + row(6, "✻ Thinking…");
+    expect((await play([title("◐ x"), output])).map(label)).toEqual(["working"]);
+  });
+
+  it("requires the warning: its options over the shared footer alone are no consent", async () => {
+    const bare = "\x1b[2J" + row(7, "  ❯ No, exit") + row(8, "    Yes, I accept") + row(10, "  Enter to confirm · Esc to cancel");
+    expect(await play([bare])).toEqual([]);
+  });
+
+  it("does not take the folder-trust dialog, which shares its footer and its No, exit, for consent", async () => {
+    const trust = "\x1b[2J" + row(2, RULE) + row(3, " Accessing workspace:") + row(7, " ❯ No, exit") + row(8, "   Yes, I trust this folder") + row(10, " Enter to confirm · Esc to cancel");
+    expect((await play([trust])).map(label)).toEqual(["waiting:trust"]);
+  });
+
+  it("codex does not read it", async () => {
+    const out: string[] = [];
+    const scanner = new AgentStateScanner({ agent: "codex", ...SIZE }, (s) => out.push(label(s)));
+    scanner.push(CONSENT(1));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(out).toEqual([]);
+    scanner.dispose();
   });
 });
 

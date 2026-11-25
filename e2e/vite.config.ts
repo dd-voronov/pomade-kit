@@ -7,6 +7,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "pomade-kit/fake-host": fileURLToPath(new URL("../src/fake-host/index.ts", import.meta.url)),
+      "pomade-kit/sdk": fileURLToPath(new URL("../src/sdk/index.ts", import.meta.url)),
     },
   },
 });

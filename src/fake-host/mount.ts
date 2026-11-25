@@ -1,7 +1,10 @@
 // The fake host as the parent window of an app frame — what an app's browser e2e runs against
 // instead of Pomade.
 
-import { OVERLAY_DEFAULT_HEIGHT, OVERLAY_WIDTH, type OverlayAnchor } from "../protocol/index.js";
+import type { OverlayAnchor } from "../protocol/index.js";
+// The module itself, not the protocol's index: the frame relay's page loads this file unbundled,
+// and the index reaches dependencies a browser cannot resolve by name (js-yaml).
+import { OVERLAY_DEFAULT_HEIGHT, OVERLAY_WIDTH } from "../protocol/overlay.js";
 import type { FakeHost, FakeOpenedOverlay, FrameOptions } from "./fake-host.js";
 
 /** `surface` / `icon`: what the frame is opened for (default: a tab from the new-tab menu). */
@@ -44,12 +47,12 @@ const OVERLAY_MAX_HEIGHT_SHARE = 0.6;
  * scrim; focus then returns to the frame that called `overlay.open` (an overlay mounted directly:
  * to what had focus before). One overlay per opener: a new `overlay.open` replaces the open one.
  */
-export function mountApp(host: FakeHost, options: MountOptions): MountedApp {
+export function mountApp(host: Pick<FakeHost, "attach">, options: MountOptions): MountedApp {
   return mount(host, options, null, "center", undefined);
 }
 
 function mount(
-  host: FakeHost,
+  host: Pick<FakeHost, "attach">,
   options: MountOptions,
   opener: HTMLIFrameElement | null,
   anchor: OverlayAnchor,

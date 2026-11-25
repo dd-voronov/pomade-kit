@@ -369,6 +369,24 @@ describe("overlay.open", () => {
   });
 });
 
+describe("panel.show", () => {
+  it("sends { icon?, route? } (default {}) and resolves void; a refusal rejects", async () => {
+    const t = setup();
+    const p = t.host.panel.show({ route: "note/7" });
+    expect(t.lastCall()).toMatchObject({ method: "panel.show", params: { route: "note/7" } });
+    t.ok(t.lastCall().id, {});
+    expect(await p).toBeUndefined();
+    const both = t.host.panel.show({ icon: "board", route: "" });
+    expect(t.lastCall()).toMatchObject({ method: "panel.show", params: { icon: "board", route: "" } });
+    t.ok(t.lastCall().id, {});
+    await both;
+    const q = t.host.panel.show();
+    expect(t.lastCall()).toMatchObject({ method: "panel.show", params: {} });
+    t.fail(t.lastCall().id, "not-found");
+    await expect(q).rejects.toMatchObject({ code: "not-found" });
+  });
+});
+
 describe("files.reveal", () => {
   it("reveal sends { path, projectId? } and resolves void; a refusal rejects", async () => {
     const t = setup();
@@ -378,6 +396,19 @@ describe("files.reveal", () => {
     expect(await a).toBeUndefined();
     const b = t.host.files.reveal({ path: "x", projectId: "p1" });
     expect(t.lastCall()).toMatchObject({ method: "files.reveal", params: { path: "x", projectId: "p1" } });
+    t.fail(t.lastCall().id, "not-found");
+    await expect(b).rejects.toMatchObject({ code: "not-found" });
+  });
+});
+
+describe("project.activate", () => {
+  it("activate sends { projectId } and resolves void; a refusal rejects", async () => {
+    const t = setup();
+    const a = t.host.project.activate("p1");
+    expect(t.lastCall()).toMatchObject({ method: "project.activate", params: { projectId: "p1" } });
+    t.ok(t.lastCall().id, {});
+    expect(await a).toBeUndefined();
+    const b = t.host.project.activate("ghost");
     t.fail(t.lastCall().id, "not-found");
     await expect(b).rejects.toMatchObject({ code: "not-found" });
   });

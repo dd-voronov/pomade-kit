@@ -9,7 +9,7 @@ export const PLATFORM_CLIENT_ID = "pomade";
 
 /** Methods that need an app frame (a dialog, the frame's own overlay, watches kept with a frame):
  *  over the socket they are `capability-denied`. */
-export const FRAME_ONLY_METHODS: readonly string[] = ["files.pickFolder", "files.pickFile", "git.watch", "git.unwatch", "overlay.open", "overlay.resize", "overlay.close", "tabs.setRoute", "tabs.setTitle", "tabs.close"];
+export const FRAME_ONLY_METHODS: readonly string[] = ["files.pickFolder", "files.pickFile", "git.watch", "git.unwatch", "overlay.open", "overlay.resize", "overlay.close", "panel.show", "tabs.setRoute", "tabs.setTitle", "tabs.close"];
 
 /** True for a socket client's surface (`backend`, `command`). */
 export function isSocketSurface(surface: string): boolean {

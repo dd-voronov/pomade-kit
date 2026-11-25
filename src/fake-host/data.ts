@@ -421,6 +421,7 @@ export type ProjectDataMethod = Extract<
   | "project.getScopeFolders"
   | "project.addScopeFolder"
   | "project.removeScopeFolder"
+  | "project.activate"
 >;
 
 /** A real project's id from params; the Workspace scope has no settings or agent list to write. */
@@ -494,6 +495,10 @@ export function dispatchProjects(ctx: DataContext, method: ProjectDataMethod, p:
       const folders = (ctx.projectScopeFolders.get(id) ?? []).filter((f) => f !== path);
       if (folders.length > 0) ctx.projectScopeFolders.set(id, folders);
       else ctx.projectScopeFolders.delete(id);
+      return {};
+    }
+    case "project.activate": {
+      ctx.activate(ctx.project(stringParam(p, "projectId")).id);
       return {};
     }
   }

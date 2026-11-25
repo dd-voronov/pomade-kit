@@ -8,7 +8,9 @@ import {
   parseAgentTabsParams,
   providerModes,
   type AgentTabChange,
+  type AgentTabChangedPayload,
   type AgentTabInfo,
+  type AgentTabSessionCause,
   type AgentTabState,
   type AgentTabsMethod,
   type ProjectRef,
@@ -50,7 +52,7 @@ export interface AgentTabsContext {
   /** The project `id` names (the active one when absent); `not-found` for an unknown id. */
   project(id: string | undefined): ProjectRef;
   activate(id: string): void;
-  publish(payload: { tab: AgentTabInfo; changes: AgentTabChange[] }): void;
+  publish(payload: AgentTabChangedPayload): void;
   now(): number;
 }
 
@@ -124,11 +126,20 @@ export class FakeAgentTabs {
     return tab;
   }
 
-  private change(tab: AgentTabInfo, patch: Partial<AgentTabInfo>): void {
+  /** Apply `patch` and publish what changed. A session change carries its cause: `cause` when the
+   *  test names one, else `first` for a tab that had none and `unknown` otherwise; a binding that
+   *  goes to `null` is always `unknown`, as in Pomade. */
+  private change(tab: AgentTabInfo, patch: Partial<AgentTabInfo>, cause?: AgentTabSessionCause): void {
     const before = { ...tab };
     Object.assign(tab, patch);
     const changes = changesBetween(before, tab);
-    if (changes.length > 0) this.ctx.publish({ tab: { ...tab }, changes });
+    if (changes.length === 0) return;
+    if (!changes.includes("session")) {
+      this.ctx.publish({ tab: { ...tab }, changes });
+      return;
+    }
+    const why = tab.sessionId === null ? "unknown" : (cause ?? (before.sessionId === null ? "first" : "unknown"));
+    this.ctx.publish({ tab: { ...tab }, changes, session: { cause: why, previousSessionId: before.sessionId } });
   }
 
   private absolute(rel: string): string {
@@ -216,9 +227,13 @@ export class FakeAgentTabs {
     this.change(this.require(tabId), { title, titleSource: "user", unnamed: false });
   }
 
-  /** Something happened in the tab: a session bound (`sessionId`), a state change, a move (`projectId`). */
-  update(tabId: string, patch: Partial<Pick<AgentTabInfo, "sessionId" | "state" | "projectId" | "cwd" | "launchedAt">>): void {
-    this.change(this.require(tabId), patch);
+  /** Something happened in the tab: a session bound (`sessionId`, for `cause`), a state change, a move (`projectId`). */
+  update(
+    tabId: string,
+    patch: Partial<Pick<AgentTabInfo, "sessionId" | "state" | "projectId" | "cwd" | "launchedAt">>,
+    cause?: AgentTabSessionCause,
+  ): void {
+    this.change(this.require(tabId), patch, cause);
   }
 
   /** The tab closes (or its agent hands the shell back): it leaves the list. */
