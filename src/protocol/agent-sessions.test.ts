@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   checkLiveIn,
+  LIVE_AGENT_STATES,
   checkRepoSessions,
   SESSIONS_APP_ID,
   SESSIONS_FOR_REPO_METHOD,
@@ -65,6 +66,19 @@ describe("sessions.liveIn answers", () => {
     expect(checkLiveIn({ live: false, sessions: [] })).toEqual({ ok: true, result: { live: false, sessions: [] } });
   });
 
+  it("accepts a session's state absent or as working, needs-you or idle", () => {
+    for (const state of LIVE_AGENT_STATES) {
+      expect(checkLiveIn({ live: true, sessions: [{ ...tab, state }] })).toEqual({
+        ok: true,
+        result: { live: true, sessions: [{ ...tab, state }] },
+      });
+    }
+    expect(LIVE_AGENT_STATES).toEqual(["working", "needs-you", "idle"]);
+    const checked = checkLiveIn({ live: true, sessions: [tab, { ...run, state: "working" }] });
+    expect(checked).toEqual({ ok: true, result: { live: true, sessions: [tab, { ...run, state: "working" }] } });
+    expect(checked.ok && Object.keys(checked.result.sessions[0] ?? {})).not.toContain("state");
+  });
+
   it.each([
     [null],
     [{ live: true }],
@@ -76,6 +90,9 @@ describe("sessions.liveIn answers", () => {
     [{ live: true, sessions: [{ ...tab, job: "x" }] }],
     [{ live: true, sessions: [{ ...run, job: null }] }],
     [{ live: true, sessions: [tab, { ...tab, agent: "" }] }],
+    [{ live: true, sessions: [{ ...tab, state: "closed" }] }],
+    [{ live: true, sessions: [{ ...tab, state: "busy" }] }],
+    [{ live: true, sessions: [{ ...run, state: null }] }],
   ])("refuses a malformed answer whole: %j", (answer) => {
     expect(checkLiveIn(answer)).toMatchObject({ ok: false });
   });

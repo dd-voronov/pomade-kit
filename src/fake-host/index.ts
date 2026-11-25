@@ -18,5 +18,6 @@ export {
   type CallApiOptions,
 } from "./fake-host.js";
 export type { FakeGroup, FakeOpenedTab, FakePickRequest, FakeReveal, FakeWriteFailure } from "./data.js";
+export type { FakeGitReveal } from "./git.js";
 export { DEFAULT_FAKE_ROSTER, type FakeAgentTabSeed, type FakeOpenedAgentTab, type FakeSession } from "./agent-tabs.js";
 export { mountApp, type MountedApp, type MountOptions } from "./mount.js";

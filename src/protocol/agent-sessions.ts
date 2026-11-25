@@ -15,6 +15,11 @@ export type SessionLiveState = "working" | "needs-you" | "idle" | "closed";
 
 export const SESSION_LIVE_STATES: readonly SessionLiveState[] = ["working", "needs-you", "idle", "closed"];
 
+/** What a running agent is doing: a session's live state short of `closed`. */
+export type LiveAgentState = Exclude<SessionLiveState, "closed">;
+
+export const LIVE_AGENT_STATES: readonly LiveAgentState[] = ["working", "needs-you", "idle"];
+
 /** A session's status, set by the user in the agents app. */
 export type SessionStatus = "active" | "on-hold" | "done" | "done-skip";
 
@@ -73,6 +78,9 @@ export interface LiveSession {
   source: "tab" | "run";
   /** The Runner job of a run; `null` for a tab. */
   job: string | null;
+  /** What the agent is doing, when the app knows. A run is never `idle` (it ends when its turn
+   *  does); Pomade does not take `idle` from one. Absent = not known — Pomade counts it as working. */
+  state?: LiveAgentState;
 }
 
 export interface SessionsLiveInResult {
@@ -132,7 +140,8 @@ function isLiveSession(v: unknown): v is LiveSession {
     isId(v.agent) &&
     isAbs(v.cwd) &&
     (v.source === "tab" || v.source === "run") &&
-    (v.source === "run" ? isNullableText(v.job) && v.job !== null : v.job === null)
+    (v.source === "run" ? isNullableText(v.job) && v.job !== null : v.job === null) &&
+    (v.state === undefined || (LIVE_AGENT_STATES as readonly unknown[]).includes(v.state))
   );
 }
 
@@ -146,7 +155,8 @@ export function checkLiveIn(v: unknown): { ok: true; result: SessionsLiveInResul
   const sessions: LiveSession[] = [];
   for (const [i, s] of v.sessions.entries()) {
     if (!isLiveSession(s)) return { ok: false, message: `sessions[${i}]` };
-    sessions.push({ sessionId: s.sessionId, agent: s.agent, cwd: s.cwd, source: s.source, job: s.job });
+    const { sessionId, agent, cwd, source, job, state } = s;
+    sessions.push(state === undefined ? { sessionId, agent, cwd, source, job } : { sessionId, agent, cwd, source, job, state });
   }
   if (v.live !== sessions.length > 0) return { ok: false, message: '"live" must be true exactly when "sessions" is not empty' };
   return { ok: true, result: { live: v.live, sessions } };

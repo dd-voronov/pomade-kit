@@ -26,3 +26,16 @@ export interface GitWatchState {
   /** The scope's repos as last delivered, serialized. */
   seen: string;
 }
+
+/** A `git.reveal` as the fake host records it: the project whose Git panel shows the repo, and the repo's
+ *  working-tree root (absolute) as the app passed it. */
+export interface FakeGitReveal {
+  projectId: string;
+  path: string;
+}
+
+/** The scripted repo whose working-tree root is `path` (absolute; a trailing `/` is ignored), or null. */
+export function repoAt(repos: readonly GitRepoState[], path: string): GitRepoState | null {
+  const bare = (p: string): string => (p.length > 1 ? p.replace(/\/+$/, "") : p);
+  return repos.find((r) => bare(r.absPath) === bare(path)) ?? null;
+}

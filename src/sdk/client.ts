@@ -285,6 +285,9 @@ export interface HostClient {
     getState(params?: GitStateParams): Promise<GitStateResult>;
     /** Resolves once the host accepted the watch; `onChange` receives the scope's repos after each change. */
     watch(params: GitStateParams, onChange: (repos: GitRepoState[]) => void): Promise<GitWatch>;
+    /** Show a repo in Pomade's Git panel: `path` is its working-tree root, absolute (`GitRepoState.absPath`,
+     *  `GitRunResult.path`); `projectId` as `files.reveal`. Pomade switches to the project that shows it. */
+    reveal(path: string, projectId?: string): Promise<void>;
   };
   readonly events: {
     /** Publish one of this app's own events (declared in the manifest's `events.publish`) to its subscribers. */
@@ -630,6 +633,9 @@ export function createClient(transport: Transport, welcome: Welcome, onClose?: (
     },
     git: {
       getState: (params = {}) => call("git.getState", params),
+      async reveal(path, projectId) {
+        await call("git.reveal", projectId === undefined ? { path } : { path, projectId });
+      },
       async watch(params, onChange) {
         const { watchId } = await call("git.watch", params, (v) => gitWatches.set(v.watchId, onChange));
         let unwatched: Promise<void> | null = null;

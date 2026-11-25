@@ -22,6 +22,9 @@ export interface GitRunStep {
   outcome: GitRunStatus;
   /** What happened, in words ("nothing to commit", "got 2 commits from origin/main"). */
   detail: string;
+  /** On a `pull` step whose outcome is `done`: the commits got from the remote, 0 = up to date.
+   *  Absent on every other step. */
+  commits?: number;
 }
 
 /** One repo's result. */
@@ -65,7 +68,13 @@ function isObj(v: unknown): v is Record<string, unknown> {
 }
 
 function isStep(s: unknown): s is GitRunStep {
-  return isObj(s) && has(GIT_RUN_STEP_NAMES, s.step) && has(GIT_RUN_STATUSES, s.outcome) && typeof s.detail === "string";
+  return (
+    isObj(s) &&
+    has(GIT_RUN_STEP_NAMES, s.step) &&
+    has(GIT_RUN_STATUSES, s.outcome) &&
+    typeof s.detail === "string" &&
+    (s.commits === undefined || (typeof s.commits === "number" && Number.isInteger(s.commits) && s.commits >= 0))
+  );
 }
 
 /** True for a well-formed `GitRunResult`. */

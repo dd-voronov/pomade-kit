@@ -390,8 +390,13 @@ It also answers Pomade's questions about sessions (pomade:E-043; `SESSIONS_APP_I
   → { sessions: RepoSession[] }   // { id, agent, name | null, status, live, cwd, branch | null, project | null, startedAt, lastActiveAt }
 // sessions.liveIn — "is an agent live here?" (merge blocking, pomade-git's skip): agent tabs
 // (prompted or not) and Runner runs at or below the folder.
-{ folder: "/ws/Projects/app" } → { live: boolean, sessions: LiveSession[] }   // { sessionId | null, agent, cwd, source: "tab" | "run", job | null }
+{ folder: "/ws/Projects/app" } → { live: boolean, sessions: LiveSession[] }   // { sessionId | null, agent, cwd, source: "tab" | "run", job | null, state? }
 ```
+
+A live session's `state` (`LiveAgentState`: `"working" | "needs-you" | "idle"`, `LIVE_AGENT_STATES`)
+says what the agent is doing when the app knows; absent, Pomade counts it as working. `pomade-git`
+skips a repo only for an agent that works or waits for the person, not an idle one. A run is never
+`idle`.
 
 `checkRepoSessions` drops a malformed session (a malformed answer is no answer: no link);
 `checkLiveIn` refuses a malformed answer whole, and Pomade answers from its own terminals.
@@ -406,6 +411,8 @@ const { repos } = await host.git.getState();                          // every r
 const mine = await host.git.getState({ projectId: project.id });      // the project's repos
 const watch = await host.git.watch({ projectId: project.id }, (repos) => render(repos));
 await watch.close();
+await host.git.reveal(repo.absPath);                                  // show it in the Git panel
+await host.git.reveal(run.path, project.id);
 ```
 
 Each `GitRepoState`: `name` (the folder name the Git panel shows — the name `pomade-git` accepts),
@@ -420,6 +427,15 @@ A project's repos are the repos at or below its folder plus the nearest repo hol
 = every repo. A watch delivers the scope's repos whenever they change (`git.changed`), follows a
 project that moves, and ends with the frame (a reload drops it). An unknown project is
 `not-found`.
+
+`git.reveal(path, projectId?)` takes the person to a repo in Pomade's Git panel: Pomade switches to
+the project, expands the side panel, brings Git forward and scrolls the repo's row into view. `path`
+is the repo's working-tree root, absolute — `GitRepoState.absPath` or a `pomade-git` run's
+`GitRunResult.path`; no repo with that root is `not-found`. `projectId` works as for `files.reveal`
+(default the active project; a backend's or a command's, the Workspace scope; unknown = `not-found`);
+a repo outside that project's scope is shown in the Workspace scope's panel. It answers a backend
+and a command too. The fake host records each in `fake.gitReveals` and matches `path` against its
+scripted repos' `absPath`.
 
 ### `pomade-git` runs and scheduled jobs
 
@@ -575,6 +591,7 @@ code, and the events. An app's scope folders live per project in memory; `worksp
 | `fake.setGitRepos(repos)` | `git.changed` to each git watch whose scope's repos changed |
 | `fake.openedTabs` | — (every `tabs.openFile` / `openTerminal` / `openApp`, in order: `{ kind: "file", projectId, path }` · `{ kind: "terminal", projectId, cwd, command?, title? }` · `{ kind: "app", projectId, route, key?, title?, tabKind? }`; the call switches the active project like Pomade) |
 | `fake.reveals` | — (every `files.reveal`, in order: `{ projectId, path }` — the project whose Files panel shows the path, the Workspace scope's when the path lies outside the target project's folder; the call switches the active project like Pomade) |
+| `fake.gitReveals` | — (every `git.reveal`, in order: `{ projectId, path }` — the project whose Git panel shows the repo, the Workspace scope's when the repo is outside the target project's scope, and `path` as passed; the call switches the active project like Pomade) |
 | `fake.openAppTab({ projectId?, icon?, route? })` | `project.changed` when the project changes (the user opens the app's tab from the new-tab menu, or a strip icon whose action opens a tab; an open one is focused — the icon-less one navigated to `route`; returns the tab) |
 | `fake.appTabs` · `fake.appTabChanges` · `fake.onAppTab(listener)` | — (the app's own tabs as Pomade's tab strip keeps them, below: the open tabs `{ tabId, projectId, icon?, route, key?, kind?, title?, renamed? }`, every `{ change: "open" \| "focus" \| "route" \| "title" \| "close", tab }` in order, and a listener for each as it happens; returns its unsubscribe) |
 | `fake.renameAppTab(tabId, title)` · `fake.closeAppTab(tabId)` | — (the user renames one of the app's tabs — `tabs.setTitle` and `openApp`'s `title` then leave it — or closes it: it leaves `fake.appTabs`, and the frames showing it get `onClose`) |
@@ -666,7 +683,7 @@ await pomade.close();                                 // Pomade quits: connectio
 - **A session** is the fake host's, with surface `backend` / `command`: `welcome` with `route: ""`,
   no icon and the active project; no event it did not subscribe to (`project.changed` too); the
   frame-only methods `capability-denied`; the Workspace scope wherever a call's project is
-  optional (`tabs.*`, `agentTabs.launch` / `resume`, a notice's action); the manifest's
+  optional (`files.reveal`, `git.reveal`, `tabs.*`, `agentTabs.launch` / `resume`, a notice's action); the manifest's
   capabilities. Its `api.serve` takes precedence over a frame's; when it ends, its pending requests
   answer `app-not-responding`.
 - **Lifetime:** a call before `welcome` is `not-ready`; a connection not welcomed within 5 s
@@ -1228,9 +1245,12 @@ if (up.status === "connected") up.host;      // up.launched: this call started i
   (SIGTERM, then SIGKILL after `stopGraceMs`, default 5 s) before `failed` resolves; an `open -a`
   launch has handed Pomade to macOS and has nothing of its own to stop.
 - Pomade's own commands (`pomade-git`) connect as the platform client (`appId: "pomade"`, the
-  platform key) and may call `host.agents.liveIn(folder)` → `{ live, agents: [{ agentId, cwd }] }`
-  — agents running in Pomade's terminals at or below an absolute folder; for an app it is
-  `capability-denied` (`PLATFORM_CAPABILITY`). They reach app APIs with `host.apps.call` like apps.
+  platform key) and may call `host.agents.liveIn(folder)` →
+  `{ live, agents: [{ agentId, cwd, state?, terminalPids? }] }` (`LiveAgentEntry`) — agents running
+  at or below an absolute folder (Pomade's terminals, and the agents app's tabs and Runner runs);
+  `state` (`"working" | "needs-you" | "idle"`) when known, absent = count it as working;
+  `terminalPids` the shells of the Pomade terminals it runs in, so an agent process descended from
+  one is known as this agent's. For an app it is `capability-denied` (`PLATFORM_CAPABILITY`). They reach app APIs with `host.apps.call` like apps.
 - `host.onClose(cb)` runs when the client closes — `close()`, or Pomade went away.
 - `appStateDir()` is the app's machine-local state folder, `POMADE_APP_STATE`
   (`<userData>/app-state/<id>/`, absolute) — run history, captured output, caches, a control

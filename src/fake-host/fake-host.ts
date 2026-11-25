@@ -79,7 +79,7 @@ import {
   type FakeReveal,
   type FakeWriteFailure,
 } from "./data.js";
-import { reposInScope, scriptedRepos, type GitWatchState } from "./git.js";
+import { repoAt, reposInScope, scriptedRepos, type FakeGitReveal, type GitWatchState } from "./git.js";
 import { DEFAULT_FAKE_ROSTER, FakeAgentTabs, type FakeAgentTabSeed, type FakeOpenedAgentTab, type FakeSession } from "./agent-tabs.js";
 import { booleanParam, CallError, paramsObject, requestPath, requireAllowedTarget, stringParam } from "./params.js";
 import { controlPath, Workspace } from "./workspace.js";
@@ -275,6 +275,7 @@ interface AppTabRecord extends FakeAppTab {
 /** Calls whose project is optional and, for a socket client, defaults to the Workspace scope (HOST-API §3 "Socket"). */
 const WORKSPACE_DEFAULT_METHODS: readonly string[] = [
   "files.reveal",
+  "git.reveal",
   "tabs.openFile",
   "tabs.openTerminal",
   "tabs.openAttached",
@@ -297,6 +298,8 @@ export class FakeHost {
   readonly openedTabs: FakeOpenedTab[] = [];
   /** Every `files.reveal`, in order: the project whose Files panel shows the path, and the path. */
   readonly reveals: FakeReveal[] = [];
+  /** Every `git.reveal`, in order: the project whose Git panel shows the repo, and the repo's root as passed. */
+  readonly gitReveals: FakeGitReveal[] = [];
   /** Every overlay the app opened (`overlay.open`), in order. */
   readonly overlays: FakeOpenedOverlay[] = [];
   /** Every height an overlay frame asked for with `overlay.resize`, in order, as given. */
@@ -1145,6 +1148,19 @@ export class FakeHost {
       case "git.unwatch":
         frame.gitWatches.delete(stringParam(params, "watchId"));
         return {};
+      case "git.reveal": {
+        const path = stringParam(params, "path");
+        if (!path.startsWith("/")) throw new CallError("invalid-params", '"path" must be an absolute path');
+        if (params.projectId !== undefined) stringParam(params, "projectId");
+        const project = this.data.project(params.projectId as string | undefined);
+        const repo = repoAt(this.gitRepos, path);
+        if (!repo) throw new CallError("not-found", `No repository at ${JSON.stringify(path)}`);
+        const inScope = project.id === WORKSPACE_PROJECT_ID || this.gitScope(project.id).some((r) => r.root === repo.root);
+        const shown = inScope ? project.id : WORKSPACE_PROJECT_ID;
+        this.data.activate(shown);
+        this.gitReveals.push({ projectId: shown, path });
+        return {};
+      }
       case "events.publish": {
         const p = checkPublish(this.manifest.events, params);
         if (!p.ok) throw new CallError(p.error.code, p.error.message);

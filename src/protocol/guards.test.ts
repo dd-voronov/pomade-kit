@@ -306,6 +306,7 @@ describe("METHOD_CAPABILITY", () => {
       "git.getState": "git.read",
       "git.watch": "git.read",
       "git.unwatch": "git.read",
+      "git.reveal": "git.read",
       "events.publish": null,
       "events.subscribe": null,
       "events.unsubscribe": null,

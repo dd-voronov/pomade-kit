@@ -1,6 +1,6 @@
 // Host API v0 — the data types and messages of Pomade's docs/HOST-API.md, transcribed.
 
-import type { GitChangedPayload, GitStateParams, GitStateResult } from "./git.js";
+import type { GitChangedPayload, GitRevealParams, GitStateParams, GitStateResult } from "./git.js";
 import type {
   AgentTabExitedPayload,
   HasSubscribersParams,
@@ -13,6 +13,7 @@ import type {
 } from "./events.js";
 import type { NoticeParams } from "./notices.js";
 import type { AttachedTabActionPayload, SessionRef } from "./attach.js";
+import type { LiveAgentState } from "./agent-sessions.js";
 import type {
   AgentTabChangedPayload,
   AgentTabsFocusParams,
@@ -611,7 +612,20 @@ export interface AgentsLiveInParams {
 export interface AgentsLiveInResult {
   live: boolean;
   /** Each agent running with its working directory at or below `folder`. */
-  agents: { agentId: string; cwd: string }[];
+  agents: LiveAgentEntry[];
+}
+
+/** One agent `agents.liveIn` reports: by its roster id and its folder at launch. */
+export interface LiveAgentEntry {
+  agentId: string;
+  cwd: string;
+  /** What it is doing, when Pomade knows (the agents app's word, or Pomade's reading of its own
+   *  terminal). Absent = not known: count it as working. */
+  state?: LiveAgentState;
+  /** The process ids of the shells of the Pomade terminals it runs in (one entry can stand for
+   *  several terminals with the same agent and folder): an agent process descended from one of
+   *  them is this agent's. Absent when it runs in none of Pomade's terminals (a Runner run). */
+  terminalPids?: number[];
 }
 
 /** Method name → params and result. Methods without params take `{}`. */
@@ -659,6 +673,7 @@ export interface HostMethods {
   "git.getState": { params: GitStateParams; result: GitStateResult };
   "git.watch": { params: GitStateParams; result: WatchResult };
   "git.unwatch": { params: UnwatchParams; result: Record<string, never> };
+  "git.reveal": { params: GitRevealParams; result: Record<string, never> };
   "events.publish": { params: PublishParams; result: Record<string, never> };
   "events.subscribe": { params: SubscribeParams; result: Record<string, never> };
   "events.unsubscribe": { params: SubscribeParams; result: Record<string, never> };
@@ -722,6 +737,7 @@ export const METHOD_CAPABILITY: Readonly<Record<MethodName, MethodCapability>> =
   "git.getState": "git.read",
   "git.watch": "git.read",
   "git.unwatch": "git.read",
+  "git.reveal": "git.read",
   "events.publish": null,
   "events.subscribe": null,
   "events.unsubscribe": null,

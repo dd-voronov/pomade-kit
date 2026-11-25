@@ -41,9 +41,20 @@ describe("pomade-git --json output", () => {
     expect(isGitRunOutput({ op: "fetch", job: null, at: "2026-11-09T13:00:00Z", results: [] })).toBe(true);
   });
 
+  it("accepts a pull step with or without its commit count", () => {
+    const pull = (commits?: number) => ({ ...result, steps: [{ step: "pull", outcome: "done", detail: "got 2 commits from origin/main", ...(commits === undefined ? {} : { commits }) }] });
+    expect(isGitRunResult(pull())).toBe(true);
+    expect(isGitRunResult(pull(0))).toBe(true);
+    expect(isGitRunResult(pull(2))).toBe(true);
+  });
+
   it.each([
     [null],
     [{ ...result, op: "merge" }],
+    [{ ...result, steps: [{ step: "pull", outcome: "done", detail: "x", commits: -1 }] }],
+    [{ ...result, steps: [{ step: "pull", outcome: "done", detail: "x", commits: "2" }] }],
+    [{ ...result, steps: [{ step: "pull", outcome: "done", detail: "x", commits: 1.5 }] }],
+    [{ ...result, steps: [{ step: "pull", outcome: "done", detail: "x", commits: null }] }],
     [{ ...result, status: "ok" }],
     [{ ...result, reason: 1 }],
     [{ ...result, steps: [{ step: "rebase", outcome: "done", detail: "" }] }],

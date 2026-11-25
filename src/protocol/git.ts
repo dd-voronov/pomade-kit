@@ -54,6 +54,15 @@ export interface GitStateParams {
   projectId?: string;
 }
 
+/** `git.reveal` — show a repo in Pomade's Git panel. */
+export interface GitRevealParams {
+  /** The repo's working-tree root, absolute — `GitRepoState.absPath`, `GitRunResult.path`. */
+  path: string;
+  /** The project whose Git panel shows it; default the active project (the Workspace scope for a socket client).
+   *  A repo outside that project's scope is shown in the Workspace scope's panel instead. Pomade switches to the project. */
+  projectId?: string;
+}
+
 export interface GitStateResult {
   /** Sorted by root. */
   repos: GitRepoState[];

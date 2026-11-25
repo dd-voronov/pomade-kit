@@ -71,6 +71,7 @@ export type {
   GitFileChange,
   GitRepoState,
   GitStateParams,
+  GitRevealParams,
   GitStateResult,
   AppsCallParams,
   ApiServeResult,

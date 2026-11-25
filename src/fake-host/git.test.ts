@@ -151,3 +151,52 @@ describe("git.watch", () => {
     expect(f.call("git.unwatch", { watchId: "nope" })).toMatchObject({ ok: true, value: {} });
   });
 });
+
+describe("git.reveal", () => {
+  it("records the project whose Git panel shows the repo and switches to it; a repo outside the project's scope goes to the Workspace scope", async () => {
+    const fh = fake({ activeProject: "pomade" });
+    const host = await client(fh);
+    const seen: string[] = [];
+    host.project.onChange((p) => seen.push(p.id));
+    await host.git.reveal("/ws/Projects/Pomade");
+    await host.git.reveal("/ws/Projects/Pomade/", "pomade");
+    // The repo holding the project's folder is in its scope.
+    await host.git.reveal("/ws/", "notes");
+    await host.git.reveal("/ws/Knowledge", "pomade");
+    await host.git.reveal("/ws/Projects/Pomade", "__workspace__");
+    await flush();
+    expect(fh.gitReveals).toEqual([
+      { projectId: "pomade", path: "/ws/Projects/Pomade" },
+      { projectId: "pomade", path: "/ws/Projects/Pomade/" },
+      { projectId: "notes", path: "/ws/" },
+      { projectId: "__workspace__", path: "/ws/Knowledge" },
+      { projectId: "__workspace__", path: "/ws/Projects/Pomade" },
+    ]);
+    expect(seen).toEqual(["notes", "__workspace__"]);
+  });
+
+  it("errors: no repo at the path, a relative path, a bad or unknown project, no git.read", () => {
+    const f = raw(fake());
+    expect(f.errorOf("git.reveal", { path: "/ws/Apps" })).toBe("not-found");
+    expect(f.errorOf("git.reveal", { path: "/ws/Projects/Pomade", projectId: "ghost" })).toBe("not-found");
+    expect(f.errorOf("git.reveal", { path: "Projects/Pomade" })).toBe("invalid-params");
+    expect(f.errorOf("git.reveal", {})).toBe("invalid-params");
+    expect(f.errorOf("git.reveal", { path: "/ws/Projects/Pomade", projectId: 3 })).toBe("invalid-params");
+    expect(f.errorOf("git.reveal", { path: "/ws/Projects/Pomade" })).toBeNull();
+    const denied = raw(fake({ manifest: { id: "x1", name: "X", version: "1.0.0", hostApi: 0, capabilities: ["files.read"] } }));
+    expect(denied.errorOf("git.reveal", { path: "/ws/Projects/Pomade" })).toBe("capability-denied");
+  });
+
+  it("answers a socket client too; its project defaults to the Workspace scope", () => {
+    const fh = fake({
+      activeProject: "pomade",
+      manifest: { id: "b1", name: "B", version: "1.0.0", hostApi: 0, capabilities: ["git.read"], backend: { entry: "b.mjs", mode: "with-pomade" } },
+    });
+    const got: HostToAppMessage[] = [];
+    const backend = fh.attach((m) => got.push(m), { surface: "backend" });
+    backend.receive({ channel: "pomade", type: "hello", hostApi: 0 });
+    backend.receive({ channel: "pomade", type: "call", id: "1", method: "git.reveal", params: { path: "/ws/Projects/Pomade" } });
+    expect(got.at(-1)).toMatchObject({ ok: true });
+    expect(fh.gitReveals).toEqual([{ projectId: "__workspace__", path: "/ws/Projects/Pomade" }]);
+  });
+});
