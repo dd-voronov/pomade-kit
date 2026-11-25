@@ -1,6 +1,6 @@
-// What an agent CLI in a terminal is doing — working on a turn, idle (with or without background
-// work still going), or waiting for the user at a permission, folder-trust or background-work
-// prompt — read from its output stream.
+// What an agent CLI in a terminal is doing — working on a turn, idle at its empty prompt (with or
+// without background work still going), or waiting for the user at a permission, folder-trust,
+// background-work or question prompt, or at a screen no rule names — read from its output stream.
 //
 // claude and codex are full-screen TUIs with diff renderers: they send only the cells that
 // changed and position words with cursor moves, so a prompt's text is not reliably present as a
@@ -8,21 +8,32 @@
 // therefore replays the stream into a headless terminal of the pty's size and reads what is on
 // screen, plus the window title, which both CLIs use as a status line:
 //
-//   claude   working — title starts with a spinner glyph ◐ ◓ ◑ ◒; idle — title starts with ✳,
-//            with background work going while the footer (the last non-blank row) counts it:
+//   claude   working — title starts with a spinner glyph ◐ ◓ ◑ ◒; the title's idle — it starts
+//            with ✳. Background work goes while the footer (the last non-blank row) counts it:
 //            "⏵⏵ bypass permissions on · 1 shell · ← for agents · ↓ to manage".
+//            The empty prompt — the composer: a "❯" row with nothing typed in it, alone between
+//            two rules "────…".
 //            waiting — a dialog on screen: "Do you want to …" / "❯ 1. Yes" / "Esc to cancel"
 //            (permission), "Yes, I trust this folder" / "Enter to confirm · Esc to cancel"
-//            (trust), or "Background work is running" / "❯ 1. …" / "Enter to confirm · Esc to
-//            cancel" (background: an exit asked while background work goes). The title stays ✳
-//            while a dialog is up.
-//   codex    working — title starts with a braille spinner (U+2800–U+28FF); idle — any other
-//            non-empty title, once a spinner has been seen (the title format is configurable in
-//            codex; without the spinner item the state stays unknown). waiting — title "[ ! ] Action Required | …" (blinks with "[ . ]"),
-//            or the approval dialog "› 1. Yes, proceed" / "Press enter to confirm or esc to
-//            cancel" on screen; trust — "› 1. Yes,
-//            continue" / "Press enter to continue". Background work is never read: idle is
-//            always without it.
+//            (trust), "Background work is running" / "❯ 1. …" / "Enter to confirm · Esc to
+//            cancel" (background: an exit asked while background work goes), or the question
+//            form of its AskUserQuestion tool: "☐ <header>" / "❯ 1. …" / "Enter to select · ↑/↓
+//            to navigate · Esc to cancel" (question). The title stays ✳ while a dialog is up.
+//   codex    working — title starts with a braille spinner (U+2800–U+28FF); the title's idle —
+//            any other non-empty title, once a spinner has been seen (the title format is
+//            configurable in codex; without the spinner item the state stays unknown). The empty
+//            prompt — the last "›" row, with at most two rows under it (the footer), nothing but
+//            its faint placeholder after the "›". waiting — title "[ ! ] Action Required | …"
+//            (blinks with "[ . ]"), or the approval dialog "› 1. Yes, proceed" / "Press enter to
+//            confirm or esc to cancel" on screen; trust — "› 1. Yes, continue" / "Press enter to
+//            continue". Background work is never read: idle is always without it.
+//
+// Idle is reported only on positive evidence: the title's idle with the empty prompt on screen.
+// The title's idle over any other screen — a dialog no rule names, a dialog whose words changed —
+// is a wait at prompt `unknown`, with the screen's last rows: a consumer that acts on idle (types
+// a command and Enter) must never do it into a dialog, where the Enter picks the highlighted
+// option. Text typed into the prompt (by the person, or a consumer's own command on its way) keeps
+// an idle already reported; before one, the prompt with text in it is a wait at `unknown` too.
 //
 // A dialog counts only while its footer is the last non-blank row on screen: that is where both
 // CLIs draw a live prompt, and it keeps transcript text that merely quotes a prompt (with the
@@ -30,43 +41,52 @@
 // rows as the screen shows them, from its top — claude: the row under the rule that opens the
 // dialog; codex: its first question row — down to the footer. A wait is reported when it starts,
 // and once more when its rows first show (codex's title may say it waits before the dialog is
-// drawn); a redraw of the same dialog (the selection moved) only updates `state`.
+// drawn); a redraw of the same dialog (the selection moved) only updates `state`. A question form
+// that asks its next question (the form's rows above its options changed) is a new wait.
 //
 // Background work is read from claude's footer, not from the turn's closing line ("✻ Cooked for
 // 4s · done 10:14 PM · 1 shell still running"): the closing line is transcript text written when
 // the turn ends — later turns leave it above their own — and the command menu covers it while a
 // command is typed; the footer's count is claude's live status of that work.
 //
-// Idle is reported only once it has held for `idleAfterMs`: claude sets its idle title a few
-// milliseconds before it draws a permission dialog, and a consumer that acts on idle (ending an
-// unattended run) must never see that flash. A change of `background` while idle is reported
+// Idle, and the title's idle over an unnamed screen, is reported only once it has held for
+// `idleAfterMs`: claude sets its idle title a few milliseconds before it draws a permission dialog
+// (and over a frame of its redraw), and a consumer that acts on idle (ending an unattended run) or
+// on a wait must never see that flash. A change of `background` while idle is reported
 // once it, too, has held for `idleAfterMs`, and idle is reported with the screen's latest: a read
 // can end in the middle of the footer's redraw (claude drops the dialog after Esc and draws the
 // footer's count 11 ms later).
 // Working and waiting are reported at once.
 //
-// Probe evidence (claude 2.1.321 and 2.1.331, codex-cli 0.153.2) is in ./fixtures; the
+// Probe evidence (claude 2.1.321, 2.1.331 and 2.1.332, codex-cli 0.153.2) is in ./fixtures; the
 // provenance of each capture is recorded in the fixture itself.
 
 import { Terminal } from "./xterm-headless.js";
 
 export type AgentKind = "claude" | "codex";
 
-/** What the agent waits for: approval of a tool call, trust for the folder it started in, or
+/** What the agent waits for: approval of a tool call, trust for the folder it started in,
  *  (`background`) the choice what to do with its background work when an exit is asked while
- *  that work goes. */
-export type AgentPrompt = "permission" | "trust" | "background";
+ *  that work goes, (`question`) the person's pick among options the agent asks with its question
+ *  form, or (`unknown`) a screen no rule names that is not its empty prompt. */
+export type AgentPrompt = "permission" | "trust" | "background" | "question" | "unknown";
 
 /** `unknown` until the output says otherwise (before the first title, or under a title format the
- *  scanner does not read). `idle.background`: the screen says the agent's background work is still
- *  going — its turn is over, its job may not be. `waiting.lines`: the prompt as the screen shows
- *  it — the dialog's rows from its top to its footer, right-trimmed, their common indent removed;
- *  `[]` while only the title says the agent waits (codex's "Action Required"). */
+ *  scanner does not read). `idle`: the agent is at its empty prompt; `idle.background`: the screen
+ *  says its background work is still going — its turn is over, its job may not be.
+ *  `waiting.lines`: the prompt as the screen shows it — the dialog's rows from its top to its
+ *  footer (prompt `unknown`: the screen's last `UNKNOWN_ROWS` rows, from its first non-blank one),
+ *  right-trimmed, their common indent removed; `[]` while only the title says the agent waits
+ *  (codex's "Action Required"). `waiting.highlighted` (prompt `question` only): the option the
+ *  form highlights — the one Enter picks — without its marker and number. */
 export type AgentState =
   | { kind: "working" }
   | { kind: "idle"; background: boolean }
-  | { kind: "waiting"; prompt: AgentPrompt; lines: string[] }
+  | { kind: "waiting"; prompt: AgentPrompt; lines: string[]; highlighted?: string }
   | { kind: "unknown" };
+
+/** How many of the screen's last rows a wait at prompt `unknown` carries. */
+export const UNKNOWN_ROWS = 12;
 
 export interface AgentStateScannerOptions {
   agent: AgentKind;
@@ -90,8 +110,14 @@ interface Dialog {
   top: { row: RegExp; below: boolean };
 }
 
+/** The agent's prompt as the screen shows it: empty, with text typed in it, or not on screen. */
+type PromptOnScreen = "empty" | "typed" | null;
+
 interface AgentRules {
   dialogs: readonly Dialog[];
+  /** Where the agent's prompt is on screen and whether text is typed in it. `rows` trimmed;
+   *  `solid(y)`: row `y` trimmed with its faint (dim) cells blanked — a placeholder is drawn faint. */
+  prompt(rows: string[], solid: (y: number) => string): PromptOnScreen;
   /** `sawWorking`: a working title has been seen in this session. An idle state it gives is
    *  without background work; the screen's `background` decides. */
   fromTitle(title: string, sawWorking: boolean): AgentState | null;
@@ -106,6 +132,37 @@ const CODEX_ACTION_REQUIRED = /^\[ [!.] \] Action Required\b/;
 const CLAUDE_RULE = { row: /^─{8,}$/, below: true };
 /** The footer's count of background shells: an item of its "·"-separated hints. */
 const CLAUDE_BACKGROUND = /(?:^|· )\d+ shells?(?= ·| {2}|$)/;
+/** The question form's header: one question's chip "☐ Permission", or the tab row of several
+ *  ("←  ☐ Permission  ✔ Format  ✔ Submit  →"). */
+const CLAUDE_QUESTION_HEADER = /^(?:←\s+)?[☐☒✔]\s/;
+/** A numbered option row, highlighted (`❯`) or not. */
+const NUMBERED_OPTION = /^(?:[❯›]\s*)?\d+\.\s/;
+/** A highlighted option row: the option's text in group 1. */
+const HIGHLIGHTED_OPTION = /^[❯›]\s*\d+\.\s+(.*)$/;
+
+/** claude's composer: the last "❯" row right under a rule, with the rows down to the next rule
+ *  (a prompt of several lines). Empty: that row alone, nothing but faint text after the "❯". */
+function claudePrompt(rows: string[], solid: (y: number) => string): PromptOnScreen {
+  for (let y = rows.length - 2; y >= 1; y--) {
+    if (!/^❯(?:\s|$)/.test(rows[y] ?? "") || !CLAUDE_RULE.row.test(rows[y - 1] ?? "")) continue;
+    let end = y + 1;
+    while (end < rows.length && !CLAUDE_RULE.row.test(rows[end] ?? "")) end++;
+    if (end === rows.length) return null;
+    return end === y + 1 && solid(y).replace(/^[❯›]/, "").trim() === "" ? "empty" : "typed";
+  }
+  return null;
+}
+
+/** codex's composer: the last "›" row, with at most two non-blank rows (its footer) under it.
+ *  Empty: nothing but its faint placeholder after the "›". */
+function codexPrompt(rows: string[], solid: (y: number) => string): PromptOnScreen {
+  for (let y = rows.length - 1; y >= 0; y--) {
+    if (!/^›(?:\s|$)/.test(rows[y] ?? "")) continue;
+    if (rows.slice(y + 1).filter((row) => row !== "").length > 2) return null;
+    return solid(y).replace(/^[❯›]/, "").trim() === "" ? "empty" : "typed";
+  }
+  return null;
+}
 
 const RULES: Record<AgentKind, AgentRules> = {
   claude: {
@@ -119,7 +176,15 @@ const RULES: Record<AgentKind, AgentRules> = {
         question: /^Background work is running$/,
         top: { row: /^▔{8,}$/, below: true },
       },
+      {
+        prompt: "question",
+        footer: /^Enter to select\b/,
+        option: NUMBERED_OPTION,
+        question: CLAUDE_QUESTION_HEADER,
+        top: { row: CLAUDE_QUESTION_HEADER, below: false },
+      },
     ],
+    prompt: claudePrompt,
     fromTitle(title) {
       const first = [...title][0];
       if (first === undefined) return null;
@@ -139,6 +204,7 @@ const RULES: Record<AgentKind, AgentRules> = {
       },
       { prompt: "trust", footer: /^Press enter to continue$/, option: /^(?:›\s*)?1\.\s+Yes, continue$/, top: { row: /^> You are in\b/, below: false } },
     ],
+    prompt: codexPrompt,
     fromTitle(title, sawWorking) {
       if (title === "") return null;
       if (CODEX_ACTION_REQUIRED.test(title)) return { kind: "waiting", prompt: "permission", lines: [] };
@@ -150,8 +216,17 @@ const RULES: Record<AgentKind, AgentRules> = {
   },
 };
 
+/** A question form's rows above its options: what it asks. */
+function asked(lines: string[]): string {
+  const first = lines.findIndex((line) => NUMBERED_OPTION.test(line.trim()));
+  return lines.slice(0, first < 0 ? lines.length : first).join("\n");
+}
+
 function sameState(a: AgentState, b: AgentState): boolean {
-  if (a.kind === "waiting") return b.kind === "waiting" && a.prompt === b.prompt;
+  if (a.kind === "waiting") {
+    if (b.kind !== "waiting" || a.prompt !== b.prompt) return false;
+    return a.prompt !== "question" || asked(a.lines) === asked(b.lines);
+  }
   if (a.kind === "idle") return b.kind === "idle" && a.background === b.background;
   return a.kind === b.kind;
 }
@@ -161,6 +236,11 @@ function lastNonBlank(rows: string[]): number {
   let y = rows.length - 1;
   while (y >= 0 && rows[y]?.trim() === "") y--;
   return y;
+}
+
+/** Held states — idle, and the title's idle over an unnamed screen — are reported once they hold. */
+function held(state: AgentState): boolean {
+  return state.kind === "idle" || (state.kind === "waiting" && state.prompt === "unknown");
 }
 
 /** Rows right-trimmed, without the indent they all share (blank rows aside). */
@@ -189,8 +269,8 @@ export class AgentStateScanner {
   private current: AgentState = { kind: "unknown" };
   private readonly idleAfterMs: number;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
-  /** The idle state the running `idleTimer` reports: the screen's latest. */
-  private pendingIdle: AgentState = { kind: "idle", background: false };
+  /** The held state the running `idleTimer` reports: the screen's latest. */
+  private pending: AgentState = { kind: "idle", background: false };
 
   constructor(
     options: AgentStateScannerOptions,
@@ -230,40 +310,62 @@ export class AgentStateScanner {
 
   // A chunk can carry several titles (a turn that starts and ends inside one read): each one's
   // state is reported in order, then the state of the screen and the final title. An idle title
-  // takes the screen's word on background work.
+  // takes the screen's word: idle at the empty prompt, with or without background work; a wait at
+  // `unknown` elsewhere.
   private evaluate(): void {
     const passing = this.titlesInChunk.slice(0, -1);
     this.titlesInChunk = [];
     const shown = this.screen();
     const dialog = this.dialogOn(shown);
-    const background = this.rules.background(shown[lastNonBlank(shown)]?.trim() ?? "");
+    let atIdle: AgentState | "keep" | undefined;
+    const idle = (): AgentState | "keep" => (atIdle ??= this.atIdle(shown));
     for (const title of passing) {
-      const state = this.fromTitle(title, background);
+      const state = this.fromTitle(title, idle);
       // A title's wait that the chunk's own dialog shows is reported once, with its rows.
-      if (state && !(state.kind === "waiting" && state.prompt === dialog?.prompt)) this.report(state);
+      if (state && !(state !== "keep" && state.kind === "waiting" && state.prompt === dialog?.prompt)) this.report(state);
     }
-    this.report(dialog ? { kind: "waiting", ...dialog } : (this.fromTitle(this.title, background) ?? { kind: "unknown" }));
+    this.report(dialog ? { kind: "waiting", ...dialog } : (this.fromTitle(this.title, idle) ?? { kind: "unknown" }));
   }
 
-  private fromTitle(title: string, background: boolean): AgentState | null {
+  private fromTitle(title: string, idle: () => AgentState | "keep"): AgentState | "keep" | null {
     const state = this.rules.fromTitle(title, this.sawWorking);
     if (state?.kind === "working") this.sawWorking = true;
-    return state?.kind === "idle" ? { kind: "idle", background } : state;
+    return state?.kind === "idle" ? idle() : state;
   }
 
-  private report(state: AgentState): void {
-    if (state.kind === "idle") {
-      // Idle, and a change of its background work, is reported once it has held: the timer
-      // started by the first idle reports the screen's latest; back to the reported state, it stops.
+  /** What the title's idle means on this screen: idle at the empty prompt; at a prompt with text
+   *  typed in it, the idle already reported stands (`keep`); elsewhere a wait at `unknown`. */
+  private atIdle(shown: string[]): AgentState | "keep" {
+    const rows = shown.map((row) => row.trim());
+    const prompt = this.rules.prompt(rows, (y) => this.solid(y));
+    if (prompt === "empty") return { kind: "idle", background: this.rules.background(rows[lastNonBlank(rows)] ?? "") };
+    if (prompt === "typed" && this.current.kind === "idle") return "keep";
+    const last = lastNonBlank(shown);
+    const tail = shown.slice(Math.max(0, last + 1 - UNKNOWN_ROWS), last + 1);
+    const first = tail.findIndex((row) => row.trim() !== "");
+    return { kind: "waiting", prompt: "unknown", lines: first < 0 ? [] : dedent(tail.slice(first)) };
+  }
+
+  private report(state: AgentState | "keep"): void {
+    if (state === "keep") {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = undefined;
+      return;
+    }
+    if (held(state)) {
+      // A held state, and a change of idle's background work, is reported once it has held: the
+      // timer started by the first reports the screen's latest; back to the reported state, it
+      // stops (an unnamed screen's redraw updates `state`).
       if (sameState(state, this.current)) {
         clearTimeout(this.idleTimer);
         this.idleTimer = undefined;
+        if (state.kind === "waiting") this.current = state;
         return;
       }
-      this.pendingIdle = state;
+      this.pending = state;
       this.idleTimer ??= setTimeout(() => {
         this.idleTimer = undefined;
-        this.change(this.pendingIdle);
+        this.change(this.pending);
       }, this.idleAfterMs);
       return;
     }
@@ -283,6 +385,20 @@ export class AgentStateScanner {
     this.onState(state);
   }
 
+  /** Screen row `y`, trimmed, its faint (dim) cells blanked. */
+  private solid(y: number): string {
+    const buffer = this.term.buffer.active;
+    const line = buffer.getLine(buffer.baseY + y);
+    if (line === undefined) return "";
+    let text = "";
+    for (let x = 0; x < line.length; x++) {
+      const cell = line.getCell(x);
+      if (cell === undefined || cell.getWidth() === 0) continue;
+      text += cell.isDim() !== 0 ? " " : cell.getChars() || " ";
+    }
+    return text.trim();
+  }
+
   /** The screen's rows, right-trimmed, as drawn. */
   private screen(): string[] {
     const buffer = this.term.buffer.active;
@@ -293,7 +409,7 @@ export class AgentStateScanner {
     return shown;
   }
 
-  private dialogOn(shown: string[]): { prompt: AgentPrompt; lines: string[] } | null {
+  private dialogOn(shown: string[]): { prompt: AgentPrompt; lines: string[]; highlighted?: string } | null {
     const rows = shown.map((row) => row.trim());
     const footerRow = lastNonBlank(rows);
     const footer = rows[footerRow];
@@ -312,7 +428,10 @@ export class AgentStateScanner {
           break;
         }
       }
-      return { prompt: dialog.prompt, lines: dedent(shown.slice(top, footerRow + 1)) };
+      const lines = dedent(shown.slice(top, footerRow + 1));
+      if (dialog.prompt !== "question") return { prompt: dialog.prompt, lines };
+      const highlighted = lines.map((line) => HIGHLIGHTED_OPTION.exec(line.trim())?.[1]).find((text) => text !== undefined);
+      return highlighted === undefined ? { prompt: dialog.prompt, lines } : { prompt: dialog.prompt, lines, highlighted };
     }
     return null;
   }

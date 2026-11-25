@@ -4,7 +4,7 @@
 
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AgentStateScanner, type AgentKind, type AgentState } from "./agent-state.js";
+import { AgentStateScanner, UNKNOWN_ROWS, type AgentKind, type AgentState } from "./agent-state.js";
 
 interface Fixture {
   provenance: { captured: string; cli: string; command: string; how: string; scenario: string };
@@ -133,6 +133,14 @@ const REAL: { name: string; agent: AgentKind; timeline: string[] }[] = [
       "81020 working",
       "81283 unknown",
     ],
+  },
+  {
+    name: "claude-question-form",
+    agent: "claude",
+    // input: "/exit" 5710, Enter 6010 — the Enter picks the form's option 1. The idle title (5100)
+    // comes over a frame of the working screen; the form (5105) is a wait at once, not idle. The
+    // turn ends at the empty prompt (15785): idle 500 ms on.
+    timeline: ["450 working", "5105 waiting:question", "6035 working", "16285 idle"],
   },
 ];
 
@@ -295,6 +303,45 @@ describe("AgentStateScanner — the prompt as the screen shows it (real captures
   });
 });
 
+describe("AgentStateScanner — the question form (real capture)", () => {
+  it("claude: the form is a wait at prompt question with its rows and highlighted option; never idle while it shows", async () => {
+    const all = await states("claude", fixture("claude-question-form"));
+    const question = all.find((s) => s.kind === "waiting");
+    expect(question).toEqual({
+      kind: "waiting",
+      prompt: "question",
+      highlighted: "Yes, append (Recommended)",
+      lines: [
+        " ☐ Permission",
+        "",
+        'May I append the line "asked" to notes.md (in Projects/delta) using echo?',
+        "",
+        "❯ 1. Yes, append (Recommended)",
+        '     Run: echo "asked" >> notes.md',
+        "  2. Append with timestamp",
+        '     Append "asked" plus the current date/time instead',
+        "  3. Show diff first",
+        "     Preview what would change before writing",
+        "  4. No, cancel",
+        "     Leave notes.md untouched",
+        "  5. Type something.",
+        "─".repeat(80),
+        "  6. Chat about this",
+        "",
+        "Enter to select · ↑/↓ to navigate · Esc to cancel",
+      ],
+    });
+    expect(all.map((s) => s.kind)).toEqual(["working", "waiting", "working", "idle"]);
+  });
+
+  it("claude: held on the form for minutes, it stays a wait — no idle", async () => {
+    const fx = fixture("claude-question-form");
+    const until = fx.chunks.findIndex(([, d]) => d.includes("Enter to select"));
+    const events = await replay("claude", { ...fx, chunks: [...fx.chunks.slice(0, until + 1), [fx.chunks[until]![0] + 180_000, ""]] });
+    expect(kinds(events)).toEqual(["working", "waiting:question"]);
+  });
+});
+
 // Synthetic screens: CUP-positioned rows on a 60×12 terminal.
 const at = (row: number, text: string): string => `\x1b[${row};1H${text}`;
 const title = (text: string): string => `\x1b]0;${text}\x07`;
@@ -324,7 +371,7 @@ describe("AgentStateScanner — claude", () => {
   });
 
   it("reads working and idle from the title glyph", async () => {
-    expect(await run("claude", [title("◐ Fix the bug"), title("◑ Fix the bug"), title("✳ Fix the bug")])).toEqual(["working", "idle"]);
+    expect(await run("claude", [CLAUDE_COMPOSER, title("◐ Fix the bug"), title("◑ Fix the bug"), title("✳ Fix the bug")])).toEqual(["working", "idle"]);
   });
 
   it("ignores titles it does not know", async () => {
@@ -391,13 +438,13 @@ describe("AgentStateScanner — claude", () => {
   });
 
   it("reports a turn that starts and ends inside one read, idle after it holds", async () => {
-    expect(await run("claude", [title("◐ x") + "output" + title("✳ x")])).toEqual(["working", "idle"]);
+    expect(await run("claude", [title("◐ x") + "output" + CLAUDE_COMPOSER + title("✳ x")])).toEqual(["working", "idle"]);
   });
 
   it("holds idle back for idleAfterMs and drops it when work resumes first", async () => {
     const events: string[] = [];
     const scanner = new AgentStateScanner({ agent: "claude", cols: 60, rows: 12, idleAfterMs: 200 }, (s) => events.push(label(s)));
-    scanner.push(title("◐ x"));
+    scanner.push(CLAUDE_COMPOSER + title("◐ x"));
     scanner.push(title("✳ x"));
     await vi.advanceTimersByTimeAsync(150);
     expect(events).toEqual(["working"]);
@@ -439,6 +486,142 @@ describe("AgentStateScanner — claude", () => {
     await vi.advanceTimersByTimeAsync(10);
     expect(small).toEqual([]);
     unresized.dispose();
+  });
+});
+
+// Synthetic claude screens on 60×12: idle only at the empty prompt; the question form.
+describe("AgentStateScanner — claude: idle at the empty prompt, else a wait", () => {
+  const row = (n: number, text: string): string => `\x1b[${n};1H\x1b[2K${text}`;
+  const RULE = "─".repeat(60);
+  const UNNAMED = "\x1b[2J" + row(2, "transcript") + row(5, RULE) + row(6, " Ready to code?") + row(8, " ❯ 1. Yes, auto-accept edits") + row(9, "   2. No, keep planning") + row(11, " ctrl-g to edit in Vim");
+  const QUESTION = (selected: 1 | 2, ask = "Which format?"): string =>
+    "\x1b[2J" +
+    row(1, RULE) +
+    row(2, " ☐ Format") +
+    row(4, ask) +
+    row(6, `${selected === 1 ? "❯" : " "} 1. Markdown (Recommended)`) +
+    row(7, `${selected === 2 ? "❯" : " "} 2. Plain text`) +
+    row(8, "  3. Type something.") +
+    row(10, "Enter to select · ↑/↓ to navigate · Esc to cancel");
+  async function play(steps: (string | number)[]): Promise<AgentState[]> {
+    const out: AgentState[] = [];
+    const scanner = new AgentStateScanner({ agent: "claude", cols: 60, rows: 12 }, (s) => out.push(s));
+    for (const step of steps) {
+      if (typeof step === "number") await vi.advanceTimersByTimeAsync(step);
+      else scanner.push(step);
+    }
+    await vi.advanceTimersByTimeAsync(1000);
+    scanner.dispose();
+    return out;
+  }
+  const labels = (states: AgentState[]): string[] => states.map(label);
+
+  it("the title's idle over a dialog no rule names is a wait at unknown with the screen's last rows; the empty prompt after it is idle", async () => {
+    const states = await play([title("◐ x"), UNNAMED + title("✳ x"), 600, "\x1b[2J" + CLAUDE_COMPOSER]);
+    expect(labels(states)).toEqual(["working", "waiting:unknown", "idle"]);
+    expect(states[1]).toEqual({
+      kind: "waiting",
+      prompt: "unknown",
+      lines: ["transcript", "", "", RULE, " Ready to code?", "", " ❯ 1. Yes, auto-accept edits", "   2. No, keep planning", "", " ctrl-g to edit in Vim"],
+    });
+  });
+
+  it("a wait at unknown carries at most the screen's last UNKNOWN_ROWS rows", async () => {
+    const scanner = new AgentStateScanner({ agent: "claude", cols: 40, rows: 20 }, () => {});
+    scanner.push(Array.from({ length: 20 }, (_, i) => row(i + 1, `row ${i + 1}`)).join("") + title("✳ x"));
+    await vi.advanceTimersByTimeAsync(600);
+    expect(scanner.state).toEqual({ kind: "waiting", prompt: "unknown", lines: Array.from({ length: UNKNOWN_ROWS }, (_, i) => `row ${i + 21 - UNKNOWN_ROWS}`) });
+    scanner.dispose();
+  });
+
+  it("the title's idle over a blank screen is a wait at unknown with no rows", async () => {
+    expect(await play([title("◐ x"), title("✳ x")])).toEqual([{ kind: "working" }, { kind: "waiting", prompt: "unknown", lines: [] }]);
+  });
+
+  it("a wait at unknown is held like idle: a redraw that reaches the empty prompt within idleAfterMs is idle alone", async () => {
+    expect(labels(await play([title("◐ x"), UNNAMED + title("✳ x"), 300, "\x1b[2J" + CLAUDE_COMPOSER]))).toEqual(["working", "idle"]);
+  });
+
+  it("a redraw of the unnamed screen updates the wait's rows without a new event", async () => {
+    const out: AgentState[] = [];
+    const scanner = new AgentStateScanner({ agent: "claude", cols: 60, rows: 12 }, (s) => out.push(s));
+    scanner.push(title("◐ x") + UNNAMED + title("✳ x"));
+    await vi.advanceTimersByTimeAsync(600);
+    scanner.push(row(8, "   1. Yes, auto-accept edits") + row(9, " ❯ 2. No, keep planning"));
+    await vi.advanceTimersByTimeAsync(600);
+    expect(labels(out)).toEqual(["working", "waiting:unknown"]);
+    expect(scanner.state.kind === "waiting" && scanner.state.lines.slice(-4, -2)).toEqual(["   1. Yes, auto-accept edits", " ❯ 2. No, keep planning"]);
+    scanner.dispose();
+  });
+
+  it("text typed into the prompt keeps the idle reported; the empty prompt again changes nothing", async () => {
+    const typed = row(11, "❯ /exit");
+    expect(labels(await play([CLAUDE_COMPOSER + title("◐ x"), title("✳ x"), 600, typed, 600, row(11, "❯ "), 600]))).toEqual(["working", "idle"]);
+  });
+
+  it("before an idle, the prompt with text typed in it is a wait at unknown, not idle", async () => {
+    expect(labels(await play([CLAUDE_COMPOSER + title("◐ x"), row(11, "❯ queued words") + title("✳ x")]))).toEqual(["working", "waiting:unknown"]);
+  });
+
+  it("a prompt of several typed lines between the rules is not empty", async () => {
+    const twoLines = "\x1b[2J" + row(9, RULE) + row(10, "❯ first") + row(11, "  second") + row(12, RULE);
+    expect(labels(await play([title("◐ x"), twoLines + title("✳ x")]))).toEqual(["working", "waiting:unknown"]);
+  });
+
+  it("faint text in the prompt is a placeholder: the prompt is empty", async () => {
+    const ghost = row(11, "❯ \x1b[2mTry \"fix the lint errors\"\x1b[22m");
+    expect(labels(await play([CLAUDE_COMPOSER + title("◐ x"), ghost + title("✳ x")]))).toEqual(["working", "idle"]);
+  });
+
+  it("a ❯ row that is not between two rules is not the prompt", async () => {
+    const quoted = "\x1b[2J" + row(10, RULE) + row(11, "❯ ") + row(12, "  footer");
+    expect(labels(await play([title("◐ x"), quoted + title("✳ x")]))).toEqual(["working", "waiting:unknown"]);
+  });
+
+  it("the question form is a wait at question with its rows and the highlighted option, at once", async () => {
+    const out: AgentState[] = [];
+    const scanner = new AgentStateScanner({ agent: "claude", cols: 60, rows: 12 }, (s) => out.push(s));
+    scanner.push(title("◐ x") + title("✳ x") + QUESTION(1));
+    await vi.advanceTimersByTimeAsync(10);
+    const lines = (selected: 1 | 2): string[] => [
+      " ☐ Format",
+      "",
+      "Which format?",
+      "",
+      `${selected === 1 ? "❯" : " "} 1. Markdown (Recommended)`,
+      `${selected === 2 ? "❯" : " "} 2. Plain text`,
+      "  3. Type something.",
+      "",
+      "Enter to select · ↑/↓ to navigate · Esc to cancel",
+    ];
+    expect(out).toEqual([{ kind: "working" }, { kind: "waiting", prompt: "question", lines: lines(1), highlighted: "Markdown (Recommended)" }]);
+    scanner.push(row(6, "  1. Markdown (Recommended)") + row(7, "❯ 2. Plain text"));
+    await vi.advanceTimersByTimeAsync(600);
+    expect(out).toHaveLength(2);
+    expect(scanner.state).toEqual({ kind: "waiting", prompt: "question", lines: lines(2), highlighted: "Plain text" });
+    scanner.dispose();
+  });
+
+  it("the form's next question is a new wait", async () => {
+    const states = await play([title("◐ x") + title("✳ x") + QUESTION(1), 10, QUESTION(1, "Which file?")]);
+    expect(states.map((s) => (s.kind === "waiting" ? s.lines[2] : s.kind))).toEqual(["working", "Which format?", "Which file?"]);
+  });
+
+  it("the form of several questions: its tab row is the header", async () => {
+    const tabs = QUESTION(1) + row(2, " ←  ☐ Format  ☐ File  ✔ Submit  →");
+    const states = await play([title("◐ x") + title("✳ x") + tabs]);
+    expect(states[1]).toMatchObject({ kind: "waiting", prompt: "question", highlighted: "Markdown (Recommended)" });
+    expect(states[1]?.kind === "waiting" && states[1].lines[0]).toBe(" ←  ☐ Format  ☐ File  ✔ Submit  →");
+  });
+
+  it("options over the form's footer without its header are no question form", async () => {
+    const bare = "\x1b[2J" + row(6, "❯ 1. Markdown") + row(7, "  2. Plain text") + row(10, "Enter to select · ↑/↓ to navigate · Esc to cancel");
+    expect(labels(await play([title("◐ x"), bare + title("✳ x")]))).toEqual(["working", "waiting:unknown"]);
+  });
+
+  it("a quoted question form with the empty prompt below it is idle", async () => {
+    const quoted = "\x1b[2J" + row(2, " ☐ Format") + row(3, "❯ 1. Markdown") + row(4, "Enter to select · ↑/↓ to navigate · Esc to cancel") + CLAUDE_COMPOSER;
+    expect(labels(await play([title("◐ x"), quoted + title("✳ x")]))).toEqual(["working", "idle"]);
   });
 });
 
@@ -663,9 +846,11 @@ describe("AgentStateScanner — codex", () => {
     at(5, "› 1. Yes, proceed (y)") +
     at(6, "  3. No, and tell Codex what to do differently (esc)") +
     at(8, "  Press enter to confirm or esc to cancel");
+  /** codex's empty prompt: "›", its faint placeholder, the footer under it. */
+  const CODEX_COMPOSER = at(10, "› \x1b[2mAsk Codex to do anything\x1b[22m") + at(12, "  gpt-5 medium · ~/repo");
 
   it("reads working from the braille spinner and idle from the plain title", async () => {
-    expect(await run("codex", [title("repo"), spin("⠋"), spin("⠙"), title("repo")])).toEqual(["working", "idle"]);
+    expect(await run("codex", [CODEX_COMPOSER, title("repo"), spin("⠋"), spin("⠙"), title("repo")])).toEqual(["working", "idle"]);
   });
 
   it("stays unknown under a title without the spinner (a custom terminal_title)", async () => {
@@ -722,10 +907,20 @@ describe("AgentStateScanner — codex", () => {
     const states: AgentState[] = [];
     const scanner = new AgentStateScanner({ agent: "codex", cols: 60, rows: 12 }, (s) => states.push(s));
     scanner.push(spin("⠋"));
-    scanner.push(at(12, "  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage") + title("repo"));
+    scanner.push(at(10, "› ") + at(12, "  ⏵⏵ bypass permissions on · 1 shell · ↓ to manage") + title("repo"));
     await vi.advanceTimersByTimeAsync(1000);
     expect(states).toEqual([{ kind: "working" }, { kind: "idle", background: false }]);
     scanner.dispose();
+  });
+
+  it("idle only at its empty prompt: the title's idle with text typed in the prompt is a wait at unknown", async () => {
+    const typed = at(10, "› make it so") + at(12, "  gpt-5 medium · ~/repo");
+    expect(await run("codex", [spin("⠋"), "\x1b[2J" + typed + title("repo")])).toEqual(["working", "waiting:unknown"]);
+  });
+
+  it("the › row is not its prompt with more than its footer under it", async () => {
+    const quoted = at(6, "› \x1b[2mAsk Codex to do anything\x1b[22m") + at(8, "• Ran ls") + at(10, "• Done") + at(12, "  gpt-5 medium · ~/repo");
+    expect(await run("codex", [spin("⠋"), "\x1b[2J" + quoted + title("repo")])).toEqual(["working", "waiting:unknown"]);
   });
 
   it("does not read claude's background dialog", async () => {

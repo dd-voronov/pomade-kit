@@ -24,7 +24,7 @@ The package installs from a git tag: npm clones it, installs its dev dependencie
 | `pomade-kit/frontmatter` | field-only frontmatter writes: `setField`, `removeField`, body writes `setBody` / `getBody`, and the block core Pomade's editor uses | browser and Node |
 | `pomade-kit/schedule` | the schedule format: `parseSchedule` with readable errors, the occurrence engine, `describeSchedule`, `formatSchedule` | browser and Node |
 | `pomade-kit/dates` | date phrases: `parseDatePhrase` (`fri`, `tomorrow`, `+3d`, `nov 20`, `tonight 23:00`, `in 2 hours`) and `currentDay` with a day boundary | browser and Node |
-| `pomade-kit/scanners` | terminal output readers: `MarkerScanner` (Pomade's shell markers), `AttentionScanner` (bell, notifications), `AgentStateScanner` (claude/codex working, idle — with or without background work going — or waiting at a permission, trust or background-work prompt) | browser and Node |
+| `pomade-kit/scanners` | terminal output readers: `MarkerScanner` (Pomade's shell markers), `AttentionScanner` (bell, notifications), `AgentStateScanner` (claude/codex working, idle — with or without background work going — or waiting at a permission, trust, background-work or question prompt, or at a screen no rule names) | browser and Node |
 | `pomade-kit/node` | the Host API over Pomade's socket for backends and commands (`connectSocket`, `stayConnected`, `launchPomade`), `resolveWorkspace()`, `appStateDir()`; `postNotice()` — a notice from a backend or command, with Pomade open or closed; the attach protocol's client (`connectKeeper`, `followSession`, `startKeeper`) | Node |
 | `pomade-kit/keeper` | the keeper: holds an app's terminal sessions so they outlive Pomade, and serves the attach protocol (`runKeeper`). Needs `node-pty` (a peer dependency) | Node |
 
@@ -1066,12 +1066,27 @@ pty.onExit(() => agent.dispose());
 | | claude | codex |
 |---|---|---|
 | working | title starts with ◐ ◓ ◑ ◒ | title starts with a braille spinner |
-| idle | title starts with ✳ | any other title, once a spinner has been seen |
+| idle | title starts with ✳, and the empty prompt on screen: the composer "❯" row with nothing typed in it, alone between two rules "────…" | any other title, once a spinner has been seen, and the empty prompt on screen: the last "›" row, at most its footer under it, nothing but its faint placeholder after the "›" |
 | idle with `background: true` | idle, and the footer (the last non-blank row) counts background shells: "⏵⏵ bypass permissions on · 1 shell · ← for agents · ↓ to manage" | never |
 | waiting: permission | dialog "Do you want to …" · "❯ 1. Yes" · "Esc to cancel" | title "[ ! ] Action Required" or dialog "› 1. Yes, proceed" · "Press enter to confirm or esc to cancel" |
 | waiting: trust | "Yes, I trust this folder" · "Enter to confirm · Esc to cancel" | "› 1. Yes, continue" · "Press enter to continue" |
 | waiting: background | "Background work is running" · "❯ 1. Exit and stop tasks" · "Enter to confirm · Esc to cancel" | never |
+| waiting: question | the AskUserQuestion form: "☐ <header>" (several questions: a tab row "←  ☐ … ✔ Submit  →") · "❯ 1. …" · "Enter to select · ↑/↓ to navigate · Esc to cancel" | never |
+| waiting: unknown | the idle title over any other screen | the idle title over any other screen |
 
+- **Idle only on positive evidence: the agent's empty prompt on screen.** The idle title over a
+  screen that is neither the empty prompt nor a known dialog — a dialog no rule names (claude's
+  plan approval), a dialog whose words a new version changed — is `waiting` with prompt
+  `unknown`, its `lines` the screen's last `UNKNOWN_ROWS` (12) rows from the first non-blank one.
+  A consumer that acts on `idle` by typing a command and Enter therefore never types into a
+  dialog, where the Enter would pick the highlighted option. Text typed into the prompt — the
+  person's, or the consumer's own command on its way — keeps an `idle` already reported; before
+  one, the prompt with text in it is `unknown` too. Faint text in the prompt is a placeholder:
+  the prompt is empty.
+- **`waiting.highlighted`** (prompt `question` only): the option the form highlights — the one
+  Enter picks — as its row shows it, without the "❯" and the number ("Yes, append
+  (Recommended)"). A moved highlight updates `agent.state` without a new event; the form's next
+  question (its rows above the options changed) is a new `waiting` event.
 - A dialog counts only while its footer is the **last non-blank row** on screen, where both CLIs
   draw a live prompt. A transcript that quotes a prompt has the composer below it and does not
   count.
@@ -1098,9 +1113,11 @@ pty.onExit(() => agent.dispose());
   working title for ~15 ms, so `working` is reported, then the dialog's `waiting` — or, with no
   background work, `unknown` as claude exits and clears its title. A consumer that typed the
   command reads that `working` as the command's, not as a new turn.
-- **Idle is reported after it holds for `idleAfterMs`** (default 500 ms). claude shows its idle
-  title a few milliseconds before it draws a permission dialog, so a consumer that ends a run
-  on idle never sees that flash. A change of `background` while idle — the work ended without a
+- **Idle — and `waiting` `unknown` — is reported after it holds for `idleAfterMs`** (default
+  500 ms). claude shows its idle title a few milliseconds before it draws a permission dialog or
+  its question form, and over a frame of its working screen, so a consumer that ends a run on
+  idle, or asks the person on a wait, never sees that flash; a redraw of the unnamed screen
+  updates the wait's rows without a new event. A change of `background` while idle — the work ended without a
   new turn, or started — is reported the same way, once it has held: a read can end in the
   middle of the footer's redraw. Working and waiting are reported at once. A finished turn is a
   `working → idle` change.
@@ -1114,10 +1131,11 @@ pty.onExit(() => agent.dispose());
 - Create the scanner when the agent starts and dispose it when it exits; after an exit the
   screen still holds whatever the CLI left there.
 - Evidence: real captures of claude 2.1.321 and codex-cli 0.153.2 answering permission prompts,
-  and of claude 2.1.331 ending turns with a background shell — asked to exit, staying with Esc,
-  going on by itself when the shell ends (`src/scanners/fixtures/`, provenance in each file),
-  replay in the unit suite with their recorded timing (`claude-background-exit`'s is
-  reconstructed, as its provenance says).
+  of claude 2.1.331 ending turns with a background shell — asked to exit, staying with Esc,
+  going on by itself when the shell ends — and of claude 2.1.332 asking with its question form
+  (`src/scanners/fixtures/`, provenance in each file), replay in the unit suite with their
+  recorded timing (`claude-background-exit`'s and `claude-question-form`'s are reconstructed, as
+  their provenance says).
 
 ## Calling other apps — the broker
 
