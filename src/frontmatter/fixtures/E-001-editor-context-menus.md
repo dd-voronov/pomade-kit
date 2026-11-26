@@ -23,7 +23,7 @@ Every menu item works in raw and rendered modes (or is hidden where not applicab
 User-testing round 2 (2026-07-18) follow-up: [[T-043]] selection menu + Cmd+F dead in raw md and CSV table view.
 
 ## Decisions
-- **"New agent chat" with a selection (confirmed by Daniil, 2026-07-18, screenshot-3):** current behavior is the desired contract — `Read <path>` is submitted to the agent, and the selected text is placed in the terminal input **unsubmitted**, so Daniil finishes the prompt himself. Documented so nobody "fixes" it into auto-submitting.
+- **"New agent chat" with a selection (confirmed by the Owner, 2026-07-18, screenshot-3):** current behavior is the desired contract — `Read <path>` is submitted to the agent, and the selected text is placed in the terminal input **unsubmitted**, so the Owner finishes the prompt himself. Documented so nobody "fixes" it into auto-submitting.
 - Find & replace panel UX will get a dedicated revisit later (noted in [[P-011]]); current panel accepted for now.
 
 ## Round-3 fixes (user test 2026-07-23)
