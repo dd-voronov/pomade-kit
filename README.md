@@ -4,7 +4,11 @@ Shared library for the Pomade family: the app SDK (Host API client, types, fake 
 pure logic.
 
 Part of the Pomade family — the platform and its rules live in the sibling repo `Pomade`
-(`docs/PLATFORM.md`); the protocol is `Pomade/docs/HOST-API.md`. Backlog: `docs/BACKLOG.md`.
+(`docs/PLATFORM.md`); the protocol is `Pomade/docs/HOST-API.md`.
+
+What belongs here: pure code — no platform state, no side effects beyond its inputs — needed by two
+or more pieces of the family. The one runtime part is the keeper library (`pomade-kit/keeper`): apps
+run it in their own always-on backends to hold terminal sessions that outlive Pomade.
 
 ## Install
 
@@ -13,7 +17,8 @@ npm install github:dd-voronov/pomade-kit#v0.1.0
 ```
 
 The package installs from a git tag: npm clones it, installs its dev dependencies and builds
-`dist/` through the `prepare` script. ESM only, with TypeScript declarations.
+`dist/` through the `prepare` script. ESM only, with TypeScript declarations. Releases are semver
+tags (`vX.Y.Z`); pin one. A breaking change is a major version.
 
 | Import | What | Runs in |
 |---|---|---|
