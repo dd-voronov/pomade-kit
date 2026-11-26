@@ -34,7 +34,7 @@ const typeAware = {
 };
 
 export default tseslint.config(
-  { ignores: ["dist/**", "examples/hello/dist/**", "test-results/**", "playwright-report/**", "**/*.d.ts"] },
+  { ignores: ["private/**", "dist/**", "examples/hello/dist/**", "test-results/**", "playwright-report/**", "**/*.d.ts"] },
   tseslint.configs.base,
   { name: "pomade-kit/config", files: ["eslint.config.mjs"], rules: baseHygieneRules },
   { name: "pomade-kit/src", files: ["src/**/*.ts", "examples/**/*.ts", "vitest.config.ts", "playwright.config.ts"], ...typeAware },
