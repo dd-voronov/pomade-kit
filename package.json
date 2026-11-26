@@ -3,7 +3,7 @@
   "version": "0.19.0",
   "description": "Shared library of the Pomade family: Host API protocol, app SDK, fake host",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
   "repository": "github:dd-voronov/pomade-kit",
   "engines": {
