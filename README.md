@@ -1518,7 +1518,8 @@ npm install
 npm run lint && npm run typecheck && npm run build && npm test
 ```
 
-`npm test` runs the unit matrix (vitest) and the e2e (Playwright, Chromium).
+`npm test` runs the unit matrix (vitest) and the e2e (Playwright, Chromium). `npm run hello:dev`
+serves the example app `examples/hello/` on the fake host; `npm run hello:build` builds it.
 
 ## Release
 
